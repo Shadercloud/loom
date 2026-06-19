@@ -1,0 +1,34 @@
+// Minimal local typings for react-reconciler — only the surface loom uses. Avoids
+// the @types/react-reconciler version-matching dance; the host config is verified
+// against the running renderer in the browser.
+
+declare module "react-reconciler" {
+	export type OpaqueRoot = unknown;
+
+	export interface ReactReconcilerInstance {
+		createContainer(
+			containerInfo: unknown,
+			tag: number,
+			hydrationCallbacks: unknown,
+			isStrictMode: boolean,
+			concurrentUpdatesByDefaultOverride: boolean | null,
+			identifierPrefix: string,
+			onRecoverableError: (error: unknown) => void,
+			transitionCallbacks: unknown,
+		): OpaqueRoot;
+		updateContainer(
+			element: unknown,
+			container: OpaqueRoot,
+			parentComponent?: unknown,
+			callback?: (() => void) | null,
+		): void;
+	}
+
+	export default function ReactReconciler(
+		config: unknown,
+	): ReactReconcilerInstance;
+}
+
+declare module "react-reconciler/constants" {
+	export const DefaultEventPriority: number;
+}
