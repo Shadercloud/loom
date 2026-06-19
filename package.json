@@ -1,0 +1,23 @@
+{
+	"name": "loom",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@11.6.0",
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"build:native": "bash scripts/build-wasm.sh",
+		"prepare": "pnpm build:native",
+		"build": "pnpm -r run build",
+		"typecheck": "pnpm -r run typecheck",
+		"test": "cargo test && vitest run --passWithNoTests",
+		"lint": "biome check .",
+		"format": "biome format --write ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

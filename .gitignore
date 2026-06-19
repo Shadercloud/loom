@@ -1,0 +1,12 @@
+# Node / pnpm
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Rust / wasm
+target/
+pkg/
+
+# misc
+.DS_Store
+*.log
