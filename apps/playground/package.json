@@ -1,0 +1,20 @@
+{
+	"name": "@loom-dev/playground",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@loom-dev/preview": "workspace:*",
+		"react": "catalog:"
+	},
+	"devDependencies": {
+		"@types/react": "catalog:",
+		"typescript": "catalog:",
+		"vite": "catalog:"
+	}
+}

@@ -1,0 +1,16 @@
+{
+	"name": "@loom-dev/vide-example",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@loom-dev/preview": "workspace:*",
+		"@loom-dev/vide": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "catalog:"
+	}
+}

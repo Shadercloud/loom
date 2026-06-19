@@ -1,0 +1,17 @@
+{
+	"name": "@loom-dev/example",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@loom-dev/preview": "workspace:*",
+		"react": "catalog:"
+	},
+	"devDependencies": {
+		"@types/react": "catalog:",
+		"typescript": "catalog:"
+	}
+}
