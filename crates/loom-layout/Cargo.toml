@@ -1,0 +1,8 @@
+[package]
+name = "loom-layout"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+loom-scene = { path = "../loom-scene" }
