@@ -1,0 +1,43 @@
+{
+	"version": "0.0.1",
+	"configurations": [
+		{
+			"name": "playground",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": ["--filter", "@loom-dev/playground", "dev"],
+			"port": 5173
+		},
+		{
+			"name": "cli-example",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": [
+				"--filter",
+				"loom-dev",
+				"exec",
+				"tsx",
+				"src/cli.ts",
+				"preview",
+				"/Users/returnf4lse/Desktop/Workspace/typescript/loom-rewrite/apps/example",
+				"--port",
+				"5182"
+			],
+			"port": 5182
+		},
+		{
+			"name": "vide-example",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": [
+				"--filter",
+				"loom-dev",
+				"exec",
+				"tsx",
+				"src/cli.ts",
+				"preview",
+				"/Users/returnf4lse/Desktop/Workspace/typescript/loom-rewrite/apps/vide-example",
+				"--port",
+				"5183"
+			],
+			"port": 5183
+		}
+	]
+}
