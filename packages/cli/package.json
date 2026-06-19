@@ -1,0 +1,22 @@
+{
+	"name": "loom-dev",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"bin": {
+		"loom": "./src/cli.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"build": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@loom-dev/preview": "workspace:*",
+		"tsx": "^4.19.0",
+		"vite": "catalog:"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "catalog:"
+	}
+}
