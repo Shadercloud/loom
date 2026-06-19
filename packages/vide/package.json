@@ -1,0 +1,23 @@
+{
+	"name": "@loom-dev/vide",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"types": "./src/index.ts",
+	"scripts": {
+		"build": "tsc -p tsconfig.json --noEmit",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@loom-dev/layout": "workspace:*",
+		"@loom-dev/renderer": "workspace:*",
+		"@loom-dev/runtime": "workspace:*",
+		"@loom-dev/scene": "workspace:*"
+	},
+	"devDependencies": {
+		"typescript": "catalog:"
+	}
+}
