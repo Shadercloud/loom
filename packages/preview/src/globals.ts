@@ -38,6 +38,24 @@ declare global {
 	const Enum: typeof runtime.Enum;
 	const game: runtime.DataModel;
 	const Instance: typeof runtime.Instance;
+	// Luau environment (`string` shadows the TS builtin *type* name, which is
+	// fine — this declares a global *value*). `print` is deliberately absent:
+	// lib.dom already declares `function print(): void` and a redeclaration is
+	// a compile error; the runtime still overwrites the value at install time.
 	const task: typeof runtime.task;
 	const tick: typeof runtime.tick;
+	const math: typeof runtime.math;
+	const string: typeof runtime.string;
+	const os: typeof runtime.os;
+	const coroutine: typeof runtime.coroutine;
+	const typeIs: typeof runtime.typeIs;
+	const typeOf: typeof runtime.typeOf;
+	const pcall: typeof runtime.pcall;
+	const xpcall: typeof runtime.xpcall;
+	const pairs: typeof runtime.pairs;
+	const ipairs: typeof runtime.ipairs;
+	const tostring: typeof runtime.tostring;
+	const tonumber: typeof runtime.tonumber;
+	const error: typeof runtime.error;
+	const warn: typeof runtime.warn;
 }

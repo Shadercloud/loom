@@ -1,0 +1,21 @@
+/**
+ * `@loom-dev/preview/services` — the browser stand-in for `@rbxts/services`.
+ *
+ * roblox-ts code imports service singletons as named exports
+ * (`import { RunService } from "@rbxts/services"`); the Vite plugin aliases
+ * that specifier here. Each export is the same singleton `game.GetService`
+ * returns, so preview code and app code always see one instance. Only the
+ * services the runtime actually implements are exported — an unknown service
+ * would be a warned stub anyway, so a missing name here surfaces as a build
+ * error instead of a silent stub.
+ */
+import { getService, type LoomInstance } from "@loom-dev/runtime";
+
+export const ContextActionService: LoomInstance = getService(
+	"ContextActionService",
+);
+export const GuiService: LoomInstance = getService("GuiService");
+export const Players: LoomInstance = getService("Players");
+export const RunService: LoomInstance = getService("RunService");
+export const UserInputService: LoomInstance = getService("UserInputService");
+export const Workspace: LoomInstance = getService("Workspace");

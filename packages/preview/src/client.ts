@@ -8,6 +8,13 @@ import type { LoomRoot } from "@loom-dev/react";
 import { render as loomRender } from "@loom-dev/react";
 import type { ReactElement } from "react";
 
+/**
+ * Stand-in for `ReactRoblox.createPortal`. Renders children into a LoomInstance
+ * container (typically `Players.LocalPlayer.PlayerGui`), matching the Roblox
+ * signature component libraries call.
+ */
+export { createPortal } from "@loom-dev/react";
+
 const HOST_ID = "loom-root";
 
 /** The outer preview viewport (`#loom-root`), created if the host page lacks it. */

@@ -7,6 +7,7 @@
 		".": "./src/index.ts",
 		"./globals": "./src/globals.ts",
 		"./client": "./src/client.ts",
+		"./services": "./src/services.ts",
 		"./vite": "./src/vite.ts"
 	},
 	"types": "./src/index.ts",

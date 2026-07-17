@@ -61,11 +61,30 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  apps/gallery-demo:
+    dependencies:
+      '@loom-dev/preview':
+        specifier: workspace:*
+        version: link:../../packages/preview
+      react:
+        specifier: 'catalog:'
+        version: 18.3.1
+    devDependencies:
+      '@types/react':
+        specifier: 'catalog:'
+        version: 18.3.31
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   apps/interactive:
     dependencies:
       '@loom-dev/preview':
         specifier: workspace:*
         version: link:../../packages/preview
+      '@loom-dev/react':
+        specifier: workspace:*
+        version: link:../../packages/react
       '@loom-dev/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -117,6 +136,9 @@ importers:
       '@loom-dev/preview':
         specifier: workspace:*
         version: link:../preview
+      react:
+        specifier: 'catalog:'
+        version: 18.3.1
       tsx:
         specifier: ^4.19.0
         version: 4.22.4
@@ -127,6 +149,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.21
+      '@types/react':
+        specifier: 'catalog:'
+        version: 18.3.31
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
