@@ -36,10 +36,12 @@ import {
 	getEventSignal,
 	getInternalId,
 	getRawProperties,
+	getService,
 	isLoomInstance,
 	markDirty,
 	moveChildBefore,
 	setFlusher,
+	setHitTester,
 	setViewportSize,
 	toPropertyValue,
 	updateAbsoluteGeometry,
@@ -47,7 +49,7 @@ import {
 } from "@loom-dev/runtime";
 import type { LayoutResult, Viewport } from "@loom-dev/scene";
 import { type PropertyValue, prop, type SceneNode } from "@loom-dev/scene";
-import type { Key, ReactElement, ReactNode, Ref } from "react";
+import type { Key, ReactElement, ReactNode, ReactPortal, Ref } from "react";
 import Reconciler from "react-reconciler";
 import { DefaultEventPriority } from "react-reconciler/constants";
 
@@ -261,15 +263,25 @@ export interface WorldOptions {
 }
 
 /**
- * The live pipeline behind one mount: a root container instance, the DOM
- * session, and the flush plumbing between them.
+ * The live pipeline behind one mount: the runtime PlayerGui as root container,
+ * the DOM session, and the flush plumbing between them.
  */
 export interface World {
-	/** The container every top-level React child is parented under. */
+	/**
+	 * The world's root container: the runtime `Players.LocalPlayer.PlayerGui`
+	 * instance — the same object lattice-style code resolves via
+	 * `WaitForChild("PlayerGui")`, so portals into PlayerGui land in this world.
+	 */
 	readonly rootInstance: LoomInstance;
+	/**
+	 * The world-created default `ScreenGui` under PlayerGui. Non-LayerCollector
+	 * React root children mount here, so sibling portal ScreenGuis order
+	 * against app content by `DisplayOrder`.
+	 */
+	readonly defaultGui: LoomInstance;
 	/** Encode → layout → DOM patch → layout feedback, right now. */
 	flushSync(): void;
-	/** Tear down the session, resize observer, and instance tree. */
+	/** Tear down the session, resize observer, and this world's instances. */
 	dispose(): void;
 }
 
@@ -279,14 +291,29 @@ const MAX_FLUSH_DEPTH = 8;
 
 const WORLDS = new Set<WorldImpl>();
 let flusherInstalled = false;
+/** Which world currently backs `PlayerGui.GetGuiObjectsAtPosition`. */
+let hitTesterOwner: WorldImpl | undefined;
+/** Which world currently claims the runtime PlayerGui (last world wins). */
+let playerGuiOwner: WorldImpl | undefined;
+
+/** The runtime `Players.LocalPlayer.PlayerGui` (pre-built by the services). */
+function resolvePlayerGui(): LoomInstance {
+	const player = getService("Players").LocalPlayer as LoomInstance | undefined;
+	const gui = player?.FindFirstChildOfClass("PlayerGui");
+	// The Players service pre-builds this tree; the fallback only guards a
+	// hand-rolled runtime where the service was replaced.
+	return gui ?? createLoomInstance("PlayerGui", "PlayerGui");
+}
 
 class WorldImpl implements World {
 	readonly rootInstance: LoomInstance;
+	readonly defaultGui: LoomInstance;
 	private readonly mount: HTMLElement;
 	private readonly session: DomSession;
 	private readonly computeLayout: ComputeLayout;
 	private readonly observer: ResizeObserver | undefined;
 	private readonly byId = new Map<string, LoomInstance>();
+	private readonly warnedNonLayer = new WeakSet<LoomInstance>();
 	private depth = 0;
 	private warnedDepth = false;
 	private disposed = false;
@@ -294,10 +321,24 @@ class WorldImpl implements World {
 	constructor(mount: HTMLElement, options?: WorldOptions) {
 		this.mount = mount;
 		this.computeLayout = options?.computeLayout ?? wasmComputeLayout;
-		// A PlayerGui-shaped local root: Phase 4 turns this into the real
-		// PlayerGui with multi-ScreenGui encoding; the encode below already
-		// treats "one ScreenGui child" as the scene root, so it extends cleanly.
-		this.rootInstance = createLoomInstance("PlayerGui", "LoomWorld");
+		// The world root IS the runtime PlayerGui, so app code that resolves
+		// `Players.LocalPlayer.WaitForChild("PlayerGui")` (lattice's portal
+		// container chain) and this world agree on the same container instance.
+		this.rootInstance = resolvePlayerGui();
+		if (playerGuiOwner && !playerGuiOwner.disposed) {
+			console.warn(
+				"loom react: a new world is claiming Players.LocalPlayer.PlayerGui " +
+					"while another world still owns it — the newest world wins " +
+					"(matching the last-world-wins hit-tester rule)",
+			);
+		}
+		playerGuiOwner = this;
+		// App content that isn't itself a LayerCollector mounts under this
+		// default ScreenGui, so portal ScreenGuis are siblings ordered by
+		// DisplayOrder (Roblox: only LayerCollectors render under PlayerGui).
+		this.defaultGui = createLoomInstance("ScreenGui", "LoomDefaultGui");
+		this.defaultGui.ResetOnSpawn = false;
+		this.defaultGui.Parent = this.rootInstance;
 		this.session = createDomSession(mount, {
 			resolveInstance: (id) => this.byId.get(id),
 		});
@@ -318,20 +359,115 @@ class WorldImpl implements World {
 				for (const world of [...WORLDS]) world.flushSync();
 			});
 		}
+		// `PlayerGui.GetGuiObjectsAtPosition` resolves against this world's
+		// instance tree (last-constructed world wins when several exist).
+		setHitTester((x, y) => this.hitTest(x, y));
+		hitTesterOwner = this;
 	}
 
-	/** Scene root: the single top-level child, or a synthetic ScreenGui wrap. */
+	/**
+	 * Rect-based hit test over the live instance tree (layout geometry, not
+	 * DOM): every visible GuiObject whose absolute rect contains the point,
+	 * topmost first — ScreenGui DisplayOrder desc, then ZIndex desc, then tree
+	 * depth desc. Non-`Active` instances are included (Roblox includes them);
+	 * `Visible === false` hides an instance and its whole subtree.
+	 */
+	private hitTest(x: number, y: number): LoomInstance[] {
+		interface Hit {
+			inst: LoomInstance;
+			displayOrder: number;
+			zIndex: number;
+			depth: number;
+		}
+		const hits: Hit[] = [];
+		const visit = (
+			inst: LoomInstance,
+			depth: number,
+			displayOrder: number,
+		): void => {
+			if (inst.Visible === false) return;
+			let order = displayOrder;
+			if (inst.IsA("LayerCollector")) {
+				order = typeof inst.DisplayOrder === "number" ? inst.DisplayOrder : 0;
+			}
+			if (inst.IsA("GuiObject")) {
+				const pos = inst.AbsolutePosition;
+				const size = inst.AbsoluteSize;
+				if (
+					x >= pos.X &&
+					x < pos.X + size.X &&
+					y >= pos.Y &&
+					y < pos.Y + size.Y
+				) {
+					hits.push({
+						inst,
+						displayOrder: order,
+						zIndex: typeof inst.ZIndex === "number" ? inst.ZIndex : 1,
+						depth,
+					});
+				}
+			}
+			for (const child of inst.GetChildren()) visit(child, depth + 1, order);
+		};
+		for (const child of this.rootInstance.GetChildren()) visit(child, 0, 0);
+		hits.sort(
+			(a, b) =>
+				b.displayOrder - a.displayOrder ||
+				b.zIndex - a.zIndex ||
+				b.depth - a.depth,
+		);
+		return hits.map((hit) => hit.inst);
+	}
+
+	/**
+	 * Scene root: PlayerGui's LayerCollector children as sibling full-viewport
+	 * subtrees. A single layer encodes directly as the scene root (the layout
+	 * engine force-fills the top node); several get a synthetic transparent
+	 * wrapper, and each layer an explicit full-viewport `Size` when the app set
+	 * none (the engine only force-fills the TOP node — a nested ScreenGui would
+	 * otherwise fall back to the {0,0},{0,0} Size default and collapse).
+	 * Non-LayerCollector children of PlayerGui warn once and are skipped
+	 * (Roblox doesn't render them either); the world's own default ScreenGui is
+	 * elided while empty.
+	 */
 	private encodeRoot(): SceneNode | undefined {
 		this.byId.clear();
-		const children = this.rootInstance.GetChildren();
-		const first = children[0];
+		const layers: SceneNode[] = [];
+		for (const child of this.rootInstance.GetChildren()) {
+			if (!child.IsA("LayerCollector")) {
+				if (!this.warnedNonLayer.has(child)) {
+					this.warnedNonLayer.add(child);
+					console.warn(
+						`loom react: "${String(child.Name)}" (${child.ClassName}) is ` +
+							"parented directly to PlayerGui but is not a LayerCollector — " +
+							"skipped (put it inside a ScreenGui)",
+					);
+				}
+				continue;
+			}
+			if (child === this.defaultGui && child.GetChildren().length === 0) {
+				continue;
+			}
+			const node = encodeInstance(child, this.byId);
+			if (!node.properties?.Size) {
+				node.properties = {
+					...node.properties,
+					Size: prop.udim2({
+						x: { scale: 1, offset: 0 },
+						y: { scale: 1, offset: 0 },
+					}),
+				};
+			}
+			layers.push(node);
+		}
+		const first = layers[0];
 		if (!first) return undefined;
-		if (children.length === 1) return encodeInstance(first, this.byId);
+		if (layers.length === 1) return first;
 		return {
-			className: "ScreenGui",
-			name: "LoomRoot",
+			className: "Folder",
+			name: "PlayerGui",
 			id: "loom-root",
-			children: children.map((child) => encodeInstance(child, this.byId)),
+			children: layers,
 		};
 	}
 
@@ -384,9 +520,22 @@ class WorldImpl implements World {
 		if (this.disposed) return;
 		this.disposed = true;
 		WORLDS.delete(this);
+		if (hitTesterOwner === this) {
+			hitTesterOwner = undefined;
+			setHitTester(undefined);
+		}
 		this.observer?.disconnect();
 		this.session.dispose();
-		this.rootInstance.Destroy();
+		// PlayerGui is the shared runtime instance — never Destroy it. Tear down
+		// only what this world owns: its default ScreenGui, and (while still the
+		// owner) detach whatever children remain so the next world starts clean.
+		this.defaultGui.Destroy();
+		if (playerGuiOwner === this) {
+			playerGuiOwner = undefined;
+			for (const child of this.rootInstance.GetChildren()) {
+				child.Parent = undefined;
+			}
+		}
 	}
 }
 
@@ -402,6 +551,29 @@ export function createWorld(mount: HTMLElement, options?: WorldOptions): World {
 // --- host config -------------------------------------------------------------
 
 const HOST_CONTEXT = {};
+
+/**
+ * A reconciler container: the world (root mounts) or a raw `LoomInstance`
+ * (portal containers — `createPortal(children, container)`).
+ */
+type HostContainer = World | LoomInstance;
+
+/**
+ * Where a container-level child actually parents. Portal containers take the
+ * child directly. For the world root, LayerCollectors (lattice's portal-made
+ * `<screengui DisplayOrder={…}>` layers, or an app's own top-level ScreenGui)
+ * become PlayerGui siblings; anything else mounts under the world's default
+ * ScreenGui so it stays inside a renderable layer.
+ */
+function containerTarget(
+	container: HostContainer,
+	child: LoomInstance,
+): LoomInstance {
+	if (isLoomInstance(container)) return container;
+	return child.IsA("LayerCollector")
+		? container.rootInstance
+		: container.defaultGui;
+}
 
 const hostConfig = {
 	supportsMutation: true,
@@ -429,22 +601,24 @@ const hostConfig = {
 		if (!isLoomInstance(child)) return;
 		moveChildBefore(parent, child);
 	},
-	appendChildToContainer(container: World, child: HostNode): void {
+	appendChildToContainer(container: HostContainer, child: HostNode): void {
 		if (!isLoomInstance(child)) return;
-		moveChildBefore(container.rootInstance, child);
+		moveChildBefore(containerTarget(container, child), child);
 	},
 	insertBefore(parent: LoomInstance, child: HostNode, before: HostNode): void {
 		if (!isLoomInstance(child)) return;
 		moveChildBefore(parent, child, isLoomInstance(before) ? before : undefined);
 	},
 	insertInContainerBefore(
-		container: World,
+		container: HostContainer,
 		child: HostNode,
 		before: HostNode,
 	): void {
 		if (!isLoomInstance(child)) return;
+		// `before` may live in the other target (defaultGui vs PlayerGui);
+		// moveChildBefore appends last when `before` isn't a sibling.
 		moveChildBefore(
-			container.rootInstance,
+			containerTarget(container, child),
 			child,
 			isLoomInstance(before) ? before : undefined,
 		);
@@ -453,13 +627,23 @@ const hostConfig = {
 		if (!isLoomInstance(child)) return;
 		child.Parent = undefined;
 	},
-	removeChildFromContainer(_container: World, child: HostNode): void {
+	removeChildFromContainer(_container: HostContainer, child: HostNode): void {
 		if (!isLoomInstance(child)) return;
 		child.Parent = undefined;
 	},
-	clearContainer(container: World): void {
-		for (const child of container.rootInstance.GetChildren()) {
+	clearContainer(container: HostContainer): void {
+		if (isLoomInstance(container)) {
+			// Portal container: React only clears root containers, but stay safe.
+			for (const child of container.GetChildren()) child.Parent = undefined;
+			return;
+		}
+		// Shared PlayerGui root: clear this world's content but keep (and empty)
+		// the world-owned default ScreenGui itself.
+		for (const child of container.defaultGui.GetChildren()) {
 			child.Parent = undefined;
+		}
+		for (const child of container.rootInstance.GetChildren()) {
+			if (child !== container.defaultGui) child.Parent = undefined;
 		}
 	},
 
@@ -551,6 +735,29 @@ const reconciler = Reconciler(hostConfig);
 
 // --- public API --------------------------------------------------------------
 
+/**
+ * Render `children` into `container` — a live `LoomInstance` (typically
+ * `Players.LocalPlayer.PlayerGui`) — from anywhere in a mounted tree, exactly
+ * like `ReactRoblox.createPortal`. The children parent into `container`
+ * through the normal host-config path, so a `<screengui DisplayOrder={…}>`
+ * portal child becomes a PlayerGui sibling layer z-ordered by DisplayOrder.
+ */
+export function createPortal(
+	children: ReactNode,
+	container: LoomInstance,
+	key?: string | null,
+): ReactPortal {
+	if (!isLoomInstance(container)) {
+		throw new TypeError("createPortal: container must be a LoomInstance");
+	}
+	return reconciler.createPortal(
+		children,
+		container,
+		null,
+		key ?? null,
+	) as ReactPortal;
+}
+
 export interface LoomRoot {
 	/** Unmount the tree and dispose the world (session, observer, instances). */
 	unmount(): void;
@@ -635,6 +842,21 @@ export interface GuiProps {
 	children?: ReactNode;
 }
 
+/**
+ * `ScreenGui` (LayerCollector) props. `DisplayOrder` z-orders sibling layers
+ * under PlayerGui; `IgnoreGuiInset` is a no-op (the runtime's `GetGuiInset()`
+ * is zero) and `ZIndexBehavior.Sibling` is the renderer's native model — both
+ * accepted so lattice-style layer code runs unchanged.
+ */
+export interface ScreenGuiProps extends GuiProps {
+	DisplayOrder?: number;
+	IgnoreGuiInset?: boolean;
+	ResetOnSpawn?: boolean;
+	Enabled?: boolean;
+	ZIndexBehavior?: EnumItem<"ZIndexBehavior">;
+	ScreenInsets?: EnumItem<"ScreenInsets">;
+}
+
 /** Text classes (TextLabel/TextButton/TextBox) add the `Text*` props. */
 export interface TextGuiProps extends GuiProps {
 	Text?: string;
@@ -646,6 +868,16 @@ export interface TextGuiProps extends GuiProps {
 	TextXAlignment?: EnumItem<"TextXAlignment">;
 	TextYAlignment?: EnumItem<"TextYAlignment">;
 	Font?: EnumItem<"Font">;
+}
+
+/** `TextBox` adds the editable-text props the DOM input maps. */
+export interface TextBoxProps extends TextGuiProps {
+	PlaceholderText?: string;
+	PlaceholderColor3?: Color3;
+	/** Roblox default is `true`: focusing clears the text. */
+	ClearTextOnFocus?: boolean;
+	TextEditable?: boolean;
+	MultiLine?: boolean;
 }
 
 /** `ScrollingFrame` adds a scroll canvas. */
@@ -738,9 +970,9 @@ export interface UIGradientProps {
 declare global {
 	namespace JSX {
 		interface IntrinsicElements {
-			screengui: GuiProps;
-			surfacegui: GuiProps;
-			billboardgui: GuiProps;
+			screengui: ScreenGuiProps;
+			surfacegui: ScreenGuiProps;
+			billboardgui: ScreenGuiProps;
 			frame: GuiProps;
 			scrollingframe: ScrollingFrameProps;
 			canvasgroup: GuiProps;
@@ -748,7 +980,7 @@ declare global {
 			videoframe: GuiProps;
 			textlabel: TextGuiProps;
 			textbutton: TextGuiProps;
-			textbox: TextGuiProps;
+			textbox: TextBoxProps;
 			imagelabel: GuiProps;
 			imagebutton: GuiProps;
 			uilistlayout: UIListLayoutProps;

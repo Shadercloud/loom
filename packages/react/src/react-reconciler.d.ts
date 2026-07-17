@@ -22,6 +22,18 @@ declare module "react-reconciler" {
 			parentComponent?: unknown,
 			callback?: (() => void) | null,
 		): void;
+		/**
+		 * Build a `ReactPortal` element (`$$typeof: REACT_PORTAL_TYPE`) whose
+		 * children commit into `containerInfo` through the host config's
+		 * container methods (verified against react-reconciler 0.29.2:
+		 * `createPortal(children, containerInfo, implementation, key = null)`).
+		 */
+		createPortal(
+			children: unknown,
+			containerInfo: unknown,
+			implementation: unknown,
+			key?: string | null,
+		): unknown;
 	}
 
 	export default function ReactReconciler(

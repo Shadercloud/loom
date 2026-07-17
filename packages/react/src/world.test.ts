@@ -220,4 +220,71 @@ describe("mountSync world", () => {
 		expect((activated[2] as InputObject).Position.Y).toBe(20);
 		expect(activated[3]).toBe(1); // clickCount
 	});
+
+	/** Layout stub keyed by node name (hit-testing needs distinct rects). */
+	function makeNamedLayout(
+		rects: Record<
+			string,
+			{ x: number; y: number; width: number; height: number }
+		>,
+	): ComputeLayout {
+		return (root: SceneNode): LayoutResult => {
+			const out: LayoutResult["rects"] = {};
+			const walk = (node: SceneNode): void => {
+				out[node.id ?? "?"] = {
+					rect: rects[node.name] ?? { x: 0, y: 0, width: 800, height: 600 },
+				};
+				for (const child of node.children ?? []) walk(child);
+			};
+			walk(root);
+			return { rects: out };
+		};
+	}
+
+	it("hit-tests GetGuiObjectsAtPosition topmost-first (ZIndex, then depth)", () => {
+		const root = mountSync(
+			createElement(
+				"screengui",
+				{ Name: "Gui" },
+				createElement("frame", { Name: "Low", ZIndex: 1 }),
+				createElement(
+					"frame",
+					{ Name: "High", ZIndex: 3 },
+					createElement("frame", { Name: "Child", ZIndex: 3 }),
+				),
+				createElement("frame", { Name: "Hidden", Visible: false, ZIndex: 9 }),
+			),
+			mount,
+			{
+				computeLayout: makeNamedLayout({
+					Gui: { x: 0, y: 0, width: 800, height: 600 },
+					Low: { x: 0, y: 0, width: 100, height: 100 },
+					High: { x: 50, y: 0, width: 100, height: 100 },
+					Child: { x: 60, y: 0, width: 20, height: 20 },
+					Hidden: { x: 0, y: 0, width: 200, height: 200 },
+				}),
+			},
+		);
+		roots.push(root);
+
+		// The world root is PlayerGui-classed: the service method resolves on it.
+		const playerGui = root.world.rootInstance;
+		const atPosition = playerGui.GetGuiObjectsAtPosition as (
+			x: number,
+			y: number,
+		) => LoomInstance[];
+
+		// Overlap of all three (65, 5): equal ZIndex breaks by depth (Child on
+		// top of High), Hidden excluded (Visible false), ScreenGui excluded
+		// (not a GuiObject).
+		expect(atPosition(65, 5).map((inst) => inst.Name)).toEqual([
+			"Child",
+			"High",
+			"Low",
+		]);
+		// Only Low contains (10, 60).
+		expect(atPosition(10, 60).map((inst) => inst.Name)).toEqual(["Low"]);
+		// Outside everything.
+		expect(atPosition(700, 500)).toEqual([]);
+	});
 });

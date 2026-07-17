@@ -8,6 +8,7 @@
 	},
 	"dependencies": {
 		"@loom-dev/preview": "workspace:*",
+		"@loom-dev/react": "workspace:*",
 		"@loom-dev/runtime": "workspace:*",
 		"react": "catalog:"
 	},
