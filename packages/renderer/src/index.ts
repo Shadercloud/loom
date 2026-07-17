@@ -27,9 +27,13 @@ import type { EnumItem, InputObject, LoomInstance } from "@loom-dev/runtime";
 import {
 	Enum,
 	getEventSignal,
+	getFocusedTextBox,
 	getService,
 	makeInputObject,
+	registerTextBoxAdapter,
+	setFocusedTextBox,
 	setMouseLocation,
+	unregisterTextBoxAdapter,
 	Vector2,
 	Vector3,
 } from "@loom-dev/runtime";
@@ -39,6 +43,7 @@ import {
 	asColor3,
 	asColorSequence,
 	asNumber,
+	asString,
 	asUDim,
 	childrenOf,
 	findModifier,
@@ -162,7 +167,15 @@ function applyBoxStyle(
 	s.top = `${rect.y - parentRect.y}px`;
 	s.width = `${rect.width}px`;
 	s.height = `${rect.height}px`;
-	s.zIndex = String(getZIndex(node));
+	// LayerCollectors z-order among themselves by DisplayOrder (default 0, may
+	// be negative — lattice portals use 1000+stack); everything else by ZIndex.
+	// The layer divs stay pointer-interactive (no pointer-events:none), so DOM
+	// paint order == input hit order for the delegated pointer events.
+	s.zIndex = String(
+		isLayerCollector(node.className)
+			? (asNumber(node.properties?.DisplayOrder) ?? 0)
+			: getZIndex(node),
+	);
 	if (!getVisible(node)) s.display = "none";
 	if (node.className === "ScrollingFrame" || getClipsDescendants(node)) {
 		s.overflow = "hidden";
@@ -231,6 +244,214 @@ function textLayerKey(node: SceneNode): string {
 		getTextYAlignment(node),
 		getZIndex(node),
 	].join(" ");
+}
+
+// --- keyboard mapping --------------------------------------------------------
+
+/** `KeyboardEvent.code` → `Enum.KeyCode` (unknown codes map to `Unknown`). */
+const KEY_CODE_MAP: Record<string, EnumItem<"KeyCode">> = (() => {
+	const map: Record<string, EnumItem<"KeyCode">> = {
+		Space: Enum.KeyCode.Space,
+		Enter: Enum.KeyCode.Return,
+		NumpadEnter: Enum.KeyCode.Return,
+		Escape: Enum.KeyCode.Escape,
+		Tab: Enum.KeyCode.Tab,
+		Backspace: Enum.KeyCode.Backspace,
+		Delete: Enum.KeyCode.Delete,
+		ArrowUp: Enum.KeyCode.Up,
+		ArrowDown: Enum.KeyCode.Down,
+		ArrowLeft: Enum.KeyCode.Left,
+		ArrowRight: Enum.KeyCode.Right,
+		Home: Enum.KeyCode.Home,
+		End: Enum.KeyCode.End,
+		PageUp: Enum.KeyCode.PageUp,
+		PageDown: Enum.KeyCode.PageDown,
+	};
+	for (let i = 0; i < 26; i += 1) {
+		const letter = String.fromCharCode(65 + i) as keyof typeof Enum.KeyCode;
+		map[`Key${letter}`] = Enum.KeyCode[letter];
+	}
+	return map;
+})();
+
+/** Map a DOM keyboard event to the Roblox KeyCode it represents. */
+export function keyCodeFromKeyboardEvent(
+	e: KeyboardEvent,
+): EnumItem<"KeyCode"> {
+	return KEY_CODE_MAP[e.code] ?? Enum.KeyCode.Unknown;
+}
+
+const ARROW_KEY_CODES: ReadonlySet<EnumItem<"KeyCode">> = new Set([
+	Enum.KeyCode.Up,
+	Enum.KeyCode.Down,
+	Enum.KeyCode.Left,
+	Enum.KeyCode.Right,
+]);
+
+// --- TextBox <input> support -------------------------------------------------
+
+let textMeasureCtx: CanvasRenderingContext2D | null | undefined;
+function getTextMeasureCtx(): CanvasRenderingContext2D | null {
+	if (textMeasureCtx === undefined) {
+		textMeasureCtx =
+			typeof document !== "undefined"
+				? document.createElement("canvas").getContext("2d")
+				: null;
+	}
+	return textMeasureCtx;
+}
+
+/**
+ * Measure `text` with the same canvas-font mapping the text overlay paints and
+ * write it to `inst.TextBounds` (a `Vector2`) — only when it actually changed,
+ * so the property signal and dirty-mark don't loop. Lattice's textarea reads
+ * `TextBox.TextBounds` for auto-resize.
+ */
+function updateTextBounds(inst: LoomInstance, text: string): void {
+	const ctx = getTextMeasureCtx();
+	if (!ctx) return;
+	const size = typeof inst.TextSize === "number" ? inst.TextSize : 14;
+	const font = inst.Font as { Name?: string } | undefined;
+	const fontName = typeof font?.Name === "string" ? font.Name : undefined;
+	ctx.font = `${fontWeight(fontName)} ${size}px ${fontFamily(fontName)}`;
+	const lines = text.split("\n");
+	let width = 0;
+	for (const line of lines) {
+		width = Math.max(width, ctx.measureText(line).width);
+	}
+	const w = Math.ceil(width);
+	const h = text === "" ? 0 : lines.length * size;
+	const current = inst.TextBounds as { X?: number; Y?: number } | undefined;
+	if (current && current.X === w && current.Y === h) return;
+	inst.TextBounds = Vector2.new(w, h);
+}
+
+/** The persistent `<input>`/`<textarea>` behind one TextBox scene node. */
+interface TextBoxBinding {
+	el: HTMLInputElement | HTMLTextAreaElement;
+	inst: LoomInstance;
+	multiLine: boolean;
+	styleKey: string;
+	/** Reentrancy guard: a DOM `input` event is being applied to `Text`. */
+	applying: boolean;
+	/** Set right before a programmatic/Enter blur so FocusLost sees it. */
+	enterPressed: boolean;
+	dispose(): void;
+}
+
+/**
+ * Create the live `<input>` (or `<textarea>` when `MultiLine`) for a TextBox:
+ * DOM `input` → `inst.Text` (through the proxy, so `Change.Text` handlers and
+ * the dirty-mark fire), focus/blur → `Focused`/`FocusLost(enterPressed)`,
+ * Enter on a single-line box blurs with `enterPressed = true`, and the runtime
+ * TextBox adapter (`CaptureFocus`/`ReleaseFocus`/`IsFocused`) drives this
+ * element.
+ */
+function createTextBoxBinding(
+	inst: LoomInstance,
+	multiLine: boolean,
+): TextBoxBinding {
+	const el = document.createElement(multiLine ? "textarea" : "input");
+	const initialText = typeof inst.Text === "string" ? inst.Text : "";
+	el.value = initialText;
+
+	const binding: TextBoxBinding = {
+		el,
+		inst,
+		multiLine,
+		styleKey: "",
+		applying: false,
+		enterPressed: false,
+		dispose(): void {
+			unregisterTextBoxAdapter(inst);
+			if (getFocusedTextBox() === inst) setFocusedTextBox(undefined);
+			el.remove();
+		},
+	};
+
+	const onInput = (): void => {
+		binding.applying = true;
+		try {
+			inst.Text = el.value;
+		} finally {
+			binding.applying = false;
+		}
+		updateTextBounds(inst, el.value);
+	};
+	const onFocus = (): void => {
+		// Roblox default: ClearTextOnFocus is true unless explicitly disabled.
+		if (inst.ClearTextOnFocus !== false && el.value !== "") {
+			el.value = "";
+			onInput();
+		}
+		setFocusedTextBox(inst);
+		getEventSignal(inst, "Focused").fire();
+	};
+	const onBlur = (): void => {
+		const enterPressed = binding.enterPressed;
+		binding.enterPressed = false;
+		if (getFocusedTextBox() === inst) setFocusedTextBox(undefined);
+		const input = enterPressed
+			? makeInputObject({
+					UserInputType: Enum.UserInputType.Keyboard,
+					UserInputState: Enum.UserInputState.End,
+					KeyCode: Enum.KeyCode.Return,
+				})
+			: undefined;
+		getEventSignal(inst, "FocusLost").fire(enterPressed, input);
+	};
+	const onKeyDown = (e: Event): void => {
+		if (
+			!multiLine &&
+			keyCodeFromKeyboardEvent(e as KeyboardEvent) === Enum.KeyCode.Return
+		) {
+			binding.enterPressed = true;
+			el.blur();
+		}
+	};
+	el.addEventListener("input", onInput);
+	el.addEventListener("focus", onFocus);
+	el.addEventListener("blur", onBlur);
+	el.addEventListener("keydown", onKeyDown);
+
+	registerTextBoxAdapter(inst, {
+		CaptureFocus: () => el.focus(),
+		ReleaseFocus: (enterPressed?: boolean) => {
+			if (enterPressed) binding.enterPressed = true;
+			el.blur();
+		},
+		IsFocused: () => document.activeElement === el,
+	});
+
+	updateTextBounds(inst, initialText);
+	return binding;
+}
+
+/**
+ * Inline style for the TextBox input element: full-size absolute overlay, no
+ * chrome (transparent background, no border/outline), and the same font
+ * mapping the text overlay layer uses — the input IS the text layer here.
+ */
+function applyTextBoxStyle(s: CSSStyleDeclaration, node: SceneNode): void {
+	const fontName = getFontName(node);
+	s.position = "absolute";
+	s.inset = "0";
+	s.width = "100%";
+	s.height = "100%";
+	s.boxSizing = "border-box";
+	s.padding = "0";
+	s.margin = "0";
+	s.background = "transparent";
+	s.border = "none";
+	s.outline = "none";
+	s.resize = "none";
+	s.color = cssColor(getTextColor3(node), getTextTransparency(node));
+	s.fontSize = `${getTextSize(node)}px`;
+	s.fontFamily = fontFamily(fontName);
+	s.fontWeight = fontWeight(fontName);
+	if (fontName?.includes("Italic")) s.fontStyle = "italic";
+	s.textAlign = xAlignText(getTextXAlignment(node));
+	s.zIndex = String(getZIndex(node));
 }
 
 // --- one-shot tree walk (renderScene) ----------------------------------------
@@ -305,6 +526,8 @@ interface SessionEntry {
 	textEl: HTMLDivElement | undefined;
 	styleKey: string;
 	textKey: string;
+	/** Present only on TextBox nodes: the persistent input element. */
+	input: TextBoxBinding | undefined;
 }
 
 /** Reorder `el`'s children to exactly `desired`, touching only mismatches. */
@@ -357,6 +580,50 @@ export function createDomSession(
 		return scratch.style.cssText;
 	}
 
+	/** Create/refresh the persistent input element behind a TextBox node. */
+	function patchTextBox(
+		entry: SessionEntry,
+		node: SceneNode,
+		id: string,
+	): void {
+		const inst = options.resolveInstance(id);
+		const multiLine = asBool(node.properties?.MultiLine) === true;
+		if (
+			entry.input &&
+			(entry.input.inst !== inst || entry.input.multiLine !== multiLine)
+		) {
+			entry.input.dispose();
+			entry.input = undefined;
+		}
+		if (!entry.input && inst) {
+			entry.input = createTextBoxBinding(inst, multiLine);
+		}
+		const binding = entry.input;
+		if (!binding) return;
+		const el = binding.el;
+
+		// Echo guard: only write `value` when the prop actually differs (an
+		// external `Text` write) — a matching value means the change originated
+		// from this input, and rewriting it would clobber the caret mid-typing.
+		const text = getText(node) ?? "";
+		if (!binding.applying && el.value !== text) {
+			el.value = text;
+			updateTextBounds(binding.inst, text);
+		}
+		const placeholder = asString(node.properties?.PlaceholderText) ?? "";
+		if (el.placeholder !== placeholder) el.placeholder = placeholder;
+		const readOnly = asBool(node.properties?.TextEditable) === false;
+		if (el.readOnly !== readOnly) el.readOnly = readOnly;
+
+		scratch.style.cssText = "";
+		applyTextBoxStyle(scratch.style, node);
+		const styleKey = scratch.style.cssText;
+		if (styleKey !== binding.styleKey) {
+			el.style.cssText = styleKey;
+			binding.styleKey = styleKey;
+		}
+	}
+
 	function patchNode(
 		node: SceneNode,
 		positionalPath: string,
@@ -374,7 +641,13 @@ export function createDomSession(
 		if (!entry) {
 			const el = document.createElement("div");
 			el.dataset.loomId = id;
-			entry = { el, textEl: undefined, styleKey: "", textKey: "" };
+			entry = {
+				el,
+				textEl: undefined,
+				styleKey: "",
+				textKey: "",
+				input: undefined,
+			};
 			entries.set(id, entry);
 		}
 		seen.add(id);
@@ -390,14 +663,23 @@ export function createDomSession(
 			entry.styleKey = styleKey;
 		}
 
-		const textKey = textLayerKey(node);
+		// TextBox paints its text in a persistent input element, not the overlay.
+		const isTextBox = node.className === "TextBox";
+		const textKey = isTextBox ? "" : textLayerKey(node);
 		if (textKey !== entry.textKey) {
 			entry.textEl?.remove();
 			entry.textEl = textKey === "" ? undefined : createTextLayer(node);
 			entry.textKey = textKey;
 		}
 
+		if (isTextBox) patchTextBox(entry, node, id);
+		else if (entry.input) {
+			entry.input.dispose();
+			entry.input = undefined;
+		}
+
 		const desired: HTMLElement[] = [];
+		if (entry.input) desired.push(entry.input.el);
 		if (entry.textEl) desired.push(entry.textEl);
 		let i = 0;
 		for (const child of childrenOf(node)) {
@@ -530,14 +812,76 @@ export function createDomSession(
 		updateHover([], x, y);
 	}
 
+	// --- keyboard delegation ---------------------------------------------------
+	// Key events are global (window), mirroring Roblox: UserInputService fires
+	// for every key with `gameProcessedEvent = true` while a TextBox is focused.
+	// Element-level routing: keys additionally fire InputBegan/InputEnded on the
+	// GuiService.SelectedObject instance only (not its ancestors) — closest to
+	// Roblox's selection-focused key routing, and what lattice item components
+	// (tabs/radio-group/…) listen for.
+
+	function keyInput(
+		e: KeyboardEvent,
+		state: EnumItem<"UserInputState">,
+	): InputObject {
+		return makeInputObject({
+			UserInputType: Enum.UserInputType.Keyboard,
+			UserInputState: state,
+			KeyCode: keyCodeFromKeyboardEvent(e),
+		});
+	}
+
+	function selectedInstance(): LoomInstance | undefined {
+		return getService("GuiService").SelectedObject as LoomInstance | undefined;
+	}
+
+	function onKeyDown(e: KeyboardEvent): void {
+		const input = keyInput(e, Enum.UserInputState.Begin);
+		const textBoxFocused = getFocusedTextBox() !== undefined;
+		const selected = selectedInstance();
+		if (selected) getEventSignal(selected, "InputBegan").fire(input);
+		getEventSignal(userInputService(), "InputBegan").fire(
+			input,
+			textBoxFocused,
+		);
+		// Keep the page from scrolling under selection-driven Space/arrow input,
+		// but never swallow keys while the user is typing in a TextBox.
+		if (
+			!textBoxFocused &&
+			selected &&
+			(input.KeyCode === Enum.KeyCode.Space ||
+				ARROW_KEY_CODES.has(input.KeyCode))
+		) {
+			e.preventDefault();
+		}
+	}
+
+	function onKeyUp(e: KeyboardEvent): void {
+		const input = keyInput(e, Enum.UserInputState.End);
+		const selected = selectedInstance();
+		if (selected) getEventSignal(selected, "InputEnded").fire(input);
+		getEventSignal(userInputService(), "InputEnded").fire(
+			input,
+			getFocusedTextBox() !== undefined,
+		);
+	}
+
 	mount.addEventListener("pointerdown", onPointerDown);
 	mount.addEventListener("pointerup", onPointerUp);
 	mount.addEventListener("pointermove", onPointerMove);
 	mount.addEventListener("pointerover", onPointerOver);
 	mount.addEventListener("pointerout", onPointerOut);
+	window.addEventListener("keydown", onKeyDown);
+	window.addEventListener("keyup", onKeyUp);
+
+	function removeEntry(entry: SessionEntry): void {
+		entry.input?.dispose();
+		entry.input = undefined;
+		entry.el.remove();
+	}
 
 	function clear(): void {
-		for (const entry of entries.values()) entry.el.remove();
+		for (const entry of entries.values()) removeEntry(entry);
 		entries.clear();
 		pressed = undefined;
 		hoverChain = [];
@@ -549,7 +893,7 @@ export function createDomSession(
 			const rootEl = patchNode(root, "0", true, layout, ZERO_RECT, seen);
 			for (const [id, entry] of entries) {
 				if (seen.has(id)) continue;
-				entry.el.remove();
+				removeEntry(entry);
 				entries.delete(id);
 			}
 			if (rootEl && rootEl.parentElement !== mount) mount.appendChild(rootEl);
@@ -561,6 +905,8 @@ export function createDomSession(
 			mount.removeEventListener("pointermove", onPointerMove);
 			mount.removeEventListener("pointerover", onPointerOver);
 			mount.removeEventListener("pointerout", onPointerOut);
+			window.removeEventListener("keydown", onKeyDown);
+			window.removeEventListener("keyup", onKeyUp);
 			clear();
 		},
 	};

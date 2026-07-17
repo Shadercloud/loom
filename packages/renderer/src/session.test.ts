@@ -8,7 +8,9 @@ import {
 	createInstance,
 	Enum,
 	getEventSignal,
+	getFocusedTextBox,
 	getInternalId,
+	getService,
 } from "@loom-dev/runtime";
 import type { LayoutResult, Rect, SceneNode } from "@loom-dev/scene";
 import { color3FromRGB, prop, udim2 } from "@loom-dev/scene";
@@ -240,6 +242,168 @@ describe("createDomSession", () => {
 			["enter", 5, 6],
 			["leave", 7, 8],
 		]);
+		session.dispose();
+	});
+
+	// --- TextBox <input> + keyboard --------------------------------------------
+
+	function mountTextBox(properties?: SceneNode["properties"]) {
+		const inst = createInstance("TextBox", "Field");
+		const id = getInternalId(inst);
+		const byId = new Map([[id, inst]]);
+		const scene: SceneNode = {
+			className: "TextBox",
+			name: "Field",
+			id,
+			properties,
+		};
+		const layout = layoutOf({ [id]: { x: 0, y: 0, width: 200, height: 36 } });
+		const session = makeSession(byId);
+		session.patch(scene, layout);
+		const input = mount.querySelector("input") as HTMLInputElement;
+		return { inst, id, byId, scene, layout, session, input };
+	}
+
+	it("renders a TextBox as a real <input> and typing sets Text via the proxy", () => {
+		const { inst, session, input } = mountTextBox({
+			Text: prop.string("seed"),
+			PlaceholderText: prop.string("hint..."),
+		});
+		expect(input).not.toBeNull();
+		expect(input.value).toBe("seed");
+		expect(input.placeholder).toBe("hint...");
+		// The input replaces the overlay: no text layer div inside the TextBox el.
+		const box = mount.querySelector('[data-loom-class="TextBox"]');
+		expect(box?.querySelector("div")).toBeNull();
+
+		const textFires: string[] = [];
+		inst
+			.GetPropertyChangedSignal("Text")
+			.Connect(() => textFires.push(String(inst.Text)));
+		input.value = "hello";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(inst.Text).toBe("hello");
+		expect(textFires).toEqual(["hello"]);
+		session.dispose();
+	});
+
+	it("clears on focus by default (ClearTextOnFocus) and fires Focused/FocusLost", () => {
+		const { inst, session, input } = mountTextBox({
+			Text: prop.string("abc"),
+		});
+		const order: unknown[][] = [];
+		getEventSignal(inst, "Focused").Connect(() => order.push(["Focused"]));
+		getEventSignal(inst, "FocusLost").Connect((...args) =>
+			order.push(["FocusLost", ...args]),
+		);
+
+		input.focus();
+		expect(document.activeElement).toBe(input);
+		expect(order).toEqual([["Focused"]]);
+		expect(input.value).toBe(""); // Roblox default clears on focus
+		expect(inst.Text).toBe("");
+		expect(getFocusedTextBox()).toBe(inst);
+
+		input.blur();
+		expect(getFocusedTextBox()).toBeUndefined();
+		expect(order).toHaveLength(2);
+		expect(order[1]?.[0]).toBe("FocusLost");
+		expect(order[1]?.[1]).toBe(false); // enterPressed
+		session.dispose();
+	});
+
+	it("keeps text with ClearTextOnFocus=false and Enter blurs with enterPressed=true", () => {
+		const { inst, session, input } = mountTextBox({
+			Text: prop.string("keep"),
+		});
+		inst.ClearTextOnFocus = false;
+		const lost: unknown[][] = [];
+		getEventSignal(inst, "FocusLost").Connect((...args) => lost.push(args));
+
+		input.focus();
+		expect(input.value).toBe("keep");
+
+		input.dispatchEvent(
+			new KeyboardEvent("keydown", { code: "Enter", bubbles: true }),
+		);
+		expect(document.activeElement).not.toBe(input);
+		expect(lost).toHaveLength(1);
+		expect(lost[0]?.[0]).toBe(true); // enterPressed
+		expect((lost[0]?.[1] as InputObject).KeyCode).toBe(Enum.KeyCode.Return);
+		session.dispose();
+	});
+
+	it("CaptureFocus/ReleaseFocus/IsFocused drive the real input element", () => {
+		const { inst, session, input } = mountTextBox();
+		const isFocused = inst.IsFocused as () => boolean;
+		expect(isFocused()).toBe(false);
+
+		(inst.CaptureFocus as () => void)();
+		expect(document.activeElement).toBe(input);
+		expect(isFocused()).toBe(true);
+		expect(getFocusedTextBox()).toBe(inst);
+
+		const lost: unknown[][] = [];
+		getEventSignal(inst, "FocusLost").Connect((...args) => lost.push(args));
+		(inst.ReleaseFocus as (enterPressed?: boolean) => void)(true);
+		expect(isFocused()).toBe(false);
+		expect(lost[0]?.[0]).toBe(true);
+		session.dispose();
+	});
+
+	it("fires global keyboard InputBegan/InputEnded; gameProcessed tracks TextBox focus", () => {
+		const { session, input } = mountTextBox();
+		const uis = getService("UserInputService");
+		const began: unknown[][] = [];
+		const ended: unknown[][] = [];
+		const beganConn = getEventSignal(uis, "InputBegan").Connect((...args) =>
+			began.push(args),
+		);
+		const endedConn = getEventSignal(uis, "InputEnded").Connect((...args) =>
+			ended.push(args),
+		);
+
+		window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
+		window.dispatchEvent(new KeyboardEvent("keyup", { code: "Space" }));
+		expect(began).toHaveLength(1);
+		expect((began[0]?.[0] as InputObject).KeyCode).toBe(Enum.KeyCode.Space);
+		expect((began[0]?.[0] as InputObject).UserInputType).toBe(
+			Enum.UserInputType.Keyboard,
+		);
+		expect(began[0]?.[1]).toBe(false); // no TextBox focused
+		expect((ended[0]?.[0] as InputObject).UserInputState).toBe(
+			Enum.UserInputState.End,
+		);
+
+		input.focus();
+		window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyA" }));
+		expect(began).toHaveLength(2);
+		expect((began[1]?.[0] as InputObject).KeyCode).toBe(Enum.KeyCode.A);
+		expect(began[1]?.[1]).toBe(true); // TextBox focused → gameProcessed
+
+		input.blur();
+		beganConn.Disconnect();
+		endedConn.Disconnect();
+		session.dispose();
+	});
+
+	it("routes key input to the GuiService.SelectedObject instance only", () => {
+		const session = makeSession(new Map());
+		const button = createInstance("TextButton", "Selected");
+		const guiService = getService("GuiService");
+		guiService.SelectedObject = button;
+
+		const keys: InputObject[] = [];
+		getEventSignal(button, "InputBegan").Connect((arg) =>
+			keys.push(arg as InputObject),
+		);
+		window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
+		expect(keys).toHaveLength(1);
+		expect(keys[0]?.KeyCode).toBe(Enum.KeyCode.Space);
+
+		guiService.SelectedObject = undefined;
+		window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
+		expect(keys).toHaveLength(1); // deselected → no element routing
 		session.dispose();
 	});
 });
