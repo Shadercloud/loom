@@ -12,11 +12,13 @@
 	},
 	"dependencies": {
 		"@loom-dev/preview": "workspace:*",
+		"react": "catalog:",
 		"tsx": "^4.19.0",
 		"vite": "catalog:"
 	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
+		"@types/react": "catalog:",
 		"typescript": "catalog:"
 	}
 }

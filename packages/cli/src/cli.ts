@@ -2,16 +2,29 @@
 /**
  * `loom` CLI — preview a roblox-ts UI project in the browser with zero config.
  *
- *   loom preview [dir] [--port <n>] [--host]
+ *   loom preview [dir] [--port <n>] [--host] [--targets [glob]]
  *
  * It runs a Vite dev server with the loom plugin pre-applied (so no vite.config
  * is needed), generates an index.html when the project has none, and detects a
  * self-mounting client entry. esbuild transpiles the TSX; HMR is built in.
+ *
+ * `--targets` switches to gallery mode: every `**\/*.loom.tsx` under the dir
+ * (or the given glob/directory) is listed in a sidebar shell with lazy mounts
+ * and per-target error containment. A minimal `<dir>/loom.config.ts` exporting
+ * `{ targets?: string | string[], port?: number }` is honored when the flags
+ * are absent.
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { loomPreview } from "@loom-dev/preview/vite";
-import { createServer, type Plugin } from "vite";
+import { createServer, type Plugin, type PluginOption } from "vite";
+import { resolveGalleryOptions } from "./gallery";
+import {
+	LOOM_REPO_ROOT,
+	loomGallery,
+	loomGalleryIndexHtml,
+} from "./gallery-plugin";
 
 // roblox-ts client-entry conventions, in priority order.
 const ENTRY_CANDIDATES = [
@@ -91,10 +104,34 @@ function loomIndexHtml(entryUrl: string): Plugin {
 	};
 }
 
+/**
+ * Import `<root>/loom.config.ts` (tsx's loader handles the TS) and return its
+ * default export, plus whether the file existed at all. Import failures are
+ * downgraded to a warning — a broken config never blocks plain preview mode.
+ */
+async function loadLoomConfig(
+	root: string,
+): Promise<{ present: boolean; config?: unknown }> {
+	const configPath = resolve(root, "loom.config.ts");
+	if (!existsSync(configPath)) return { present: false };
+	try {
+		const mod = (await import(pathToFileURL(configPath).href)) as {
+			default?: unknown;
+		};
+		return { present: true, config: mod.default };
+	} catch (err) {
+		console.warn(`loom: failed to load ${configPath} — ignoring it\n  ${err}`);
+		return { present: true };
+	}
+}
+
 async function preview(
 	dir: string,
-	port: number,
-	host: boolean | string,
+	options: {
+		port?: number;
+		host: boolean | string;
+		targets?: string | true;
+	},
 ): Promise<void> {
 	const root = resolve(process.cwd(), dir);
 	if (!existsSync(root)) {
@@ -102,13 +139,26 @@ async function preview(
 		process.exit(1);
 	}
 
-	const plugins: Plugin[] = [loomPreview()];
-	if (!existsSync(resolve(root, "index.html"))) {
+	const { present: configPresent, config } = await loadLoomConfig(root);
+	const decision = resolveGalleryOptions({
+		cliTargets: options.targets,
+		cliPort: options.port,
+		configPresent,
+		config,
+	});
+	if (decision.hint) console.warn(decision.hint);
+
+	const plugins: PluginOption[] = [loomPreview()];
+	if (decision.patterns) {
+		// Gallery mode: no client entry needed — the shell mounts targets itself.
+		plugins.push(loomGallery(decision.patterns), loomGalleryIndexHtml());
+	} else if (!existsSync(resolve(root, "index.html"))) {
 		const entry = findEntry(root);
 		if (!entry) {
 			console.error(
 				`loom: no index.html and no client entry found in ${root}\n` +
-					`      looked for: ${ENTRY_CANDIDATES.join(", ")}`,
+					`      looked for: ${ENTRY_CANDIDATES.join(", ")}\n` +
+					`      (or pass --targets to browse *.loom.tsx files as a gallery)`,
 			);
 			process.exit(1);
 		}
@@ -116,19 +166,25 @@ async function preview(
 	}
 
 	// esbuild.jsx + optimizeDeps + the @rbxts aliases come from loomPreview().
+	// fs.allow includes the loom repo itself: the gallery shell (and, for
+	// projects outside this workspace, the linked @loom-dev sources) are served
+	// from it via /@fs/ URLs.
 	const workspaceRoot = findWorkspaceRoot(root);
+	const fsAllow = [...new Set([root, workspaceRoot, LOOM_REPO_ROOT])].filter(
+		(p): p is string => typeof p === "string",
+	);
 	const server = await createServer({
 		root,
 		configFile: false, // loom owns the config; ignore any project vite.config
 		plugins,
 		server: {
-			port,
-			host,
-			fs: { allow: workspaceRoot ? [root, workspaceRoot] : [root] },
+			port: decision.port,
+			host: options.host,
+			fs: { allow: fsAllow },
 		},
 	});
 	await server.listen();
-	console.log("\n  loom preview\n");
+	console.log(decision.patterns ? "\n  loom gallery\n" : "\n  loom preview\n");
 	server.printUrls();
 }
 
@@ -138,13 +194,14 @@ function main(): void {
 	if (cmd !== "preview") {
 		console.log(
 			"loom — Roblox UI preview\n\n" +
-				"Usage:\n  loom preview [dir] [--port <n>] [--host]\n",
+				"Usage:\n  loom preview [dir] [--port <n>] [--host] [--targets [glob]]\n",
 		);
 		return;
 	}
 	const dir = args[1] && !args[1].startsWith("-") ? args[1] : ".";
 
-	let port = 5173;
+	// Left undefined when the flag is absent so loom.config.ts can fill it in.
+	let port: number | undefined;
 	const portIdx = args.indexOf("--port");
 	if (portIdx >= 0) {
 		const raw = args[portIdx + 1];
@@ -163,7 +220,16 @@ function main(): void {
 		host = raw && !raw.startsWith("-") ? raw : true;
 	}
 
-	preview(dir, port, host).catch((err) => {
+	// --targets is a boolean (default glob **/*.loom.tsx) unless followed by a
+	// glob or directory, both relative to [dir].
+	let targets: string | true | undefined;
+	const targetsIdx = args.indexOf("--targets");
+	if (targetsIdx >= 0) {
+		const raw = args[targetsIdx + 1];
+		targets = raw && !raw.startsWith("-") ? raw : true;
+	}
+
+	preview(dir, { port, host, targets }).catch((err) => {
 		console.error(err);
 		process.exit(1);
 	});
