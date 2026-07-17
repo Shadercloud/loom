@@ -1,252 +1,66 @@
 /**
- * `@loom-dev/runtime` — Roblox datatypes for the browser preview.
+ * `@loom-dev/runtime` — the browser-side Roblox runtime.
  *
- * Minimal JS implementations of the Roblox GUI datatypes that component code
- * (`@rbxts/react`) constructs. The react adapter detects these via `instanceof`
- * and converts them into Scene IR property values. PascalCase fields (`.X`,
- * `.Scale`, `.R`) match Roblox's reflection so adapters read them directly.
- *
- * M2 covers the Frame slice (UDim/UDim2/Vector2/Color3); more datatypes
- * (Enum, Rect, ColorSequence, …) are added as later milestones need them.
+ * Everything preview app code touches at runtime lives here: the Roblox
+ * datatypes (`datatypes.ts`) and `Enum` namespace (`enums.ts`), the Luau
+ * global environment (`luau.ts`), Roblox-shaped signals (`signal.ts`), the
+ * Proxy-based live instance tree (`instance.ts` + `registry.ts`), input
+ * objects (`input.ts`), the frame scheduler (`scheduler.ts`), and the fake
+ * `game` service tree (`game.ts` + `services.ts`). `installGlobals` wires the
+ * lot onto `globalThis` the way roblox-ts output expects.
  */
-import { type PropertyValue, prop } from "@loom-dev/scene";
+export * from "./datatypes";
+export * from "./enums";
+export * from "./game";
+export * from "./input";
+export * from "./instance";
+export * from "./luau";
+export * from "./registry";
+export * from "./scheduler";
+export * from "./services";
+export * from "./signal";
 
-export class UDim {
-	constructor(
-		readonly Scale: number,
-		readonly Offset: number,
-	) {}
-	static new(scale = 0, offset = 0): UDim {
-		return new UDim(scale, offset);
-	}
-}
-
-export class UDim2 {
-	constructor(
-		readonly X: UDim,
-		readonly Y: UDim,
-	) {}
-	static new(xScale = 0, xOffset = 0, yScale = 0, yOffset = 0): UDim2 {
-		return new UDim2(new UDim(xScale, xOffset), new UDim(yScale, yOffset));
-	}
-	static fromScale(x = 0, y = 0): UDim2 {
-		return new UDim2(new UDim(x, 0), new UDim(y, 0));
-	}
-	static fromOffset(x = 0, y = 0): UDim2 {
-		return new UDim2(new UDim(0, x), new UDim(0, y));
-	}
-}
-
-export class Vector2 {
-	constructor(
-		readonly X: number,
-		readonly Y: number,
-	) {}
-	static new(x = 0, y = 0): Vector2 {
-		return new Vector2(x, y);
-	}
-}
-
-export class Color3 {
-	/** Channels are 0..1, matching Roblox. */
-	constructor(
-		readonly R: number,
-		readonly G: number,
-		readonly B: number,
-	) {}
-	static new(r = 0, g = 0, b = 0): Color3 {
-		return new Color3(r, g, b);
-	}
-	static fromRGB(r = 0, g = 0, b = 0): Color3 {
-		// Roblox rounds and clamps each channel to 0..255 before normalizing.
-		const c = (n: number): number =>
-			Math.round(Math.min(255, Math.max(0, n))) / 255;
-		return new Color3(c(r), c(g), c(b));
-	}
-}
-
-export class ColorSequenceKeypoint {
-	constructor(
-		readonly Time: number,
-		readonly Value: Color3,
-	) {}
-}
-
-/** A Roblox `ColorSequence` (gradient color ramp). */
-export class ColorSequence {
-	readonly Keypoints: readonly ColorSequenceKeypoint[];
-	constructor(keypoints: readonly ColorSequenceKeypoint[]) {
-		this.Keypoints = keypoints;
-	}
-	/** `ColorSequence.new(c)`, `.new(c0, c1)`, or `.new(keypoints)`. */
-	static new(
-		a: Color3 | readonly ColorSequenceKeypoint[],
-		b?: Color3,
-	): ColorSequence {
-		if (Array.isArray(a)) return new ColorSequence(a);
-		const c0 = a as Color3;
-		const c1 = b ?? c0;
-		return new ColorSequence([
-			new ColorSequenceKeypoint(0, c0),
-			new ColorSequenceKeypoint(1, c1),
-		]);
-	}
-}
+import {
+	CFrame,
+	Color3,
+	ColorSequence,
+	ColorSequenceKeypoint,
+	Rect,
+	TweenInfo,
+	UDim,
+	UDim2,
+	Vector2,
+	Vector3,
+} from "./datatypes";
+import { Enum } from "./enums";
+import { game } from "./game";
+import { createInstance, type LoomInstance } from "./instance";
+import * as luau from "./luau";
 
 /**
- * A Roblox `Enum` item, e.g. `Enum.FillDirection.Vertical`. Generic over its enum
- * type so adapter props can constrain to one enum (`EnumItem<"FillDirection">`).
+ * The roblox-ts `Instance` constructor: `new Instance("Frame", parent?)`
+ * creates a live `LoomInstance` (and parents it when `parent` is given).
  */
-export class EnumItem<T extends string = string> {
-	constructor(
-		readonly EnumType: T,
-		readonly Name: string,
-		readonly Value: number,
-	) {}
-}
-
-function makeEnum<E extends string, T extends readonly string[]>(
-	enumType: E,
-	names: T,
-): { [K in T[number]]: EnumItem<E> } {
-	const out = {} as Record<string, EnumItem<E>>;
-	names.forEach((name, i) => {
-		out[name] = new EnumItem(enumType, name, i);
-	});
-	return out as { [K in T[number]]: EnumItem<E> };
-}
+export const Instance = function (
+	this: unknown,
+	className: string,
+	parent?: LoomInstance,
+): LoomInstance {
+	const instance = createInstance(className);
+	if (parent !== undefined) instance.Parent = parent;
+	return instance;
+} as unknown as new (
+	className: string,
+	parent?: LoomInstance,
+) => LoomInstance;
 
 /**
- * The Roblox `Enum` namespace (the subset loom's layout reads). `Value` is the
- * declaration index, not Roblox's exact numeric value — the layout engine keys
- * on `Name`, which is authoritative.
- */
-export const Enum = {
-	FillDirection: makeEnum("FillDirection", ["Horizontal", "Vertical"] as const),
-	HorizontalAlignment: makeEnum("HorizontalAlignment", [
-		"Left",
-		"Center",
-		"Right",
-	] as const),
-	VerticalAlignment: makeEnum("VerticalAlignment", [
-		"Top",
-		"Center",
-		"Bottom",
-	] as const),
-	SortOrder: makeEnum("SortOrder", ["Name", "LayoutOrder"] as const),
-	AutomaticSize: makeEnum("AutomaticSize", ["None", "X", "Y", "XY"] as const),
-	DominantAxis: makeEnum("DominantAxis", ["Width", "Height"] as const),
-	AspectType: makeEnum("AspectType", [
-		"FitWithinMaxSize",
-		"ScaleWithParentSize",
-	] as const),
-	StartCorner: makeEnum("StartCorner", [
-		"TopLeft",
-		"TopRight",
-		"BottomLeft",
-		"BottomRight",
-	] as const),
-	TextXAlignment: makeEnum("TextXAlignment", [
-		"Left",
-		"Right",
-		"Center",
-	] as const),
-	TextYAlignment: makeEnum("TextYAlignment", [
-		"Top",
-		"Center",
-		"Bottom",
-	] as const),
-	ApplyStrokeMode: makeEnum("ApplyStrokeMode", [
-		"Contextual",
-		"Border",
-	] as const),
-	Font: makeEnum("Font", [
-		"SourceSans",
-		"SourceSansBold",
-		"SourceSansSemibold",
-		"SourceSansLight",
-		"SourceSansItalic",
-		"Gotham",
-		"GothamMedium",
-		"GothamBold",
-		"GothamBlack",
-		"Arial",
-		"ArialBold",
-		"Highway",
-		"Code",
-		"RobotoMono",
-		"Roboto",
-		"Legacy",
-	] as const),
-};
-
-/**
- * Encode a Roblox datatype instance (or primitive) as a Scene IR `PropertyValue` —
- * the canonical datatype→IR mapping shared by every frontend adapter (react, vide,
- * …). Unknown values return `undefined` so the property is dropped.
- */
-export function toPropertyValue(v: unknown): PropertyValue | undefined {
-	if (v instanceof UDim2) {
-		return prop.udim2({
-			x: { scale: v.X.Scale, offset: v.X.Offset },
-			y: { scale: v.Y.Scale, offset: v.Y.Offset },
-		});
-	}
-	if (v instanceof UDim) return prop.udim({ scale: v.Scale, offset: v.Offset });
-	if (v instanceof Vector2) return prop.vector2({ x: v.X, y: v.Y });
-	if (v instanceof Color3) return prop.color3({ r: v.R, g: v.G, b: v.B });
-	if (v instanceof ColorSequence) {
-		return prop.colorSequence({
-			keypoints: v.Keypoints.map((k) => ({
-				time: k.Time,
-				color: { r: k.Value.R, g: k.Value.G, b: k.Value.B },
-			})),
-		});
-	}
-	if (v instanceof EnumItem) {
-		return prop.enum({ enumType: v.EnumType, name: v.Name, value: v.Value });
-	}
-	if (typeof v === "number") return prop.number(v);
-	if (typeof v === "boolean") return prop.bool(v);
-	if (typeof v === "string") return prop.string(v);
-	return undefined;
-}
-
-/**
- * The Roblox `task` scheduling library, mapped onto browser timers (the subset UI
- * code uses). `task.wait` returns a Promise so `await task.wait(n)` works; a bare
- * synchronous `task.wait()` cannot block in the browser.
- */
-export const task = {
-	spawn<A extends unknown[]>(fn: (...args: A) => void, ...args: A): void {
-		queueMicrotask(() => fn(...args));
-	},
-	defer<A extends unknown[]>(fn: (...args: A) => void, ...args: A): void {
-		queueMicrotask(() => fn(...args));
-	},
-	delay<A extends unknown[]>(
-		seconds: number,
-		fn: (...args: A) => void,
-		...args: A
-	): void {
-		setTimeout(() => fn(...args), Math.max(0, seconds) * 1000);
-	},
-	wait(seconds = 0): Promise<number> {
-		return new Promise((resolve) =>
-			setTimeout(() => resolve(seconds), Math.max(0, seconds) * 1000),
-		);
-	},
-};
-
-/** Roblox `tick()` — seconds (here, monotonic time since page load). */
-export function tick(): number {
-	return performance.now() / 1000;
-}
-
-/**
- * Install the datatypes as runtime globals, the way roblox-ts code expects
- * (`UDim2.new` etc. without an import). The loom Vite plugin invokes this before
- * the app entry; typed preview code can also import the classes directly.
+ * Install the runtime as globals, the way roblox-ts code expects (`UDim2.new`,
+ * `game.GetService`, `pcall`, … without an import). The loom Vite plugin
+ * invokes this before the app entry; typed preview code can also import the
+ * exports directly. Also applies the roblox-ts prototype patches
+ * (`Array.prototype.size()` etc. — guarded, so browser built-ins like `Math`
+ * and `String` are never clobbered).
  */
 export function installGlobals(
 	target: Record<string, unknown> = globalThis as unknown as Record<
@@ -254,13 +68,38 @@ export function installGlobals(
 		unknown
 	>,
 ): void {
+	luau.applyPrototypePatches();
+	// Datatypes.
 	target.UDim = UDim;
 	target.UDim2 = UDim2;
 	target.Vector2 = Vector2;
+	target.Vector3 = Vector3;
 	target.Color3 = Color3;
 	target.ColorSequence = ColorSequence;
 	target.ColorSequenceKeypoint = ColorSequenceKeypoint;
+	target.Rect = Rect;
+	target.CFrame = CFrame;
+	target.TweenInfo = TweenInfo;
 	target.Enum = Enum;
-	target.task = task;
-	target.tick = tick;
+	// The live tree.
+	target.game = game;
+	target.Instance = Instance;
+	// Luau environment.
+	target.task = luau.task;
+	target.tick = luau.tick;
+	target.math = luau.math;
+	target.string = luau.string;
+	target.os = luau.os;
+	target.coroutine = luau.coroutine;
+	target.typeIs = luau.typeIs;
+	target.typeOf = luau.typeOf;
+	target.pcall = luau.pcall;
+	target.xpcall = luau.xpcall;
+	target.pairs = luau.pairs;
+	target.ipairs = luau.ipairs;
+	target.tostring = luau.tostring;
+	target.tonumber = luau.tonumber;
+	target.error = luau.error;
+	target.warn = luau.warn;
+	target.print = luau.print;
 }

@@ -17,6 +17,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "catalog:",
+		"happy-dom": "^20.10.6",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
 	}
