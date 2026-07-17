@@ -19,8 +19,14 @@ import {
 	setRawProperty,
 } from "./instance";
 import { heartbeat, renderStepped } from "./scheduler";
+import type { LoomConnection } from "./signal";
 
 // --- GuiService --------------------------------------------------------------
+
+// Watches the currently selected instance so a `Destroy()` clears the
+// selection automatically (Roblox behavior — a dead instance can't stay
+// selected).
+let selectedDestroyingConnection: LoomConnection | undefined;
 
 // SelectedObject fires SelectionLost(old) → SelectionGained(new) → the
 // GuiService "SelectedObject" property signal, in that order.
@@ -31,8 +37,17 @@ registerPropertyInterceptor(
 		const old = self.SelectedObject as LoomInstance | undefined;
 		const next = value as LoomInstance | undefined;
 		if (old === next) return;
+		selectedDestroyingConnection?.Disconnect();
+		selectedDestroyingConnection = undefined;
 		if (old) getEventSignal(old, "SelectionLost").fire();
-		if (next) getEventSignal(next, "SelectionGained").fire();
+		if (next) {
+			getEventSignal(next, "SelectionGained").fire();
+			selectedDestroyingConnection = getEventSignal(next, "Destroying").Connect(
+				() => {
+					self.SelectedObject = undefined;
+				},
+			);
+		}
 		setRaw(value);
 	},
 );
@@ -85,6 +100,11 @@ let focusedTextBox: LoomInstance | undefined;
 /** DOM bridge hook: record which TextBox currently holds focus. */
 export function setFocusedTextBox(inst: LoomInstance | undefined): void {
 	focusedTextBox = inst;
+}
+
+/** The TextBox holding focus, if any (= `UserInputService.GetFocusedTextBox`). */
+export function getFocusedTextBox(): LoomInstance | undefined {
+	return focusedTextBox;
 }
 
 let mouseLocation = Vector2.zero;

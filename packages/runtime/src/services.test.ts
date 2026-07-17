@@ -76,6 +76,28 @@ describe("GuiService", () => {
 		guiService.SelectedObject = undefined;
 	});
 
+	it("clears SelectedObject automatically when the selected instance is destroyed", () => {
+		const guiService = game.GetService("GuiService");
+		const doomed = createInstance("TextButton", "Doomed");
+		const order: string[] = [];
+		guiService
+			.GetPropertyChangedSignal("SelectedObject")
+			.Connect(() => order.push("prop"));
+
+		guiService.SelectedObject = doomed;
+		expect(guiService.SelectedObject).toBe(doomed);
+
+		doomed.Destroy();
+		expect(guiService.SelectedObject).toBeUndefined();
+		expect(order).toEqual(["prop", "prop"]);
+
+		// A later selection still works normally (the destroy hook detached).
+		const next = createInstance("TextButton", "Next");
+		guiService.SelectedObject = next;
+		expect(guiService.SelectedObject).toBe(next);
+		guiService.SelectedObject = undefined;
+	});
+
 	it("GetGuiInset returns a destructurable zero tuple", () => {
 		const guiService = game.GetService("GuiService");
 		const getGuiInset = guiService.GetGuiInset as () => [Vector2, Vector2];

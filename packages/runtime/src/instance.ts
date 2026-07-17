@@ -364,6 +364,11 @@ export function registerTextBoxAdapter(
 	TEXTBOX_ADAPTERS.set(inst, adapter);
 }
 
+/** Detach the DOM focus adapter (the input element left the DOM). */
+export function unregisterTextBoxAdapter(inst: LoomInstance): void {
+	TEXTBOX_ADAPTERS.delete(inst);
+}
+
 function makeTextBoxMethod(
 	impl: InstanceImpl,
 	key: string,
