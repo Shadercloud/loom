@@ -566,6 +566,54 @@ export function getEventSignal(
 }
 
 /**
+ * The instance's raw property store (live, do not mutate) — the encode side of
+ * the world walks this to build Scene IR properties.
+ */
+export function getRawProperties(
+	inst: LoomInstance,
+): ReadonlyMap<string, unknown> {
+	const impl = IMPLS.get(inst);
+	if (!impl) throw new Error("getRawProperties: value is not a LoomInstance");
+	return impl.props;
+}
+
+/** Whether the instance has been `Destroy()`ed (encode skips dead nodes). */
+export function isDestroyed(inst: LoomInstance): boolean {
+	const impl = IMPLS.get(inst);
+	if (!impl) throw new Error("isDestroyed: value is not a LoomInstance");
+	return impl.destroyed;
+}
+
+/**
+ * Reparent `child` under `parent` (when needed) and place it immediately before
+ * `before` in the children array — the reconciler's `insertBefore`. Children
+ * order drives Scene IR sibling order, so a reorder marks the parent dirty.
+ * When `before` is absent (or not a child of `parent`), the child lands last.
+ */
+export function moveChildBefore(
+	parent: LoomInstance,
+	child: LoomInstance,
+	before?: LoomInstance,
+): void {
+	const parentImpl = IMPLS.get(parent);
+	const childImpl = IMPLS.get(child);
+	if (!parentImpl || !childImpl) {
+		throw new Error("moveChildBefore: values must be LoomInstances");
+	}
+	// Full reparent path first (signals, cycle checks) when not already a child.
+	if (childImpl.parent !== parentImpl) child.Parent = parent;
+	const children = parentImpl.children;
+	const from = children.indexOf(childImpl);
+	if (from < 0) return; // reparent failed (destroyed child) — nothing to order
+	children.splice(from, 1);
+	const beforeImpl = before ? IMPLS.get(before) : undefined;
+	const to = beforeImpl ? children.indexOf(beforeImpl) : -1;
+	if (to >= 0) children.splice(to, 0, childImpl);
+	else children.push(childImpl);
+	markDirty(parent);
+}
+
+/**
  * Write a property without firing signals or marking dirty — construction-time
  * plumbing for the service tree (`RunService.Heartbeat`, initial props, …).
  */

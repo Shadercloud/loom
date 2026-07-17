@@ -45,7 +45,17 @@ export function loomPreview(): Plugin {
 				// classic transform would throw "React is not defined".
 				esbuild: { jsx: "automatic" },
 				optimizeDeps: {
-					include: ["react", "react/jsx-runtime", "react-reconciler"],
+					// react-reconciler is CJS and imported by the (unoptimized, linked)
+					// @loom-dev/react package — the nested `>` form resolves it through
+					// the workspace link chain; a bare "react-reconciler" fails to
+					// resolve from the app root under pnpm's strict node_modules.
+					include: [
+						"react",
+						"react/jsx-runtime",
+						"react/jsx-dev-runtime",
+						"@loom-dev/preview > @loom-dev/react > react-reconciler",
+						"@loom-dev/preview > @loom-dev/react > react-reconciler/constants",
+					],
 					exclude: LOOM_PACKAGES,
 				},
 				resolve: {

@@ -28,10 +28,16 @@ declare global {
 	const UDim: typeof runtime.UDim;
 	const UDim2: typeof runtime.UDim2;
 	const Vector2: typeof runtime.Vector2;
+	const Vector3: typeof runtime.Vector3;
 	const Color3: typeof runtime.Color3;
 	const ColorSequence: typeof runtime.ColorSequence;
 	const ColorSequenceKeypoint: typeof runtime.ColorSequenceKeypoint;
+	const Rect: typeof runtime.Rect;
+	const CFrame: typeof runtime.CFrame;
+	const TweenInfo: typeof runtime.TweenInfo;
 	const Enum: typeof runtime.Enum;
+	const game: runtime.DataModel;
+	const Instance: typeof runtime.Instance;
 	const task: typeof runtime.task;
 	const tick: typeof runtime.tick;
 }

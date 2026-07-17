@@ -61,6 +61,25 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  apps/interactive:
+    dependencies:
+      '@loom-dev/preview':
+        specifier: workspace:*
+        version: link:../../packages/preview
+      '@loom-dev/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      react:
+        specifier: 'catalog:'
+        version: 18.3.1
+    devDependencies:
+      '@types/react':
+        specifier: 'catalog:'
+        version: 18.3.31
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   apps/playground:
     dependencies:
       '@loom-dev/preview':
@@ -171,9 +190,15 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@22.19.21)(happy-dom@20.10.6)(tsx@4.22.4)
 
   packages/renderer:
     dependencies:
+      '@loom-dev/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@loom-dev/scene':
         specifier: workspace:*
         version: link:../scene
@@ -181,6 +206,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@22.19.21)(happy-dom@20.10.6)(tsx@4.22.4)
 
   packages/runtime:
     dependencies:

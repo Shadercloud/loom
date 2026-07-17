@@ -1,0 +1,15 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"jsx": "react-jsx",
+		"types": ["react"],
+		"baseUrl": ".",
+		"paths": {
+			"@rbxts/react": ["./node_modules/@types/react"],
+			"@rbxts/react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"],
+			"@rbxts/react-roblox": ["../../packages/preview/src/client.ts"]
+		}
+	},
+	"include": ["src"]
+}

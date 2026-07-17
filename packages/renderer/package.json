@@ -12,9 +12,11 @@
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
+		"@loom-dev/runtime": "workspace:*",
 		"@loom-dev/scene": "workspace:*"
 	},
 	"devDependencies": {
-		"typescript": "catalog:"
+		"typescript": "catalog:",
+		"vitest": "catalog:"
 	}
 }
