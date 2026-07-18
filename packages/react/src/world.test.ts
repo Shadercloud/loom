@@ -287,4 +287,73 @@ describe("mountSync world", () => {
 		// Outside everything.
 		expect(atPosition(700, 500)).toEqual([]);
 	});
+
+	it("feeds ScrollingFrame metrics back after flush, change-gated", () => {
+		const rects: Record<
+			string,
+			{ x: number; y: number; width: number; height: number }
+		> = {
+			Gui: { x: 0, y: 0, width: 800, height: 600 },
+			Scroll: { x: 10, y: 10, width: 100, height: 100 },
+			// Laid-out child extends 300px below the frame's origin.
+			Content: { x: 10, y: 10, width: 100, height: 300 },
+		};
+		let instance: LoomInstance | undefined;
+		const root = mountSync(
+			createElement(
+				"screengui",
+				{ Name: "Gui" },
+				createElement(
+					"scrollingframe",
+					{
+						Name: "Scroll",
+						AutomaticCanvasSize: Enum.AutomaticSize.XY,
+						CanvasSize: UDim2.fromScale(0, 0),
+						ref: (inst: LoomInstance | null) => {
+							if (inst) instance = inst;
+						},
+					},
+					createElement("frame", { Name: "Content" }),
+				),
+			),
+			mount,
+			{ computeLayout: makeNamedLayout(rects) },
+		);
+		roots.push(root);
+		expect(instance).toBeDefined();
+		const inst = instance as LoomInstance;
+
+		// CanvasPosition reads as a real Vector2 before any write (lattice's
+		// viewport effect dereferences `.Y` immediately on mount).
+		expect((inst.CanvasPosition as { X: number; Y: number }).X).toBe(0);
+		expect((inst.CanvasPosition as { X: number; Y: number }).Y).toBe(0);
+		// Window = the frame's own rect; canvas = children bounding box (the
+		// resolved CanvasSize is zero and AutomaticCanvasSize is XY).
+		expect((inst.AbsoluteWindowSize as { X: number }).X).toBe(100);
+		expect((inst.AbsoluteWindowSize as { Y: number }).Y).toBe(100);
+		expect((inst.AbsoluteCanvasSize as { X: number }).X).toBe(100);
+		expect((inst.AbsoluteCanvasSize as { Y: number }).Y).toBe(300);
+
+		let fires = 0;
+		inst.GetPropertyChangedSignal("AbsoluteCanvasSize").Connect(() => {
+			fires += 1;
+		});
+
+		// Unchanged metrics: a re-flush must not re-fire the signal.
+		inst.ZIndex = 2;
+		flushDirtyNow();
+		expect(fires).toBe(0);
+
+		// Content grows: exactly one fire with the new extent.
+		rects.Content = { x: 10, y: 10, width: 100, height: 400 };
+		inst.ZIndex = 3;
+		flushDirtyNow();
+		expect(fires).toBe(1);
+		expect((inst.AbsoluteCanvasSize as { Y: number }).Y).toBe(400);
+
+		// And stable again afterwards.
+		inst.ZIndex = 4;
+		flushDirtyNow();
+		expect(fires).toBe(1);
+	});
 });

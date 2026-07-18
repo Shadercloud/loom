@@ -40,6 +40,7 @@ import {
 	isLoomInstance,
 	markDirty,
 	moveChildBefore,
+	setFeedbackProperty,
 	setFlusher,
 	setHitTester,
 	setViewportSize,
@@ -48,7 +49,15 @@ import {
 	Vector2,
 } from "@loom-dev/runtime";
 import type { LayoutResult, Viewport } from "@loom-dev/scene";
-import { type PropertyValue, prop, type SceneNode } from "@loom-dev/scene";
+import {
+	asEnum,
+	asUDim2,
+	childrenOf,
+	type PropertyValue,
+	participatesInLayout,
+	prop,
+	type SceneNode,
+} from "@loom-dev/scene";
 import type { Key, ReactElement, ReactNode, ReactPortal, Ref } from "react";
 import Reconciler from "react-reconciler";
 import { DefaultEventPriority } from "react-reconciler/constants";
@@ -560,12 +569,80 @@ class WorldImpl implements World {
 					Vector2.new(entry.rect.width, entry.rect.height),
 				);
 			}
+			// ScrollingFrame metrics feedback (AbsoluteWindowSize /
+			// AbsoluteCanvasSize) — change-gated writes, no dirty re-mark.
+			this.applyScrollMetrics(scene, layout);
 		} catch (err) {
 			// A malformed scene or DOM error must never escape the commit phase;
 			// degrade to a logged, contained failure.
 			console.error("loom react:", err);
 		} finally {
 			this.depth -= 1;
+		}
+	}
+
+	/**
+	 * Post-layout ScrollingFrame metrics feedback, walked over the scene tree
+	 * just laid out:
+	 * - `AbsoluteWindowSize` = the frame's own laid-out rect (w, h). Loom draws
+	 *   no native scrollbars (lattice paints its own thumb), so the window is
+	 *   never reduced by `ScrollBarThickness`.
+	 * - `AbsoluteCanvasSize`: `CanvasSize` (UDim2) resolved against the window
+	 *   rect per axis; when `AutomaticCanvasSize` is X/Y/XY the affected axis
+	 *   grows to the union bounding box of the laid-out direct children
+	 *   (`max(child.edge) - frame.origin`), i.e. `max(resolved, children)`.
+	 * Writes go through {@link setFeedbackProperty}: property signals fire only
+	 * on real change and the instance is NOT re-marked dirty, so the feedback
+	 * loop converges exactly like `updateAbsoluteGeometry`.
+	 */
+	private applyScrollMetrics(node: SceneNode, layout: LayoutResult): void {
+		const rect = node.id ? layout.rects[node.id]?.rect : undefined;
+		if (node.className === "ScrollingFrame" && node.id && rect) {
+			const inst = this.byId.get(node.id);
+			if (inst) {
+				const canvasSize = asUDim2(node.properties?.CanvasSize);
+				const resolvedX = canvasSize
+					? canvasSize.x.scale * rect.width + canvasSize.x.offset
+					: 0;
+				const resolvedY = canvasSize
+					? canvasSize.y.scale * rect.height + canvasSize.y.offset
+					: 0;
+				let childMaxX = 0;
+				let childMaxY = 0;
+				for (const child of childrenOf(node)) {
+					if (!participatesInLayout(child.className) || !child.id) continue;
+					const childRect = layout.rects[child.id]?.rect;
+					if (!childRect) continue;
+					childMaxX = Math.max(
+						childMaxX,
+						childRect.x + childRect.width - rect.x,
+					);
+					childMaxY = Math.max(
+						childMaxY,
+						childRect.y + childRect.height - rect.y,
+					);
+				}
+				const auto =
+					asEnum(node.properties?.AutomaticCanvasSize)?.name ?? "None";
+				const autoX = auto === "X" || auto === "XY";
+				const autoY = auto === "Y" || auto === "XY";
+				setFeedbackProperty(
+					inst,
+					"AbsoluteWindowSize",
+					Vector2.new(rect.width, rect.height),
+				);
+				setFeedbackProperty(
+					inst,
+					"AbsoluteCanvasSize",
+					Vector2.new(
+						autoX ? Math.max(resolvedX, childMaxX) : resolvedX,
+						autoY ? Math.max(resolvedY, childMaxY) : resolvedY,
+					),
+				);
+			}
+		}
+		for (const child of childrenOf(node)) {
+			this.applyScrollMetrics(child, layout);
 		}
 	}
 
@@ -886,6 +963,8 @@ export interface GuiProps {
 	Visible?: boolean;
 	ZIndex?: number;
 	LayoutOrder?: number;
+	/** Degrees, clockwise, around the element center (pure visual transform). */
+	Rotation?: number;
 	AutomaticSize?: EnumItem<"AutomaticSize">;
 	ClipsDescendants?: boolean;
 	Event?: EventHandlers;
@@ -936,7 +1015,18 @@ export interface TextBoxProps extends TextGuiProps {
 /** `ScrollingFrame` adds a scroll canvas. */
 export interface ScrollingFrameProps extends GuiProps {
 	CanvasSize?: UDim2;
+	CanvasPosition?: Vector2;
+	AutomaticCanvasSize?: EnumItem<"AutomaticSize">;
+	ScrollingDirection?: EnumItem<"ScrollingDirection">;
+	ScrollingEnabled?: boolean;
+	/** Accepted but unrendered: lattice paints its own scrollbar thumb. */
 	ScrollBarThickness?: number;
+	ScrollBarImageTransparency?: number;
+}
+
+/** `CanvasGroup` composites its subtree; `GroupTransparency` fades it as one. */
+export interface CanvasGroupProps extends GuiProps {
+	GroupTransparency?: number;
 }
 
 /** `UIListLayout` props. */
@@ -1028,7 +1118,7 @@ declare global {
 			billboardgui: ScreenGuiProps;
 			frame: GuiProps;
 			scrollingframe: ScrollingFrameProps;
-			canvasgroup: GuiProps;
+			canvasgroup: CanvasGroupProps;
 			viewportframe: GuiProps;
 			videoframe: GuiProps;
 			textlabel: TextGuiProps;
