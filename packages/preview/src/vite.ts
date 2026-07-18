@@ -30,6 +30,7 @@ const PREVIEW_SRC = dirname(fileURLToPath(import.meta.url));
 const LOOM_REPO_ROOT = resolve(PREVIEW_SRC, "../../..");
 const CLIENT_PATH = join(PREVIEW_SRC, "client.ts");
 const SERVICES_PATH = join(PREVIEW_SRC, "services.ts");
+const REACT_SHIM_PATH = join(PREVIEW_SRC, "react-shim.js");
 const GLOBALS_PATH = join(PREVIEW_SRC, "globals.ts");
 
 // loom's internal packages own the WASM engine; don't pre-bundle them (their
@@ -187,7 +188,9 @@ export function loomPreview(): Plugin[] {
 							find: /^@rbxts\/react\/jsx-dev-runtime$/,
 							replacement: REACT_JSX_DEV,
 						},
-						{ find: /^@rbxts\/react$/, replacement: REACT_MAIN },
+						// @rbxts/react -> a shim adding React.Event/React.Change
+						// keyed-prop namespaces on top of loom's react instance.
+						{ find: /^@rbxts\/react$/, replacement: REACT_SHIM_PATH },
 						{ find: /^react\/jsx-runtime$/, replacement: REACT_JSX },
 						{ find: /^react\/jsx-dev-runtime$/, replacement: REACT_JSX_DEV },
 						{ find: /^react$/, replacement: REACT_MAIN },
