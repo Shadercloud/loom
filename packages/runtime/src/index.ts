@@ -97,6 +97,7 @@ export function installGlobals(
 	target.xpcall = luau.xpcall;
 	target.pairs = luau.pairs;
 	target.ipairs = luau.ipairs;
+	target.next = luau.next;
 	target.tostring = luau.tostring;
 	target.tonumber = luau.tonumber;
 	target.error = luau.error;

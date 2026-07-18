@@ -147,6 +147,28 @@ export function* pairs(value: object): IterableIterator<[unknown, unknown]> {
 	}
 }
 
+/**
+ * Luau `next(t, key?)` — the raw table iterator. roblox-ts code uses the no-key
+ * form as an emptiness probe (`next(t)[0] !== undefined`); the keyed form
+ * returns the pair after `key` in iteration order. Exhaustion yields
+ * `[undefined]`.
+ */
+export function next(
+	value: object,
+	key?: unknown,
+): [unknown, unknown] | [undefined] {
+	const entries: [unknown, unknown][] = [
+		...pairs(value as Record<string, unknown>),
+	];
+	if (key === undefined) {
+		const first = entries[0];
+		return first ?? [undefined];
+	}
+	const index = entries.findIndex(([k]) => k === key);
+	const following = index === -1 ? undefined : entries[index + 1];
+	return following ?? [undefined];
+}
+
 /** Luau `ipairs` — 1-based indices, stops at the first `nil` hole. */
 export function* ipairs<V>(value: readonly V[]): IterableIterator<[number, V]> {
 	for (let i = 0; i < value.length; i++) {
