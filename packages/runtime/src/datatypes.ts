@@ -22,10 +22,24 @@ export class UDim {
 }
 
 export class UDim2 {
-	constructor(
-		readonly X: UDim,
-		readonly Y: UDim,
-	) {}
+	readonly X: UDim;
+	readonly Y: UDim;
+	/**
+	 * Matches roblox-ts's two `UDim2.new` forms, both of which compile to
+	 * `new UDim2(...)`: two `UDim`s (`new UDim2(xUDim, yUDim)`) or four numbers
+	 * (`new UDim2(xScale, xOffset, yScale, yOffset)`). Component code uses the
+	 * numeric form (e.g. `new UDim2(1, -22, 0, 2)`), so a `(UDim, UDim)`-only
+	 * constructor would silently store the raw numbers and break layout.
+	 */
+	constructor(a: UDim | number = 0, b: UDim | number = 0, c = 0, d = 0) {
+		if (a instanceof UDim && b instanceof UDim) {
+			this.X = a;
+			this.Y = b;
+		} else {
+			this.X = new UDim(a as number, b as number);
+			this.Y = new UDim(c, d);
+		}
+	}
 	static new(xScale = 0, xOffset = 0, yScale = 0, yOffset = 0): UDim2 {
 		return new UDim2(new UDim(xScale, xOffset), new UDim(yScale, yOffset));
 	}
