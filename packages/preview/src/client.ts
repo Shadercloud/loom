@@ -6,6 +6,7 @@
 
 import type { LoomRoot } from "@loom-dev/react";
 import { render as loomRender } from "@loom-dev/react";
+import { getService } from "@loom-dev/runtime";
 import type { ReactElement } from "react";
 
 /**
@@ -14,6 +15,23 @@ import type { ReactElement } from "react";
  * signature component libraries call.
  */
 export { createPortal } from "@loom-dev/react";
+
+/** The preview theme name mirrored onto `PlayerGui.LoomTheme`. */
+export type PreviewTheme = "light" | "dark";
+
+/**
+ * Publish the host page's theme to the preview world: sets `LoomTheme` on
+ * `Players.LocalPlayer.PlayerGui`, so scene shells can read it (and subscribe
+ * via `GetPropertyChangedSignal("LoomTheme")`) with plain Roblox APIs — no
+ * DOM access needed from roblox-ts code.
+ */
+export function setPreviewTheme(theme: PreviewTheme): void {
+	const players = getService("Players") as unknown as {
+		LocalPlayer?: { WaitForChild(name: string): Record<string, unknown> };
+	};
+	const playerGui = players.LocalPlayer?.WaitForChild("PlayerGui");
+	if (playerGui) playerGui.LoomTheme = theme;
+}
 
 const HOST_ID = "loom-root";
 

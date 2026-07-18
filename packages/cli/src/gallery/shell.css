@@ -17,6 +17,19 @@ body {
 	line-height: 1.5;
 }
 
+/*
+ * `?theme=light` / `{type:"loom-theme"}` postMessage: match the host docs
+ * site's light theme. The color mirrors lattice's defaultLightTheme
+ * `colors.background` so the stage blends with themed scene shells.
+ */
+html.loom-theme-light {
+	color-scheme: light;
+}
+html.loom-theme-light body {
+	background: #f6f9fc;
+	color: #2a3240;
+}
+
 #loom-gallery-sidebar {
 	display: flex;
 	flex-direction: column;

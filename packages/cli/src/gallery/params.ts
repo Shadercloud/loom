@@ -10,6 +10,8 @@ export interface GalleryParams {
 	target?: string;
 	/** `?chrome=none` → hide the sidebar and render one target full-bleed. */
 	chromeless: boolean;
+	/** `?theme=light|dark` → stage background + `PlayerGui.LoomTheme` seed. */
+	theme: "light" | "dark";
 }
 
 /**
@@ -26,5 +28,6 @@ export function parseGalleryParams(search: string): GalleryParams {
 	return {
 		target: target || undefined,
 		chromeless: params.get("chrome") === "none",
+		theme: params.get("theme") === "light" ? "light" : "dark",
 	};
 }

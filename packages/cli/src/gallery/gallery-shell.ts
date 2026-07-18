@@ -22,7 +22,12 @@
  * (the preview plugin dedupes it with the adapter's).
  */
 
-import { createRoot, type LoomReactRoot } from "@loom-dev/preview/client";
+import {
+	createRoot,
+	type LoomReactRoot,
+	type PreviewTheme,
+	setPreviewTheme,
+} from "@loom-dev/preview/client";
 import * as React from "react";
 import { parseGalleryParams } from "./params";
 import "./shell.css";
@@ -82,6 +87,26 @@ export function startGallery(targets: TargetMap): void {
 	const initial = parseGalleryParams(location.search);
 	const chromeless = initial.chromeless;
 	if (chromeless) document.body.classList.add("loom-chromeless");
+
+	// Theme: seeded from `?theme=` (docs iframes pass the site theme) and
+	// live-switchable via a `{type:"loom-theme"}` postMessage from the host
+	// page. Flips the stage background and mirrors onto `PlayerGui.LoomTheme`
+	// so scene shells can follow along.
+	const applyTheme = (theme: PreviewTheme): void => {
+		document.documentElement.classList.toggle(
+			"loom-theme-light",
+			theme === "light",
+		);
+		setPreviewTheme(theme);
+	};
+	applyTheme(initial.theme);
+	window.addEventListener("message", (event: MessageEvent) => {
+		const data = event.data as { type?: unknown; theme?: unknown } | null;
+		if (!data || data.type !== "loom-theme") return;
+		if (data.theme === "light" || data.theme === "dark") {
+			applyTheme(data.theme);
+		}
+	});
 
 	const sidebar = byId("loom-gallery-sidebar");
 	const stage = byId("loom-gallery-stage");
