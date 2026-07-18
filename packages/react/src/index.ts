@@ -97,6 +97,38 @@ function classNameOf(type: string): string {
 // Props that are not Roblox instance properties (handled elsewhere / ignored).
 const RESERVED = new Set(["children", "Name", "key", "ref", "Event", "Change"]);
 
+/**
+ * Prop-key prefixes for @rbxts/react's `React.Event.X` / `React.Change.X`
+ * keyed-handler convention (`{ [React.Event.Activated]: fn }`). The preview's
+ * @rbxts/react shim mints keys with these prefixes; the adapter routes them
+ * to the same signal connections as `Event`/`Change` handler tables.
+ */
+export const EVENT_PROP_PREFIX = "LoomEvent:";
+export const CHANGE_PROP_PREFIX = "LoomChange:";
+
+/** Split `LoomEvent:`/`LoomChange:` keyed props out of a prop bag. */
+function extractKeyedHandlers(props: Props): {
+	events: Record<string, unknown>;
+	changes: Record<string, unknown>;
+} {
+	const events: Record<string, unknown> = {};
+	const changes: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(props)) {
+		if (key.startsWith(EVENT_PROP_PREFIX)) {
+			events[key.slice(EVENT_PROP_PREFIX.length)] = value;
+		} else if (key.startsWith(CHANGE_PROP_PREFIX)) {
+			changes[key.slice(CHANGE_PROP_PREFIX.length)] = value;
+		}
+	}
+	return { events, changes };
+}
+
+function isKeyedHandlerProp(key: string): boolean {
+	return (
+		key.startsWith(EVENT_PROP_PREFIX) || key.startsWith(CHANGE_PROP_PREFIX)
+	);
+}
+
 /** Instances hidden by Offscreen/Suspense (forced invisible in the IR). */
 const HIDDEN = new WeakSet<LoomInstance>();
 
@@ -160,21 +192,42 @@ function disposeInstance(inst: LoomInstance): void {
 	connections.clear();
 }
 
+/** Merge a handler table with keyed-prop handlers (keyed props win). */
+function mergeHandlerSources(
+	bag: unknown,
+	keyed: Record<string, unknown>,
+): unknown {
+	if (Object.keys(keyed).length === 0) return bag;
+	return { ...((bag ?? {}) as Record<string, unknown>), ...keyed };
+}
+
 /** Diff-apply React props onto the live instance (plain props → proxy sets). */
 function applyProps(inst: LoomInstance, prev: Props, next: Props): void {
 	for (const key of Object.keys(prev)) {
-		if (RESERVED.has(key) || key in next) continue;
+		if (RESERVED.has(key) || isKeyedHandlerProp(key) || key in next) continue;
 		inst[key] = undefined; // dropped prop reverts to the class default
 	}
 	for (const [key, value] of Object.entries(next)) {
-		if (RESERVED.has(key)) continue;
+		if (RESERVED.has(key) || isKeyedHandlerProp(key)) continue;
 		if (prev[key] !== value) inst[key] = value;
 	}
 	if (prev.Name !== next.Name) {
 		inst.Name = typeof next.Name === "string" ? next.Name : inst.ClassName;
 	}
-	syncHandlers(inst, "E", prev.Event, next.Event);
-	syncHandlers(inst, "C", prev.Change, next.Change);
+	const prevKeyed = extractKeyedHandlers(prev);
+	const nextKeyed = extractKeyedHandlers(next);
+	syncHandlers(
+		inst,
+		"E",
+		mergeHandlerSources(prev.Event, prevKeyed.events),
+		mergeHandlerSources(next.Event, nextKeyed.events),
+	);
+	syncHandlers(
+		inst,
+		"C",
+		mergeHandlerSources(prev.Change, prevKeyed.changes),
+		mergeHandlerSources(next.Change, nextKeyed.changes),
+	);
 }
 
 // --- encode: LoomInstance tree → Scene IR ------------------------------------
