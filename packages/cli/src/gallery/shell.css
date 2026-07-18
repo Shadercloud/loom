@@ -27,6 +27,16 @@ body {
 	overflow: hidden;
 }
 
+/*
+ * `?chrome=none` (the docs-iframe deep-link): drop the sidebar so the stage
+ * fills the viewport and a single target renders full-bleed. `[hidden]` on the
+ * sidebar defeats its `display: flex`, matching the placeholder rule; the
+ * stage's own full-bleed override lives beside `#loom-gallery-stage` below.
+ */
+#loom-gallery-sidebar[hidden] {
+	display: none;
+}
+
 .loom-gallery-header {
 	display: flex;
 	justify-content: space-between;
@@ -83,6 +93,11 @@ body {
 	position: relative;
 	flex: 1;
 	min-width: 0;
+}
+
+/* Chromeless (`?chrome=none`): the stage fills the row the sidebar vacated. */
+body.loom-chromeless #loom-gallery-stage {
+	flex: 1 1 100%;
 }
 
 #loom-root {

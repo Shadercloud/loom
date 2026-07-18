@@ -3,22 +3,29 @@
  * `loom` CLI — preview a roblox-ts UI project in the browser with zero config.
  *
  *   loom preview [dir] [--port <n>] [--host] [--targets [glob]]
+ *   loom build [dir] --targets [glob] [--out <dir>] [--base <path>]
  *
- * It runs a Vite dev server with the loom plugin pre-applied (so no vite.config
- * is needed), generates an index.html when the project has none, and detects a
- * self-mounting client entry. esbuild transpiles the TSX; HMR is built in.
+ * `preview` runs a Vite dev server with the loom plugin pre-applied (so no
+ * vite.config is needed), generates an index.html when the project has none,
+ * and detects a self-mounting client entry. esbuild transpiles the TSX; HMR is
+ * built in.
  *
  * `--targets` switches to gallery mode: every `**\/*.loom.tsx` under the dir
  * (or the given glob/directory) is listed in a sidebar shell with lazy mounts
  * and per-target error containment. A minimal `<dir>/loom.config.ts` exporting
  * `{ targets?: string | string[], port?: number }` is honored when the flags
  * are absent.
+ *
+ * `build` bundles that same gallery into a static, client-only site under
+ * `--out` (default `dist-preview/`) so it can be hosted anywhere or embedded in
+ * a docs site — see {@link runBuild}.
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loomPreview } from "@loom-dev/preview/vite";
 import { createServer, type Plugin, type PluginOption } from "vite";
+import { runBuild } from "./build";
 import { resolveGalleryOptions } from "./gallery";
 import {
 	LOOM_REPO_ROOT,
@@ -188,16 +195,36 @@ async function preview(
 	server.printUrls();
 }
 
-function main(): void {
-	const args = process.argv.slice(2);
-	const cmd = args[0];
-	if (cmd !== "preview") {
-		console.log(
-			"loom — Roblox UI preview\n\n" +
-				"Usage:\n  loom preview [dir] [--port <n>] [--host] [--targets [glob]]\n",
-		);
-		return;
+const USAGE =
+	"loom — Roblox UI preview\n\n" +
+	"Usage:\n" +
+	"  loom preview [dir] [--port <n>] [--host] [--targets [glob]]\n" +
+	"  loom build [dir] --targets [glob] [--out <dir>] [--base <path>]\n";
+
+/**
+ * Read `--targets`: a boolean (default glob `**\/*.loom.tsx`) unless followed by
+ * a glob or directory. Shared by `preview` and `build`.
+ */
+function parseTargetsFlag(args: string[]): string | true | undefined {
+	const idx = args.indexOf("--targets");
+	if (idx < 0) return undefined;
+	const raw = args[idx + 1];
+	return raw && !raw.startsWith("-") ? raw : true;
+}
+
+/** Read a `--flag <value>` string option, or undefined when absent. */
+function parseStringFlag(args: string[], flag: string): string | undefined {
+	const idx = args.indexOf(flag);
+	if (idx < 0) return undefined;
+	const raw = args[idx + 1];
+	if (!raw || raw.startsWith("-")) {
+		console.error(`loom: ${flag} requires a value`);
+		process.exit(1);
 	}
+	return raw;
+}
+
+function runPreviewCommand(args: string[]): void {
 	const dir = args[1] && !args[1].startsWith("-") ? args[1] : ".";
 
 	// Left undefined when the flag is absent so loom.config.ts can fill it in.
@@ -220,19 +247,40 @@ function main(): void {
 		host = raw && !raw.startsWith("-") ? raw : true;
 	}
 
-	// --targets is a boolean (default glob **/*.loom.tsx) unless followed by a
-	// glob or directory, both relative to [dir].
-	let targets: string | true | undefined;
-	const targetsIdx = args.indexOf("--targets");
-	if (targetsIdx >= 0) {
-		const raw = args[targetsIdx + 1];
-		targets = raw && !raw.startsWith("-") ? raw : true;
-	}
-
-	preview(dir, { port, host, targets }).catch((err) => {
+	preview(dir, { port, host, targets: parseTargetsFlag(args) }).catch((err) => {
 		console.error(err);
 		process.exit(1);
 	});
+}
+
+function runBuildCommand(args: string[]): void {
+	const dir = args[1] && !args[1].startsWith("-") ? args[1] : ".";
+	const targets = parseTargetsFlag(args);
+	if (targets === undefined) {
+		console.error(
+			"loom: `build` requires --targets [glob] (the static gallery is target-driven)",
+		);
+		process.exit(1);
+	}
+	const out = parseStringFlag(args, "--out") ?? "dist-preview";
+	const base = parseStringFlag(args, "--base");
+
+	runBuild({ dir, targets, out, base })
+		.then((outDir) => {
+			console.log(`\n  loom build → ${outDir}\n`);
+		})
+		.catch((err) => {
+			console.error(err);
+			process.exit(1);
+		});
+}
+
+function main(): void {
+	const args = process.argv.slice(2);
+	const cmd = args[0];
+	if (cmd === "preview") runPreviewCommand(args);
+	else if (cmd === "build") runBuildCommand(args);
+	else console.log(USAGE);
 }
 
 main();

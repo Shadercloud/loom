@@ -7,9 +7,13 @@ import {
 	DEFAULT_PORT,
 	DEFAULT_TARGETS_GLOB,
 	findLoomTargets,
+	generateBuildEntryModule,
+	generateBuildIndexHtml,
+	generateBuildTargetsModule,
 	generateTargetsModule,
 	globToRegExp,
 	normalizeTargetsPatterns,
+	parseGalleryParams,
 	resolveGalleryOptions,
 } from "./gallery";
 
@@ -203,6 +207,88 @@ describe("generateTargetsModule", () => {
 	it("emits an empty map when no targets exist", () => {
 		expect(generateTargetsModule("/proj/app", [])).toContain(
 			"export const targets = {\n\n}",
+		);
+	});
+});
+
+describe("parseGalleryParams", () => {
+	it("reads ?target= and ?chrome=none (the docs-iframe deep-link)", () => {
+		const p = parseGalleryParams(
+			"?target=src/preview-targets/CheckboxBasicScene.loom.tsx&chrome=none",
+		);
+		expect(p.target).toBe("src/preview-targets/CheckboxBasicScene.loom.tsx");
+		expect(p.chromeless).toBe(true);
+	});
+
+	it("tolerates a missing leading '?' and url-encoding", () => {
+		const p = parseGalleryParams("target=a%2Fb.loom.tsx");
+		expect(p.target).toBe("a/b.loom.tsx");
+		expect(p.chromeless).toBe(false);
+	});
+
+	it("keeps chrome when the flag is absent or not 'none'", () => {
+		expect(parseGalleryParams("").chromeless).toBe(false);
+		expect(parseGalleryParams("?chrome=full").chromeless).toBe(false);
+		expect(parseGalleryParams("?target=x").chromeless).toBe(false);
+	});
+
+	it("treats an empty target as absent", () => {
+		expect(parseGalleryParams("?target=&chrome=none").target).toBeUndefined();
+	});
+});
+
+describe("generateBuildIndexHtml", () => {
+	it("wires the module script to the entry specifier", () => {
+		const html = generateBuildIndexHtml("./entry.ts");
+		expect(html).toContain('<script type="module" src="./entry.ts">');
+		// The shell's DOM contract must be present so the shared shell can attach.
+		expect(html).toContain('id="loom-gallery-sidebar"');
+		expect(html).toContain('id="loom-gallery-stage"');
+		expect(html).toContain('id="loom-root"');
+	});
+});
+
+describe("generateBuildEntryModule", () => {
+	it("imports globals FIRST so installGlobals runs before app code", () => {
+		const code = generateBuildEntryModule({
+			globalsSpecifier: "../../packages/preview/src/globals.ts",
+			targetsSpecifier: "./targets.ts",
+			shellSpecifier: "../../packages/cli/src/gallery/gallery-shell.ts",
+		});
+		const globalsAt = code.indexOf("globals.ts");
+		const targetsAt = code.indexOf("./targets.ts");
+		const shellAt = code.indexOf("gallery-shell.ts");
+		expect(globalsAt).toBeGreaterThanOrEqual(0);
+		expect(globalsAt).toBeLessThan(targetsAt);
+		expect(globalsAt).toBeLessThan(shellAt);
+		expect(code).toContain("startGallery(targets);");
+	});
+});
+
+describe("generateBuildTargetsModule", () => {
+	it("emits a relative lazy import per target, keyed by relPath", () => {
+		const code = generateBuildTargetsModule([
+			{
+				key: "src/preview-targets/Card.loom.tsx",
+				specifier: "../../foo/src/preview-targets/Card.loom.tsx",
+			},
+		]);
+		expect(code).toContain(
+			'"src/preview-targets/Card.loom.tsx": () => import("../../foo/src/preview-targets/Card.loom.tsx"),',
+		);
+		// Valid JS body.
+		expect(() => new Function(code.replace(/^export /m, ""))).not.toThrow();
+	});
+
+	it("escapes quotes/backslashes and emits an empty map for no targets", () => {
+		expect(generateBuildTargetsModule([])).toContain(
+			"export const targets = {\n\n}",
+		);
+		const code = generateBuildTargetsModule([
+			{ key: 'we"ird', specifier: "./a\\b.loom.tsx" },
+		]);
+		expect(code).toContain(
+			String.raw`"we\"ird": () => import("./a\\b.loom.tsx"),`,
 		);
 	});
 });
