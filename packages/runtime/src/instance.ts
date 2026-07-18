@@ -90,6 +90,29 @@ let nextId = 0;
 /** proxy → impl; also the `isLoomInstance` membership set. */
 const IMPLS = new WeakMap<object, InstanceImpl>();
 
+/**
+ * Class-aware read defaults for properties app code reads before ever writing.
+ * Roblox reflection always yields a typed value; the props store starts empty,
+ * so these keep `inst.Rotation += d` (Spinner motion) and
+ * `viewport.CanvasPosition.Y` (lattice ScrollArea metrics) from seeing
+ * `undefined`. Only properties with a known read-before-write consumer are
+ * listed — everything else stays `undefined` like before.
+ */
+function classDefaultProperty(className: string, key: string): unknown {
+	switch (key) {
+		case "Rotation":
+			return isA(className, "GuiObject") ? 0 : undefined;
+		case "GroupTransparency":
+			return isA(className, "CanvasGroup") ? 0 : undefined;
+		case "CanvasPosition":
+		case "AbsoluteWindowSize":
+		case "AbsoluteCanvasSize":
+			return isA(className, "ScrollingFrame") ? Vector2.zero : undefined;
+		default:
+			return undefined;
+	}
+}
+
 function getName(impl: InstanceImpl): string {
 	return String(impl.props.get("Name") ?? impl.className);
 }
@@ -488,7 +511,9 @@ function getTrap(impl: InstanceImpl, key: string | symbol): unknown {
 		return (...args: unknown[]) =>
 			classMethod(impl.proxy, ...(args as never[]));
 	}
-	return impl.props.get(key);
+	const value = impl.props.get(key);
+	if (value !== undefined) return value;
+	return classDefaultProperty(impl.className, key);
 }
 
 function setTrap(
@@ -630,6 +655,40 @@ export function setRawProperty(
 	const impl = IMPLS.get(inst);
 	if (!impl) throw new Error("setRawProperty: value is not a LoomInstance");
 	impl.props.set(key, value);
+}
+
+/** Feedback-write equality: `Vector2`s compare by components, not identity. */
+function feedbackEquals(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (a instanceof Vector2 && b instanceof Vector2) {
+		return a.X === b.X && a.Y === b.Y;
+	}
+	return false;
+}
+
+/**
+ * Post-layout feedback write (`AbsoluteWindowSize`/`AbsoluteCanvasSize`/…):
+ * store the value and fire the property + `Changed` signals, but do NOT mark
+ * the instance dirty — feedback runs inside a flush, and re-marking would
+ * schedule flushes forever. Change-gated like {@link updateAbsoluteGeometry}:
+ * an identical value (Vector2 by components, including the class read
+ * default when the store is empty) is a complete no-op.
+ */
+export function setFeedbackProperty(
+	inst: LoomInstance,
+	key: string,
+	value: unknown,
+): void {
+	const impl = IMPLS.get(inst);
+	if (!impl) {
+		throw new Error("setFeedbackProperty: value is not a LoomInstance");
+	}
+	const current =
+		impl.props.get(key) ?? classDefaultProperty(impl.className, key);
+	if (feedbackEquals(current, value)) return;
+	impl.props.set(key, value);
+	impl.propSignals.get(key)?.fire();
+	impl.eventSignals.get("Changed")?.fire(key);
 }
 
 /**

@@ -5,8 +5,10 @@ import {
 	getInternalId,
 	isLoomInstance,
 	type LoomInstance,
+	setFeedbackProperty,
 	updateAbsoluteGeometry,
 } from "./instance";
+import { getDirtyCount } from "./scheduler";
 import type { LoomSignal } from "./signal";
 
 describe("LoomInstance tree", () => {
@@ -227,5 +229,46 @@ describe("LoomInstance types", () => {
 		const frame: LoomInstance = createInstance("Frame");
 		const found: LoomInstance | undefined = frame.FindFirstChild("x");
 		expect(found).toBeUndefined();
+	});
+});
+
+describe("class read defaults and feedback writes", () => {
+	it("defaults Rotation/GroupTransparency/scroll metrics reads by class", () => {
+		const frame = createInstance("Frame");
+		expect(frame.Rotation).toBe(0); // Spinner does `Rotation += d` on first frame
+		expect(frame.CanvasPosition).toBeUndefined(); // not a ScrollingFrame
+
+		const scroll = createInstance("ScrollingFrame");
+		expect(scroll.CanvasPosition).toBe(Vector2.zero);
+		expect(scroll.AbsoluteWindowSize).toBe(Vector2.zero);
+		expect(scroll.AbsoluteCanvasSize).toBe(Vector2.zero);
+
+		const group = createInstance("CanvasGroup");
+		expect(group.GroupTransparency).toBe(0);
+		expect(frame.GroupTransparency).toBeUndefined();
+	});
+
+	it("setFeedbackProperty fires signals only on real change and never marks dirty", () => {
+		const scroll = createInstance("ScrollingFrame");
+		let fires = 0;
+		scroll.GetPropertyChangedSignal("AbsoluteCanvasSize").Connect(() => {
+			fires += 1;
+		});
+		const dirtyBefore = getDirtyCount();
+
+		// Equal to the class read default (Vector2.zero): complete no-op.
+		setFeedbackProperty(scroll, "AbsoluteCanvasSize", Vector2.new(0, 0));
+		expect(fires).toBe(0);
+
+		setFeedbackProperty(scroll, "AbsoluteCanvasSize", Vector2.new(100, 300));
+		expect(fires).toBe(1);
+		expect((scroll.AbsoluteCanvasSize as Vector2).Y).toBe(300);
+
+		// Same components in a fresh Vector2: change-gated, no re-fire.
+		setFeedbackProperty(scroll, "AbsoluteCanvasSize", Vector2.new(100, 300));
+		expect(fires).toBe(1);
+
+		// Feedback writes never enter the dirty set (no flush loop).
+		expect(getDirtyCount()).toBe(dirtyBefore);
 	});
 });
