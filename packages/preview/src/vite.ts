@@ -15,12 +15,17 @@
  * `build` the generated HTML entry imports `@loom-dev/preview/globals` as its
  * first module so `installGlobals()` runs before any app/gallery code.
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Plugin, searchForWorkspaceRoot } from "vite";
-import { isLuauId, type ResolverFs, resolveLuauFallback } from "./resolver";
+import {
+	isLuauId,
+	type ResolverFs,
+	resolveLuauFallback,
+	resolvePackageSource,
+} from "./resolver";
 import { rewriteImportEquals } from "./transform";
 
 // A virtual module that installs the Roblox globals. Injected as a real <script
@@ -59,6 +64,13 @@ const nodeFs: ResolverFs = {
 			return statSync(path).isFile();
 		} catch {
 			return false;
+		}
+	},
+	readFile(path: string): string | undefined {
+		try {
+			return readFileSync(path, "utf8");
+		} catch {
+			return undefined;
 		}
 	},
 };
@@ -126,14 +138,35 @@ export function loomPreview(): Plugin[] {
 				return verdict === false ? undefined : verdict;
 			}
 
-			const resolved = await this.resolve(source, importer, {
-				...options,
-				skipSelf: true,
-			});
+			// Redirect roblox-ts packages to their TS source up front — this works
+			// whether or not the package was compiled (its `.luau` main may not
+			// exist), so loom consumes a source-only workspace with no build step.
+			// `@rbxts/*` is excluded: those are Luau-main too but must go through the
+			// `resolve.alias` entries (react/react-roblox/services → loom adapters),
+			// not to their own source.
+			if (!source.startsWith("@rbxts/")) {
+				const sourceTs = resolvePackageSource(source, importer, nodeFs);
+				if (sourceTs !== undefined) {
+					luauVerdicts.set(source, sourceTs);
+					return sourceTs;
+				}
+			}
+
+			// Otherwise resolve normally. `this.resolve` can throw when a package's
+			// `"main"` points at a missing file; treat that as unresolved so Vite
+			// reports it rather than crashing the plugin.
+			let resolved: Awaited<ReturnType<typeof this.resolve>> = null;
+			try {
+				resolved = await this.resolve(source, importer, {
+					...options,
+					skipSelf: true,
+				});
+			} catch {
+				resolved = null;
+			}
 			if (!resolved || resolved.external) return resolved ?? undefined;
 			if (isLuauId(resolved.id)) {
-				// A roblox-ts package main (e.g. lattice's `out/init.luau`):
-				// retry the package's TypeScript source.
+				// A resolved `.luau` main (compiled roblox-ts package): retry source.
 				const fallback = resolveLuauFallback(resolved.id, nodeFs);
 				if (fallback !== undefined) {
 					luauVerdicts.set(source, fallback);
