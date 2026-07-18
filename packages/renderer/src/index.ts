@@ -45,6 +45,7 @@ import {
 	asNumber,
 	asString,
 	asUDim,
+	asVector2,
 	childrenOf,
 	findModifier,
 	getBackgroundColor3,
@@ -188,7 +189,49 @@ function applyBoxStyle(
 		applyGradient(s, node);
 		applyCorner(s, node, rect);
 		applyStroke(s, node);
+		// CanvasGroup.GroupTransparency fades the whole subtree as one — CSS
+		// opacity on the container div is exactly that compositing model.
+		const groupTransparency = asNumber(node.properties?.GroupTransparency);
+		if (groupTransparency !== undefined) {
+			const clamped = Math.min(1, Math.max(0, groupTransparency));
+			if (clamped > 0) s.opacity = String(1 - clamped);
+		}
+		// GuiObject.Rotation: degrees clockwise around the element's center,
+		// with layout (AbsolutePosition/AbsoluteSize) unaffected — matching CSS
+		// transform semantics. Never applied to the root/LayerCollector divs.
+		const rotation = asNumber(node.properties?.Rotation) ?? 0;
+		if (rotation !== 0) {
+			s.transform = `rotate(${rotation}deg)`;
+			s.transformOrigin = "50% 50%";
+		}
 	}
+}
+
+// --- ScrollingFrame canvas ----------------------------------------------------
+
+/**
+ * The inner wrapper a ScrollingFrame's children mount into. Scrolling is a
+ * pure visual `translate(-CanvasPosition)` on this wrapper (the frame itself
+ * clips via `overflow: hidden`), so the children's own style snapshots stay
+ * stable while the canvas moves.
+ */
+function makeCanvasWrapper(): HTMLDivElement {
+	const el = document.createElement("div");
+	const s = el.style;
+	s.position = "absolute";
+	s.left = "0";
+	s.top = "0";
+	s.width = "100%";
+	s.height = "100%";
+	return el;
+}
+
+/** The wrapper transform for a ScrollingFrame node's `CanvasPosition`. */
+function canvasTransform(node: SceneNode): string {
+	const canvasPosition = asVector2(node.properties?.CanvasPosition);
+	const x = canvasPosition?.x ?? 0;
+	const y = canvasPosition?.y ?? 0;
+	return x === 0 && y === 0 ? "" : `translate(${-x}px, ${-y}px)`;
 }
 
 /** Build a text class's `Text` overlay layer, or `undefined` when empty. */
@@ -476,6 +519,16 @@ function renderNode(
 	const textLayer = createTextLayer(node);
 	if (textLayer) el.appendChild(textLayer);
 
+	// ScrollingFrame children live in the canvas wrapper (see makeCanvasWrapper)
+	// so the one-shot and incremental paths produce identical DOM.
+	let childHost: HTMLElement = el;
+	if (node.className === "ScrollingFrame") {
+		const canvas = makeCanvasWrapper();
+		canvas.style.transform = canvasTransform(node);
+		el.appendChild(canvas);
+		childHost = canvas;
+	}
+
 	let i = 0;
 	for (const child of childrenOf(node)) {
 		if (!participatesInLayout(child.className)) continue; // skip modifiers
@@ -486,7 +539,7 @@ function renderNode(
 			layout,
 			rect,
 		);
-		if (childEl) el.appendChild(childEl);
+		if (childEl) childHost.appendChild(childEl);
 		i += 1;
 	}
 	return el;
@@ -528,6 +581,8 @@ interface SessionEntry {
 	textKey: string;
 	/** Present only on TextBox nodes: the persistent input element. */
 	input: TextBoxBinding | undefined;
+	/** Present only on ScrollingFrame nodes: the -CanvasPosition child wrapper. */
+	canvas: HTMLDivElement | undefined;
 }
 
 /** Reorder `el`'s children to exactly `desired`, touching only mismatches. */
@@ -647,6 +702,7 @@ export function createDomSession(
 				styleKey: "",
 				textKey: "",
 				input: undefined,
+				canvas: undefined,
 			};
 			entries.set(id, entry);
 		}
@@ -678,9 +734,23 @@ export function createDomSession(
 			entry.input = undefined;
 		}
 
-		const desired: HTMLElement[] = [];
-		if (entry.input) desired.push(entry.input.el);
-		if (entry.textEl) desired.push(entry.textEl);
+		// ScrollingFrame: children mount into a persistent canvas wrapper shifted
+		// by -CanvasPosition, so a scroll only touches one transform.
+		if (node.className === "ScrollingFrame") {
+			if (!entry.canvas) entry.canvas = makeCanvasWrapper();
+			const transform = canvasTransform(node);
+			if (entry.canvas.style.transform !== transform) {
+				entry.canvas.style.transform = transform;
+			}
+		} else if (entry.canvas) {
+			entry.canvas.remove();
+			entry.canvas = undefined;
+		}
+
+		const overlays: HTMLElement[] = [];
+		if (entry.input) overlays.push(entry.input.el);
+		if (entry.textEl) overlays.push(entry.textEl);
+		const children: HTMLElement[] = [];
 		let i = 0;
 		for (const child of childrenOf(node)) {
 			if (!participatesInLayout(child.className)) continue;
@@ -692,10 +762,15 @@ export function createDomSession(
 				rect,
 				seen,
 			);
-			if (childEl) desired.push(childEl);
+			if (childEl) children.push(childEl);
 			i += 1;
 		}
-		syncChildren(el, desired);
+		if (entry.canvas) {
+			syncChildren(entry.canvas, children);
+			syncChildren(el, [...overlays, entry.canvas]);
+		} else {
+			syncChildren(el, [...overlays, ...children]);
+		}
 		return el;
 	}
 
@@ -820,6 +895,57 @@ export function createDomSession(
 		updateHover([], x, y);
 	}
 
+	// --- wheel → ScrollingFrame.CanvasPosition -----------------------------------
+
+	const clamp = (v: number, min: number, max: number): number =>
+		Math.min(max, Math.max(min, v));
+
+	/**
+	 * Delegated wheel scrolling: the nearest ScrollingFrame ancestor of the
+	 * event target consumes the delta, clamped per axis to `[0, canvas-window]`
+	 * (metrics come from the world's post-layout feedback). The write goes
+	 * through the instance proxy, so `GetPropertyChangedSignal("CanvasPosition")`
+	 * listeners (lattice's thumb/metrics) fire and the next flush moves the
+	 * canvas wrapper. `preventDefault` only when scroll was actually consumed.
+	 */
+	function onWheel(e: WheelEvent): void {
+		const chain = chainFromEvent(e);
+		const frame = chain.find((inst) => inst.IsA("ScrollingFrame"));
+		if (!frame || frame.ScrollingEnabled === false) return;
+		const windowSize = frame.AbsoluteWindowSize;
+		const canvasSize = frame.AbsoluteCanvasSize;
+		const current = frame.CanvasPosition;
+		if (
+			!(windowSize instanceof Vector2) ||
+			!(canvasSize instanceof Vector2) ||
+			!(current instanceof Vector2)
+		) {
+			return;
+		}
+		// Roblox default ScrollingDirection is XY; X/Y restrict to one axis.
+		const direction =
+			(frame.ScrollingDirection as { Name?: string } | undefined)?.Name ?? "XY";
+		const nextX =
+			direction === "Y"
+				? current.X
+				: clamp(
+						current.X + e.deltaX,
+						0,
+						Math.max(0, canvasSize.X - windowSize.X),
+					);
+		const nextY =
+			direction === "X"
+				? current.Y
+				: clamp(
+						current.Y + e.deltaY,
+						0,
+						Math.max(0, canvasSize.Y - windowSize.Y),
+					);
+		if (nextX === current.X && nextY === current.Y) return;
+		frame.CanvasPosition = Vector2.new(nextX, nextY);
+		e.preventDefault();
+	}
+
 	// --- keyboard delegation ---------------------------------------------------
 	// Key events are global (window), mirroring Roblox: UserInputService fires
 	// for every key with `gameProcessedEvent = true` while a TextBox is focused.
@@ -879,6 +1005,9 @@ export function createDomSession(
 	mount.addEventListener("pointermove", onPointerMove);
 	mount.addEventListener("pointerover", onPointerOver);
 	mount.addEventListener("pointerout", onPointerOut);
+	// passive:false — the handler preventDefaults consumed scrolls so the page
+	// doesn't scroll underneath a scrolling frame.
+	mount.addEventListener("wheel", onWheel, { passive: false });
 	window.addEventListener("keydown", onKeyDown);
 	window.addEventListener("keyup", onKeyUp);
 
@@ -913,6 +1042,7 @@ export function createDomSession(
 			mount.removeEventListener("pointermove", onPointerMove);
 			mount.removeEventListener("pointerover", onPointerOver);
 			mount.removeEventListener("pointerout", onPointerOut);
+			mount.removeEventListener("wheel", onWheel);
 			window.removeEventListener("keydown", onKeyDown);
 			window.removeEventListener("keyup", onKeyUp);
 			clear();

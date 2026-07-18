@@ -11,6 +11,7 @@ import {
 	getFocusedTextBox,
 	getInternalId,
 	getService,
+	Vector2,
 } from "@loom-dev/runtime";
 import type { LayoutResult, Rect, SceneNode } from "@loom-dev/scene";
 import { color3FromRGB, prop, udim2 } from "@loom-dev/scene";
@@ -404,6 +405,185 @@ describe("createDomSession", () => {
 		guiService.SelectedObject = undefined;
 		window.dispatchEvent(new KeyboardEvent("keydown", { code: "Space" }));
 		expect(keys).toHaveLength(1); // deselected → no element routing
+		session.dispose();
+	});
+
+	// --- GroupTransparency / Rotation --------------------------------------------
+
+	it("maps CanvasGroup GroupTransparency to CSS opacity on the container", () => {
+		const scene: SceneNode = {
+			className: "ScreenGui",
+			name: "Gui",
+			id: "gui",
+			children: [
+				{
+					className: "CanvasGroup",
+					name: "Group",
+					id: "group",
+					properties: { GroupTransparency: prop.number(0.25) },
+				},
+			],
+		};
+		const layout = layoutOf({
+			gui: { x: 0, y: 0, width: 200, height: 100 },
+			group: { x: 0, y: 0, width: 100, height: 50 },
+		});
+		const session = makeSession(new Map());
+		session.patch(scene, layout);
+		const el = mount.querySelector('[data-loom-id="group"]') as HTMLElement;
+		expect(el.style.opacity).toBe("0.75");
+		session.dispose();
+	});
+
+	it("maps GuiObject Rotation to a center-origin CSS rotate transform", () => {
+		const scene: SceneNode = {
+			className: "ScreenGui",
+			name: "Gui",
+			id: "gui",
+			children: [
+				{
+					className: "Frame",
+					name: "Spinner",
+					id: "spinner",
+					properties: { Rotation: prop.number(45) },
+				},
+			],
+		};
+		const layout = layoutOf({
+			gui: { x: 0, y: 0, width: 200, height: 100 },
+			spinner: { x: 0, y: 0, width: 22, height: 22 },
+		});
+		const session = makeSession(new Map());
+		session.patch(scene, layout);
+		const el = mount.querySelector('[data-loom-id="spinner"]') as HTMLElement;
+		expect(el.style.transform).toBe("rotate(45deg)");
+		expect(el.style.transformOrigin).toBe("50% 50%");
+		// The root/gui layer never rotates.
+		const gui = mount.querySelector('[data-loom-id="gui"]') as HTMLElement;
+		expect(gui.style.transform).toBe("");
+		session.dispose();
+	});
+
+	// --- ScrollingFrame canvas wrapper + wheel ------------------------------------
+
+	function scrollScene(canvasY: number): SceneNode {
+		return {
+			className: "ScreenGui",
+			name: "Gui",
+			id: "gui",
+			children: [
+				{
+					className: "ScrollingFrame",
+					name: "Scroll",
+					id: "scroll",
+					properties:
+						canvasY === 0
+							? {}
+							: { CanvasPosition: prop.vector2({ x: 0, y: canvasY }) },
+					children: [{ className: "Frame", name: "Item", id: "item" }],
+				},
+			],
+		};
+	}
+	const scrollLayout = () =>
+		layoutOf({
+			gui: { x: 0, y: 0, width: 300, height: 200 },
+			scroll: { x: 0, y: 0, width: 100, height: 100 },
+			item: { x: 0, y: 0, width: 100, height: 300 },
+		});
+
+	it("mounts ScrollingFrame children in a wrapper shifted by -CanvasPosition", () => {
+		const session = makeSession(new Map());
+		session.patch(scrollScene(0), scrollLayout());
+		const frameEl = mount.querySelector(
+			'[data-loom-id="scroll"]',
+		) as HTMLElement;
+		const itemEl = mount.querySelector('[data-loom-id="item"]') as HTMLElement;
+		// Children live inside the canvas wrapper, not directly in the frame.
+		const wrapper = itemEl.parentElement as HTMLElement;
+		expect(wrapper).not.toBe(frameEl);
+		expect(wrapper.parentElement).toBe(frameEl);
+		expect(wrapper.style.transform).toBe("");
+
+		session.patch(scrollScene(40), scrollLayout());
+		// Same wrapper and same child element — only the transform moved.
+		expect(itemEl.parentElement).toBe(wrapper);
+		expect(mount.querySelector('[data-loom-id="item"]')).toBe(itemEl);
+		expect(wrapper.style.transform).toBe("translate(0px, -40px)");
+		session.dispose();
+	});
+
+	it("wheel input scrolls the nearest ScrollingFrame with per-axis clamping", () => {
+		const frame = createInstance("ScrollingFrame", "Scroll");
+		const frameId = getInternalId(frame);
+		const byId = new Map([[frameId, frame]]);
+		const scene: SceneNode = {
+			className: "ScrollingFrame",
+			name: "Scroll",
+			id: frameId,
+		};
+		const layout = layoutOf({
+			[frameId]: { x: 0, y: 0, width: 100, height: 100 },
+		});
+		const session = makeSession(byId);
+		session.patch(scene, layout);
+		const el = mount.querySelector(`[data-loom-id="${frameId}"]`) as Element;
+
+		// World feedback normally sets these; simulate it.
+		frame.AbsoluteWindowSize = Vector2.new(100, 100);
+		frame.AbsoluteCanvasSize = Vector2.new(100, 300);
+
+		const positions: number[] = [];
+		frame.GetPropertyChangedSignal("CanvasPosition").Connect(() => {
+			positions.push((frame.CanvasPosition as Vector2).Y);
+		});
+		const wheel = (deltaY: number): WheelEvent => {
+			const e = new WheelEvent("wheel", {
+				deltaY,
+				bubbles: true,
+				cancelable: true,
+			});
+			el.dispatchEvent(e);
+			return e;
+		};
+
+		expect((frame.CanvasPosition as Vector2).Y).toBe(0); // Vector2.zero default
+		const first = wheel(60);
+		expect((frame.CanvasPosition as Vector2).Y).toBe(60);
+		expect(first.defaultPrevented).toBe(true); // consumed → page must not scroll
+
+		wheel(1000); // clamps to canvas - window = 200
+		expect((frame.CanvasPosition as Vector2).Y).toBe(200);
+
+		const overshoot = wheel(50); // already at max → nothing consumed
+		expect((frame.CanvasPosition as Vector2).Y).toBe(200);
+		expect(overshoot.defaultPrevented).toBe(false);
+
+		expect(positions).toEqual([60, 200]); // change signal per actual change only
+		session.dispose();
+	});
+
+	it("wheel input skips frames with ScrollingEnabled=false", () => {
+		const frame = createInstance("ScrollingFrame", "Scroll");
+		const frameId = getInternalId(frame);
+		const session = makeSession(new Map([[frameId, frame]]));
+		session.patch(
+			{ className: "ScrollingFrame", name: "Scroll", id: frameId },
+			layoutOf({ [frameId]: { x: 0, y: 0, width: 100, height: 100 } }),
+		);
+		const el = mount.querySelector(`[data-loom-id="${frameId}"]`) as Element;
+		frame.AbsoluteWindowSize = Vector2.new(100, 100);
+		frame.AbsoluteCanvasSize = Vector2.new(100, 300);
+		frame.ScrollingEnabled = false;
+
+		const e = new WheelEvent("wheel", {
+			deltaY: 60,
+			bubbles: true,
+			cancelable: true,
+		});
+		el.dispatchEvent(e);
+		expect((frame.CanvasPosition as Vector2).Y).toBe(0);
+		expect(e.defaultPrevented).toBe(false);
 		session.dispose();
 	});
 });
