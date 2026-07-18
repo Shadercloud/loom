@@ -761,9 +761,17 @@ export function createDomSession(
 			getEventSignal(inst, "InputEnded").fire(input);
 		}
 		if (pressed && chain.includes(pressed)) {
-			getEventSignal(pressed, "Activated").fire(input, 1);
-			if (pressed.IsA("GuiButton")) {
-				getEventSignal(pressed, "MouseButton1Click").fire();
+			// Roblox activates the pressed control even when the press landed on a
+			// decorative child (label, icon): route to the nearest instance in the
+			// chain with an Activated listener, falling back to the pressed one.
+			const target =
+				chain.find(
+					(inst) => getEventSignal(inst, "Activated").hasConnections,
+				) ?? pressed;
+			getEventSignal(target, "Activated").fire(input, 1);
+			const clickTarget = chain.find((inst) => inst.IsA("GuiButton"));
+			if (clickTarget) {
+				getEventSignal(clickTarget, "MouseButton1Click").fire();
 			}
 		}
 		getEventSignal(userInputService(), "InputEnded").fire(input, false);
