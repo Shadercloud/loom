@@ -6,6 +6,14 @@
  * `.luau` package mains at their TypeScript source, and injects the Roblox
  * globals before the app entry. esbuild already transpiles the TSX, so no
  * separate roblox-ts compiler is needed for preview.
+ *
+ * The resolver, the import-equals transform, and the config-hook aliases apply
+ * in **both** `serve` and `build`, so the same source tree that runs under the
+ * dev server also bundles into a static site via `loom build`. Only the
+ * globals-injection mechanism differs: under `serve` it is a `<script src>`
+ * pointing at a served virtual module (`loom-preview:serve-globals`); under
+ * `build` the generated HTML entry imports `@loom-dev/preview/globals` as its
+ * first module so `installGlobals()` runs before any app/gallery code.
  */
 import { statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -85,11 +93,12 @@ export function loomPreview(): Plugin[] {
 	// Rewrites `import X = require("m")` before vite:esbuild lowers it to a bare
 	// `require()` call (which would throw in the browser). Applies to any
 	// TypeScript outside node_modules — previewed workspace sources typically
-	// resolve through symlinks to real paths outside node_modules.
+	// resolve through symlinks to real paths outside node_modules. Runs in both
+	// serve and build: esbuild lowers import-equals the same way in either mode,
+	// so the rewrite is equally required when Rollup bundles the tree.
 	const importEquals: Plugin = {
 		name: "loom-preview:import-equals",
 		enforce: "pre",
-		apply: "serve",
 		transform(code, id) {
 			const file = id.split("?")[0] ?? id;
 			if (!/\.tsx?$/.test(file)) return;
@@ -102,13 +111,13 @@ export function loomPreview(): Plugin[] {
 
 	const main: Plugin = {
 		name: "loom-preview",
-		apply: "serve", // preview is dev-only; the /@id/ globals URL has no build chunk
+		// No `apply`: the resolver + config aliases are build-safe and must run
+		// under Rollup so `loom build` bundles the same tree the dev server serves.
 		// `pre` is load-bearing for resolveId: vite:resolve (a core plugin) runs
 		// before user *normal* plugins, so a normal-phase hook would never see the
 		// bare specifiers whose package "main" points at `.luau` output.
 		enforce: "pre",
 		async resolveId(source, importer, options) {
-			if (source === GLOBALS_ID) return GLOBALS_RESOLVED;
 			if (!importer || !isBareSpecifier(source)) return;
 
 			const verdict = luauVerdicts.get(source);
@@ -134,16 +143,11 @@ export function loomPreview(): Plugin[] {
 			luauVerdicts.set(source, false);
 			return resolved;
 		},
-		load(id) {
-			// Absolute-path import: the virtual module has no fs location, so a
-			// bare "@loom-dev/preview/globals" would resolve from the (possibly
-			// foreign) project root and fail.
-			if (id === GLOBALS_RESOLVED)
-				return `import ${JSON.stringify(GLOBALS_PATH)};`;
-		},
 		// Self-sufficient config so dropping loomPreview() into a project is truly
 		// zero-config (no manual esbuild.jsx / optimizeDeps needed). Deep-merged
-		// with — and overridable by — the user's config.
+		// with — and overridable by — the user's config. `optimizeDeps` and
+		// `server.fs` are dev-only (Vite ignores them under `build`); the
+		// `resolve.alias` + `esbuild.jsx` entries drive both modes.
 		config(userConfig) {
 			const projectRoot = userConfig.root
 				? resolve(userConfig.root)
@@ -209,7 +213,27 @@ export function loomPreview(): Plugin[] {
 				},
 			};
 		},
-		// Install the Roblox datatype globals before any app module evaluates.
+	};
+
+	// Serve-only globals injection. Under the dev server the Roblox datatype
+	// globals are installed by a `<script src>` pointing at a served virtual
+	// module (there is no build chunk for the `/@id/` URL). Under `build` this
+	// plugin is inert — the CLI's generated HTML entry imports
+	// `@loom-dev/preview/globals` directly as its first module instead.
+	const serveGlobals: Plugin = {
+		name: "loom-preview:serve-globals",
+		apply: "serve",
+		enforce: "pre",
+		resolveId(source) {
+			if (source === GLOBALS_ID) return GLOBALS_RESOLVED;
+		},
+		load(id) {
+			// Absolute-path import: the virtual module has no fs location, so a
+			// bare "@loom-dev/preview/globals" would resolve from the (possibly
+			// foreign) project root and fail.
+			if (id === GLOBALS_RESOLVED)
+				return `import ${JSON.stringify(GLOBALS_PATH)};`;
+		},
 		transformIndexHtml() {
 			return [
 				{
@@ -221,5 +245,5 @@ export function loomPreview(): Plugin[] {
 		},
 	};
 
-	return [importEquals, main];
+	return [importEquals, main, serveGlobals];
 }
