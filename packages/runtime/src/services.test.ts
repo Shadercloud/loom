@@ -163,13 +163,19 @@ describe("Workspace", () => {
 });
 
 describe("ContextActionService", () => {
-	it("BindAction/UnbindAction are safe no-ops", () => {
+	it("BindAction/BindActionAtPriority/UnbindAction are safe no-ops", () => {
 		const cas = game.GetService("ContextActionService");
 		expect(() => {
 			(cas.BindAction as (...args: unknown[]) => void)(
 				"action",
 				() => {},
 				false,
+			);
+			(cas.BindActionAtPriority as (...args: unknown[]) => void)(
+				"action",
+				() => {},
+				false,
+				1000,
 			);
 			(cas.UnbindAction as (...args: unknown[]) => void)("action");
 		}).not.toThrow();

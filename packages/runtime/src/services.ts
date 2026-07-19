@@ -182,6 +182,12 @@ export function setViewportSize(size: Vector2): void {
 
 registerClassMethods("ContextActionService", {
 	BindAction: () => undefined,
+	// `BindActionAtPriority` is `BindAction` plus a priority arg — the focus
+	// manager binds Tab / D-pad navigation through it. Previews don't route real
+	// ContextAction input, so a no-op is enough; omitting it threw
+	// "BindActionAtPriority is not a function" and crashed every FocusScope
+	// consumer (Select, Dialog, Tabs, …) the moment it opened.
+	BindActionAtPriority: () => undefined,
 	UnbindAction: () => undefined,
 });
 
