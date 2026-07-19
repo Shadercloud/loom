@@ -364,28 +364,35 @@ export const string = {
 		return s.split(sep);
 	},
 	/**
-	 * `string.find` — returns the 1-based `[start, end]` tuple or `undefined`.
-	 * Non-plain calls try the pattern subset, then fall back to a literal find.
+	 * `string.find` — returns the 1-based `[start, end]` tuple, or an EMPTY tuple
+	 * when there is no match. Non-plain calls try the pattern subset, then fall
+	 * back to a literal find.
+	 *
+	 * The empty tuple (not `undefined`) is what keeps roblox-ts callers working:
+	 * `string.find` is a `LuaTuple`, so the idiomatic read is
+	 * `const [start] = string.find(...)`. Destructuring `undefined` throws
+	 * "undefined is not iterable" in JS, whereas Luau happily destructures a nil
+	 * multi-return into nils — an empty array reproduces that, and matches
+	 * roblox-ts's other semantics too (an undestructured multi-return is a table,
+	 * i.e. always truthy).
 	 */
 	find(
 		s: string,
 		pattern: string,
 		init = 1,
 		plain = false,
-	): [number, number] | undefined {
+	): [number, number] | [] {
 		const from = Math.max(0, init - 1);
 		if (!plain) {
 			const re = luaPatternToRegExp(pattern);
 			if (re) {
 				re.lastIndex = from;
 				const match = re.exec(s);
-				return match
-					? [match.index + 1, match.index + match[0].length]
-					: undefined;
+				return match ? [match.index + 1, match.index + match[0].length] : [];
 			}
 		}
 		const index = s.indexOf(pattern, from);
-		return index >= 0 ? [index + 1, index + pattern.length] : undefined;
+		return index >= 0 ? [index + 1, index + pattern.length] : [];
 	},
 	/**
 	 * `string.gsub` — returns the `[result, count]` tuple. Supports the same

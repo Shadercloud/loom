@@ -155,12 +155,21 @@ describe("string", () => {
 		expect(string.sub("hello", 4, 2)).toBe("");
 	});
 
-	it("find returns a 1-based [start, end] tuple or undefined", () => {
+	it("find returns a 1-based [start, end] tuple, or an empty tuple when unmatched", () => {
 		expect(string.find("hello world", "world", 1, true)).toEqual([7, 11]);
 		expect(string.find("hello", "l")).toEqual([3, 3]);
-		expect(string.find("hello", "z", 1, true)).toBeUndefined();
-		expect(string.find("aXa", "%d")).toBeUndefined();
+		expect(string.find("hello", "z", 1, true)).toEqual([]);
+		expect(string.find("aXa", "%d")).toEqual([]);
 		expect(string.find("a7a", "%d")).toEqual([2, 2]);
+	});
+
+	it("an unmatched find is still destructurable (roblox-ts LuaTuple read)", () => {
+		// `const [start] = string.find(...)` is the idiomatic roblox-ts read, and
+		// lattice's combobox filter uses exactly that. Returning `undefined` here
+		// threw "undefined is not iterable" and crashed the whole render.
+		const [start, finish] = string.find("hello", "z", 1, true);
+		expect(start).toBeUndefined();
+		expect(finish).toBeUndefined();
 	});
 
 	it("gsub handles the lattice character-class pattern", () => {
