@@ -151,6 +151,26 @@ function applyGradient(s: CSSStyleDeclaration, node: SceneNode): void {
 	s.backgroundImage = `linear-gradient(${90 + rotation}deg, ${stops})`;
 }
 
+/** Roblox classes that always sink pointer input regardless of `Active`. */
+const POINTER_SINK_CLASSES = new Set([
+	"TextButton",
+	"ImageButton",
+	"TextBox",
+	"ScrollingFrame",
+]);
+
+/**
+ * Whether a node should receive pointer input (CSS `pointer-events: auto`),
+ * mirroring Roblox: GuiButtons, TextBoxes, and ScrollingFrames always sink,
+ * plus any GuiObject with `Active = true`. Everything else (plain Frames,
+ * labels, CanvasGroups, LayerCollectors, the root) is click-through so a
+ * transparent container never blocks the interactive elements behind it.
+ */
+function sinksPointerInput(node: SceneNode): boolean {
+	if (POINTER_SINK_CLASSES.has(node.className)) return true;
+	return asBool(node.properties?.Active) === true;
+}
+
 /**
  * The full per-node box style (position, size, z-order, visibility, clipping,
  * background + modifiers) — the single CSS mapping both `renderScene` and the
@@ -170,13 +190,23 @@ function applyBoxStyle(
 	s.height = `${rect.height}px`;
 	// LayerCollectors z-order among themselves by DisplayOrder (default 0, may
 	// be negative — lattice portals use 1000+stack); everything else by ZIndex.
-	// The layer divs stay pointer-interactive (no pointer-events:none), so DOM
-	// paint order == input hit order for the delegated pointer events.
 	s.zIndex = String(
 		isLayerCollector(node.className)
 			? (asNumber(node.properties?.DisplayOrder) ?? 0)
 			: getZIndex(node),
 	);
+	// Roblox input-sinking → CSS pointer-events. In Roblox only GuiButtons,
+	// TextBoxes, ScrollingFrames, and objects with `Active = true` sink pointer
+	// input; a transparent (or opaque-but-inactive) Frame and a LayerCollector
+	// never block clicks from reaching the interactive elements behind them.
+	// Painting every div `pointer-events: auto` broke that: a full-screen
+	// transparent portal/positioning Frame (e.g. Combobox.Content's layer) sat
+	// over the anchor input and swallowed its clicks/focus. Give the sinkers an
+	// explicit `auto` (so they still receive under a `none` ancestor) and let
+	// everything else fall through. Delegated pointer routing is unaffected —
+	// it hit-tests the real event target and always fires UserInputService, so
+	// outside-press dismissal keeps working.
+	s.pointerEvents = sinksPointerInput(node) ? "auto" : "none";
 	if (!getVisible(node)) s.display = "none";
 	if (node.className === "ScrollingFrame" || getClipsDescendants(node)) {
 		s.overflow = "hidden";

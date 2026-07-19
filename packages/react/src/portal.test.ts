@@ -196,14 +196,19 @@ describe("createPortal + PlayerGui world root", () => {
 		expect(layerEl.parentElement).toBe(appEl.parentElement);
 		expect(appEl.style.zIndex).toBe("0"); // DisplayOrder default
 		expect(layerEl.style.zIndex).toBe("2000");
-		// The layer stays pointer-interactive (input hit order == paint order).
-		expect(layerEl.style.pointerEvents).not.toBe("none");
+		// LayerCollectors are transparent containers, not input sinkers: the div
+		// is click-through so it never blocks interactive elements behind it
+		// (pointer sinking is decided per GuiObject — buttons/TextBoxes/Active).
+		expect(layerEl.style.pointerEvents).toBe("none");
 		// Frames inside keep the ZIndex mapping.
 		const panelEl = mount.querySelector(
 			'[data-loom-name="Panel"]',
 		) as HTMLElement;
 		expect(panelEl.parentElement).toBe(layerEl);
 		expect(panelEl.style.zIndex).toBe("1");
+		// A plain Frame is not an input sinker either, so it stays click-through;
+		// only GuiButtons / TextBoxes / Active objects re-enable pointer events.
+		expect(panelEl.style.pointerEvents).toBe("none");
 	});
 
 	it("warns and skips non-LayerCollector children parented to PlayerGui", () => {
