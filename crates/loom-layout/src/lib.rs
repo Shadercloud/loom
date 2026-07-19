@@ -290,15 +290,23 @@ fn list_metrics(content: Rect, list: &SceneNode, children: &[(usize, &SceneNode)
         content.width
     };
     let gap = udim_prop(list, "Padding").map_or(0.0, |u| resolve_axis(u, main_content));
-    let n = children.len();
-    let mut total_main = gap * (n.saturating_sub(1) as f64);
+    // Roblox UIListLayout ignores `Visible = false` siblings: they take neither a
+    // slot nor a gap, so the visible items pack together (and AutomaticSize hugs
+    // only them). Measure over the visible children alone.
+    let mut total_main = 0.0;
     let mut cross_max: f64 = 0.0;
+    let mut visible_count = 0usize;
     for &(_, child) in children {
+        if !child.visible() {
+            continue;
+        }
         let (w, h) = resolve_size(child, content);
         let (main, cross) = if vertical { (h, w) } else { (w, h) };
         total_main += main;
         cross_max = cross_max.max(cross);
+        visible_count += 1;
     }
+    total_main += gap * (visible_count.saturating_sub(1) as f64);
     ListMetrics {
         vertical,
         total_main,
@@ -354,7 +362,12 @@ fn place_with_list(
             }
         };
         place_node(child, rect, format!("{parent_path}/{idx}"), out)?;
-        cursor += main_size + gap;
+        // `Visible = false` children still get a rect (the renderer hides them via
+        // CSS), but they must not consume flow space — mirror Roblox by advancing
+        // the cursor only for visible items so the rest pack up against them.
+        if child.visible() {
+            cursor += main_size + gap;
+        }
     }
     Ok(())
 }
@@ -727,6 +740,42 @@ mod tests {
                 height: 40.0
             }
         );
+    }
+
+    #[test]
+    fn ui_list_skips_invisible_children() {
+        // Roblox UIListLayout ignores `Visible = false` siblings: they reserve no
+        // slot, so the items after a hidden one pack up against the visible ones.
+        // (Regression: a hidden middle item used to leave a gap, pushing the rest
+        // down — which floated a filtered combobox's sole match to the bottom.)
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Vertical")),
+                ("Padding", udim(0.0, 10.0)),
+            ],
+        );
+        let mut container = with("Frame", "Container", &[("Size", udim2(1.0, 0.0, 1.0, 0.0))]);
+        container.children.push(list);
+        for (name, visible) in [("A", true), ("B", false), ("C", true)] {
+            container.children.push(with(
+                "Frame",
+                name,
+                &[
+                    ("Size", udim2(0.0, 100.0, 0.0, 40.0)),
+                    ("Visible", PropertyValue::Known(KnownProperty::Bool(visible))),
+                ],
+            ));
+        }
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        // A sits at the top.
+        assert_eq!(r.rects["0/0/0"].rect.y, 0.0);
+        // C packs directly below A (y = 40 + 10 gap), NOT at 100 — the hidden B
+        // consumed no slot.
+        assert_eq!(r.rects["0/0/2"].rect.y, 50.0);
+        // B still gets a rect (the renderer hides it via CSS) but takes no space.
+        assert_eq!(r.rects["0/0/1"].rect.y, 50.0);
     }
 
     #[test]
