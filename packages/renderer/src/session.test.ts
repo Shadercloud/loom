@@ -215,6 +215,43 @@ describe("createDomSession", () => {
 		session.dispose();
 	});
 
+	it("reports a secondary press as MouseButton2 and does not activate", () => {
+		const button = createInstance("TextButton", "Button");
+		const buttonId = getInternalId(button);
+		const byId = new Map([[buttonId, button]]);
+		const scene: SceneNode = {
+			className: "TextButton",
+			name: "Button",
+			id: buttonId,
+		};
+		const layout = layoutOf({
+			[buttonId]: { x: 0, y: 0, width: 100, height: 40 },
+		});
+
+		const session = makeSession(byId);
+		session.patch(scene, layout);
+		const el = mount.querySelector(`[data-loom-id="${buttonId}"]`) as Element;
+
+		const begun: InputObject[] = [];
+		let activated = 0;
+		getEventSignal(button, "InputBegan").Connect((input) => {
+			begun.push(input as InputObject);
+		});
+		getEventSignal(button, "Activated").Connect(() => {
+			activated += 1;
+		});
+
+		firePointer(el, "pointerdown", { clientX: 12, clientY: 8, button: 2 });
+		firePointer(el, "pointerup", { clientX: 12, clientY: 8, button: 2 });
+
+		// ContextMenu triggers listen for MouseButton2; collapsing every button
+		// onto MouseButton1 would leave them dead.
+		expect(begun[0]?.UserInputType).toBe(Enum.UserInputType.MouseButton2);
+		// Roblox does not activate a GuiButton on a right-click.
+		expect(activated).toBe(0);
+		session.dispose();
+	});
+
 	it("fires MouseEnter/MouseLeave with (x, y) via hover chain diff", () => {
 		const frame = createInstance("Frame", "Hover");
 		const frameId = getInternalId(frame);

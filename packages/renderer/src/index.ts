@@ -829,6 +829,19 @@ export function createDomSession(
 		return chain;
 	}
 
+	/**
+	 * Roblox reports each mouse button as its own `UserInputType`, so the DOM
+	 * `button` index has to be mapped rather than collapsed onto MouseButton1 —
+	 * secondary-click consumers (ContextMenu) listen for MouseButton2 and would
+	 * otherwise never fire. `pointerup` reports `button` too, so this holds for
+	 * both ends of the press.
+	 */
+	function mouseButtonInputType(button: number): EnumItem<"UserInputType"> {
+		if (button === 2) return Enum.UserInputType.MouseButton2;
+		if (button === 1) return Enum.UserInputType.MouseButton3;
+		return Enum.UserInputType.MouseButton1;
+	}
+
 	function pointerInput(
 		e: PointerEvent,
 		state: EnumItem<"UserInputState">,
@@ -838,7 +851,7 @@ export function createDomSession(
 			UserInputType:
 				e.pointerType === "touch"
 					? Enum.UserInputType.Touch
-					: Enum.UserInputType.MouseButton1,
+					: mouseButtonInputType(e.button),
 			UserInputState: state,
 			Position: Vector3.new(x, y, 0),
 		});
@@ -865,7 +878,12 @@ export function createDomSession(
 		for (const inst of chain) {
 			getEventSignal(inst, "InputEnded").fire(input);
 		}
-		if (pressed && chain.includes(pressed)) {
+		// Only a primary press activates a GuiButton in Roblox; a right-click
+		// raises InputBegan/InputEnded and nothing else.
+		const activates =
+			input.UserInputType === Enum.UserInputType.MouseButton1 ||
+			input.UserInputType === Enum.UserInputType.Touch;
+		if (activates && pressed && chain.includes(pressed)) {
 			// Roblox activates the pressed control even when the press landed on a
 			// decorative child (label, icon): route to the nearest instance in the
 			// chain with an Activated listener, falling back to the pressed one.
@@ -1030,6 +1048,16 @@ export function createDomSession(
 		);
 	}
 
+	/**
+	 * A right-click inside the scene belongs to the scene: Roblox has no browser
+	 * context menu, and leaving the native one up would cover whatever the
+	 * secondary click just opened.
+	 */
+	function onContextMenu(e: MouseEvent): void {
+		e.preventDefault();
+	}
+
+	mount.addEventListener("contextmenu", onContextMenu);
 	mount.addEventListener("pointerdown", onPointerDown);
 	mount.addEventListener("pointerup", onPointerUp);
 	mount.addEventListener("pointermove", onPointerMove);
@@ -1067,6 +1095,7 @@ export function createDomSession(
 		},
 		clear,
 		dispose(): void {
+			mount.removeEventListener("contextmenu", onContextMenu);
 			mount.removeEventListener("pointerdown", onPointerDown);
 			mount.removeEventListener("pointerup", onPointerUp);
 			mount.removeEventListener("pointermove", onPointerMove);
