@@ -1,4 +1,4 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env node
 /**
  * `loom` CLI — preview a roblox-ts UI project in the browser with zero config.
  *
@@ -112,9 +112,11 @@ function loomIndexHtml(entryUrl: string): Plugin {
 }
 
 /**
- * Import `<root>/loom.config.ts` (tsx's loader handles the TS) and return its
- * default export, plus whether the file existed at all. Import failures are
- * downgraded to a warning — a broken config never blocks plain preview mode.
+ * Import `<root>/loom.config.ts` and return its default export, plus whether the
+ * file existed at all. The TS is handled by Node's own type stripping (on by
+ * default from Node 24, which `engines` already requires) or by tsx's loader
+ * when the CLI runs from source. Import failures are downgraded to a warning —
+ * a broken config never blocks plain preview mode.
  */
 async function loadLoomConfig(
 	root: string,

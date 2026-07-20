@@ -34,14 +34,23 @@ import {
 	normalizeTargetsPatterns,
 } from "./gallery";
 
-/** The loom repo root (this file lives at <root>/packages/cli/src/). */
+/**
+ * A directory guaranteed to contain the shell sources, for Vite's
+ * `server.fs.allow`: the repo root in the workspace, the installing project's
+ * root once published (this module runs from `src/` and `dist/` respectively,
+ * both one level under the package root).
+ */
 const LOOM_REPO_ROOT = fileURLToPath(
 	new URL("../../..", import.meta.url),
 ).replace(/[/\\]+$/, "");
 
-/** The shared gallery shell, imported by the generated entry via a relative path. */
+/**
+ * The shared gallery shell, imported by the generated entry via a relative path.
+ * Read out of the shipped `src/` so the same TypeScript source is handed to Vite
+ * from a workspace checkout and from a published install alike.
+ */
 const GALLERY_SHELL_PATH = fileURLToPath(
-	new URL("gallery/gallery-shell.ts", import.meta.url),
+	new URL("../src/gallery/gallery-shell.ts", import.meta.url),
 );
 
 // The generated scratch files sit inside `node_modules`, where pnpm does NOT

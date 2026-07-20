@@ -13,7 +13,7 @@
  * (not in @loom-dev/preview) so the preview package's public surface stays
  * untouched.
  */
-import { sep } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
 import { findLoomTargets, generateTargetsModule } from "./gallery";
@@ -23,12 +23,24 @@ const TARGETS_RESOLVED = `\0${TARGETS_ID}`;
 
 const toPosix = (p: string): string => p.split(sep).join("/");
 
-/** The loom repo root (this file lives at <root>/packages/cli/src/). */
+/**
+ * The browser-side shell is served as source through `/@fs/`, so it is always
+ * read out of this package's shipped `src/`. `src/` and the built `dist/` are
+ * siblings one level under the package root, so `../src` is correct whether
+ * this module runs from `src/` (workspace) or `dist/` (published install).
+ */
+const CLI_SRC = fileURLToPath(new URL("../src", import.meta.url));
+
+/**
+ * A directory guaranteed to contain the shell sources, for Vite's
+ * `server.fs.allow`: the repo root in the workspace, the installing project's
+ * `node_modules` once published.
+ */
 export const LOOM_REPO_ROOT = fileURLToPath(
 	new URL("../../..", import.meta.url),
 ).replace(/[/\\]+$/, "");
 
-const SHELL_PATH = fileURLToPath(new URL("gallery/shell.ts", import.meta.url));
+const SHELL_PATH = join(CLI_SRC, "gallery", "shell.ts");
 const SHELL_URL = `/@fs${toPosix(SHELL_PATH)}`;
 
 /** Serve + watch the `virtual:loom-targets` import map. */
