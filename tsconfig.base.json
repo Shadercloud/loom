@@ -3,6 +3,12 @@
 		"target": "ES2022",
 		"module": "ESNext",
 		"moduleResolution": "bundler",
+		// Relative imports carry an explicit `.ts` extension so that plain Node
+		// ESM (which loads the workspace `exports` -> `src/*.ts` directly, e.g.
+		// when Vite externalizes @loom-dev/preview/vite while loading a config)
+		// can resolve them. Node's type stripping only accepts the real `.ts`
+		// extension — `.js` does not resolve.
+		"allowImportingTsExtensions": true,
 		"lib": ["ES2023", "DOM", "DOM.Iterable"],
 		"strict": true,
 		"noUncheckedIndexedAccess": true,

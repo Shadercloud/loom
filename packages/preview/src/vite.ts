@@ -25,8 +25,8 @@ import {
 	type ResolverFs,
 	resolveLuauFallback,
 	resolvePackageSource,
-} from "./resolver";
-import { rewriteImportEquals } from "./transform";
+} from "./resolver.ts";
+import { rewriteImportEquals } from "./transform.ts";
 
 // A virtual module that installs the Roblox globals. Injected as a real <script
 // src> (not an inline bare import) so it resolves whether the index.html is a

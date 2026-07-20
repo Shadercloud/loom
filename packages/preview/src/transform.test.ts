@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rewriteImportEquals } from "./transform";
+import { rewriteImportEquals } from "./transform.ts";
 
 describe("rewriteImportEquals", () => {
 	it("rewrites a double-quoted import-equals", () => {

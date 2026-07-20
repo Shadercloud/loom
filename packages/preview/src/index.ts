@@ -6,6 +6,6 @@
  * - `@loom-dev/preview/globals` — installs the Roblox datatype globals
  */
 
-export type { LoomReactRoot } from "./client";
-export { createRoot } from "./client";
-export { loomPreview } from "./vite";
+export type { LoomReactRoot } from "./client.ts";
+export { createRoot } from "./client.ts";
+export { loomPreview } from "./vite.ts";

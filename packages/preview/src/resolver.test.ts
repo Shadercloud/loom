@@ -4,7 +4,7 @@ import {
 	type ResolverFs,
 	resolveLuauFallback,
 	resolvePackageSource,
-} from "./resolver";
+} from "./resolver.ts";
 
 function fakeFs(files: string[]): ResolverFs {
 	const set = new Set(files);
