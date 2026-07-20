@@ -1,0 +1,34 @@
+name: Setup loom toolchain
+description: Node + pnpm + the Rust/wasm toolchain, then a frozen install.
+
+runs:
+  using: composite
+  steps:
+    # Rust and wasm-pack come first: `pnpm install` runs the root `prepare`
+    # script, which builds the wasm layout engine into packages/layout/pkg.
+    - name: Install Rust (channel + targets from rust-toolchain.toml)
+      shell: bash
+      run: rustup show active-toolchain || rustup toolchain install
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: . -> target
+
+    - name: Install wasm-pack
+      uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack
+
+    - uses: pnpm/action-setup@v4
+
+    # No `registry-url`: that input exists to write an .npmrc line pinning
+    # _authToken to $NODE_AUTH_TOKEN, which trusted publishing does not use.
+    # Node 24 also clears the >=22.14.0 floor OIDC publishing requires.
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile

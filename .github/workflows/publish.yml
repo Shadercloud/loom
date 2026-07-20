@@ -1,0 +1,53 @@
+# The filename matters. npm binds a trusted publisher to one exact workflow
+# file, so the publisher registered on npmjs.com for every @loom-dev package
+# names `publish.yml` — renaming this file breaks publishing until the trusted
+# publisher is updated to match.
+name: Publish
+
+# Runs on every push to main and no-ops unless there is something to publish:
+# `changeset publish` only pushes versions the registry does not already have,
+# so a normal commit is a cheap no-op and a merged "Version Packages" PR
+# (from release.yml) is what actually ships.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency: publish-${{ github.ref }}
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the per-package git tags changeset publish creates
+      id-token: write # mint the OIDC token npm exchanges for a publish token
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup
+
+      # Gate the publish on the same checks the workspace runs locally. `test`
+      # covers both sides of the wasm boundary (cargo test + vitest).
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      # No NPM_TOKEN: `changeset publish` shells out to `pnpm publish`, and pnpm
+      # 11.6+ performs the OIDC exchange itself (id-token -> short-lived publish
+      # token) and attaches provenance automatically. `pnpm release` builds the
+      # release-profile wasm and the JS first — changesets never builds.
+      #
+      # pnpm degrades to a warning rather than an error when OIDC is
+      # unavailable ("Skipped OIDC: ..."), and then fails later on a 401/E404.
+      # If a publish fails, read the log for that warning before assuming the
+      # trusted publisher config is wrong.
+      - name: Build and publish
+        run: pnpm release
+
+      - name: Push release tags
+        run: git push origin --tags
