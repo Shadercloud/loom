@@ -10,3 +10,6 @@ pkg/
 # misc
 .DS_Store
 *.log
+
+.serena
+digest.txt
