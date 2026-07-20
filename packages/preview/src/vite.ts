@@ -17,7 +17,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Plugin, searchForWorkspaceRoot } from "vite";
 import {
@@ -35,11 +35,21 @@ const GLOBALS_ID = "virtual:loom-globals";
 const GLOBALS_RESOLVED = `\0${GLOBALS_ID}`;
 const GLOBALS_URL = `/@id/__x00__${GLOBALS_ID}`;
 
-// This file lives at <loom repo>/packages/preview/src/vite.ts. The preview's
-// sibling modules are aliased by absolute path (not bare specifier) so they
-// resolve even when the previewed project's node_modules has no @loom-dev
-// packages — e.g. `loom preview` pointed at a different workspace entirely.
-const PREVIEW_SRC = dirname(fileURLToPath(import.meta.url));
+// The browser-facing modules are always aliased to their TypeScript *source*,
+// never to the build output: Vite transpiles them in the previewed project, and
+// pointing at one fixed location keeps dev and published installs identical.
+// `src/` is shipped in the published tarball (see `files`), and it sits one
+// level under the package root either way — this module runs from `src/vite.ts`
+// in the workspace and from `dist/vite.js` once installed, so `../src` resolves
+// to the same directory in both.
+//
+// They are aliased by absolute path (not bare specifier) so they resolve even
+// when the previewed project's node_modules has no @loom-dev packages — e.g.
+// `loom preview` pointed at a different workspace entirely.
+const PREVIEW_SRC = fileURLToPath(new URL("../src", import.meta.url));
+// A directory that is guaranteed to contain the sources above, for Vite's
+// `server.fs.allow`: the repo root in the workspace, the installing project's
+// `node_modules` once published.
 const LOOM_REPO_ROOT = resolve(PREVIEW_SRC, "../../..");
 const CLIENT_PATH = join(PREVIEW_SRC, "client.ts");
 const SERVICES_PATH = join(PREVIEW_SRC, "services.ts");
