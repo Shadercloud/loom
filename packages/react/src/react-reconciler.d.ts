@@ -41,6 +41,9 @@ declare module "react-reconciler" {
 	): ReactReconcilerInstance;
 }
 
-declare module "react-reconciler/constants" {
+// Spelled with the `.js` extension: react-reconciler 0.29 ships no `exports`
+// map, so plain Node ESM (which the published build runs under) will not
+// resolve the extensionless subpath. Bundlers accept both.
+declare module "react-reconciler/constants.js" {
 	export const DefaultEventPriority: number;
 }

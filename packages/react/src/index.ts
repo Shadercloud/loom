@@ -60,7 +60,7 @@ import {
 } from "@loom-dev/scene";
 import type { Key, ReactElement, ReactNode, ReactPortal, Ref } from "react";
 import Reconciler from "react-reconciler";
-import { DefaultEventPriority } from "react-reconciler/constants";
+import { DefaultEventPriority } from "react-reconciler/constants.js";
 
 type Props = Record<string, unknown>;
 
