@@ -1,24 +1,51 @@
 {
 	"name": "loom-dev",
-	"version": "0.0.0",
-	"private": true,
+	"version": "0.1.0",
+	"description": "CLI for the loom preview and build toolchain — preview a roblox-ts UI project in the browser with zero config.",
+	"keywords": [
+		"loom",
+		"roblox",
+		"roblox-ts",
+		"cli",
+		"preview",
+		"gallery"
+	],
+	"license": "MIT",
+	"author": "astra-void",
+	"homepage": "https://github.com/astra-void/loom#readme",
+	"bugs": "https://github.com/astra-void/loom/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/astra-void/loom.git",
+		"directory": "packages/cli"
+	},
 	"type": "module",
 	"bin": {
-		"loom": "./src/cli.ts"
+		"loom": "./dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"src",
+		"!src/**/*.test.ts"
+	],
+	"publishConfig": {
+		"access": "public"
 	},
 	"scripts": {
-		"typecheck": "tsc -p tsconfig.json --noEmit",
-		"build": "tsc -p tsconfig.json --noEmit"
+		"build": "tsdown",
+		"dev": "tsx src/cli.ts",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
 		"@loom-dev/preview": "workspace:*",
 		"react": "catalog:",
-		"tsx": "^4.19.0",
 		"vite": "catalog:"
 	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
 		"@types/react": "catalog:",
+		"tsdown": "catalog:",
+		"tsx": "^4.19.0",
 		"typescript": "catalog:"
 	}
 }

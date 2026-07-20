@@ -1,20 +1,51 @@
 {
 	"name": "@loom-dev/runtime",
-	"version": "0.0.0",
-	"private": true,
+	"version": "0.1.0",
+	"description": "Browser-side Roblox runtime for loom — datatypes, Enum, signals, the live instance tree, input, and the frame scheduler.",
+	"keywords": [
+		"loom",
+		"roblox",
+		"roblox-ts",
+		"runtime",
+		"luau"
+	],
+	"license": "MIT",
+	"author": "astra-void",
+	"homepage": "https://github.com/astra-void/loom#readme",
+	"bugs": "https://github.com/astra-void/loom/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/astra-void/loom.git",
+		"directory": "packages/runtime"
+	},
 	"type": "module",
+	"sideEffects": false,
+	"files": [
+		"dist"
+	],
 	"exports": {
 		".": "./src/index.ts"
 	},
 	"types": "./src/index.ts",
+	"publishConfig": {
+		"access": "public",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
 	"dependencies": {
 		"@loom-dev/scene": "workspace:*"
 	},
-	"scripts": {
-		"build": "tsc -p tsconfig.json --noEmit",
-		"typecheck": "tsc -p tsconfig.json --noEmit"
-	},
 	"devDependencies": {
+		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
 	}

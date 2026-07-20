@@ -1,14 +1,44 @@
 {
 	"name": "@loom-dev/vide",
-	"version": "0.0.0",
-	"private": true,
+	"version": "0.1.0",
+	"description": "Vide adapter for loom — fine-grained reactivity producing the same Scene IR as the React renderer.",
+	"keywords": [
+		"loom",
+		"roblox",
+		"vide",
+		"reactivity",
+		"ui"
+	],
+	"license": "MIT",
+	"author": "astra-void",
+	"homepage": "https://github.com/astra-void/loom#readme",
+	"bugs": "https://github.com/astra-void/loom/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/astra-void/loom.git",
+		"directory": "packages/vide"
+	},
 	"type": "module",
+	"sideEffects": false,
+	"files": [
+		"dist"
+	],
 	"exports": {
 		".": "./src/index.ts"
 	},
 	"types": "./src/index.ts",
+	"publishConfig": {
+		"access": "public",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			}
+		}
+	},
 	"scripts": {
-		"build": "tsc -p tsconfig.json --noEmit",
+		"build": "tsdown",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
@@ -18,6 +48,7 @@
 		"@loom-dev/scene": "workspace:*"
 	},
 	"devDependencies": {
+		"tsdown": "catalog:",
 		"typescript": "catalog:"
 	}
 }

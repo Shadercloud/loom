@@ -1,20 +1,54 @@
 {
 	"name": "@loom-dev/layout",
-	"version": "0.0.0",
-	"private": true,
+	"version": "0.1.0",
+	"description": "Roblox-accurate UI layout for loom, computed by a Rust/WASM engine.",
+	"keywords": [
+		"loom",
+		"roblox",
+		"layout",
+		"wasm",
+		"ui"
+	],
+	"license": "MIT",
+	"author": "astra-void",
+	"homepage": "https://github.com/astra-void/loom#readme",
+	"bugs": "https://github.com/astra-void/loom/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/astra-void/loom.git",
+		"directory": "packages/layout"
+	},
 	"type": "module",
+	"sideEffects": false,
+	"files": [
+		"dist",
+		"pkg"
+	],
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./pkg/*": "./pkg/*"
 	},
 	"types": "./src/index.ts",
+	"publishConfig": {
+		"access": "public",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"./pkg/*": "./pkg/*"
+		}
+	},
 	"scripts": {
-		"build": "tsc -p tsconfig.json --noEmit",
+		"build": "tsdown",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
 		"@loom-dev/scene": "workspace:*"
 	},
 	"devDependencies": {
+		"tsdown": "catalog:",
 		"typescript": "catalog:"
 	}
 }
