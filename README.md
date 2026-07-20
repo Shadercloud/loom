@@ -74,6 +74,46 @@ static, client-only site (default `dist-preview/`). Both read an optional
 - `pnpm typecheck` / `pnpm build`
 - `pnpm test` — `cargo test` + `vitest run`
 - `pnpm lint` / `pnpm format` — Biome
+- `pnpm changeset` — record a release note for the packages you touched
+
+## Releasing
+
+Everything under `packages/` is published to npm under the `@loom-dev` scope
+(the CLI keeps the unscoped name `loom-dev`), and all of them move in lockstep —
+one version bump bumps them all.
+
+The workspace itself stays source-first: `exports` point at `src/`, so a
+checkout needs no build step and edits are picked up immediately. `dist/` is
+swapped in only for the published tarball, via `publishConfig`.
+
+1. Add a changeset to your PR: `pnpm changeset`.
+2. On merge to `main`, [`release.yml`](.github/workflows/release.yml) opens (or
+   refreshes) a **Version Packages** PR that applies the bumps and writes the
+   changelogs. This workflow only versions; it never publishes.
+3. Merging that PR lands the bumps on `main`, and
+   [`publish.yml`](.github/workflows/publish.yml) ships them: release-profile
+   WASM, then the JS, then `changeset publish`.
+4. Optionally push a `v<version>` tag to cut a GitHub Release;
+   [`tag-release.yml`](.github/workflows/tag-release.yml) attaches the npm
+   tarballs and the WASM bundle to it.
+
+### Trusted publishing (OIDC)
+
+There is no `NPM_TOKEN`. Publishing authenticates with npm's trusted publishing:
+the job mints a GitHub OIDC token (`id-token: write`), pnpm exchanges it for a
+short-lived publish token, and npm attaches a provenance attestation
+automatically. Two constraints follow from that:
+
+- **The workflow filename is part of the trust config.** Each package's trusted
+  publisher on npmjs.com names `publish.yml`. Renaming the file — or moving the
+  publish step into another workflow — breaks publishing until the publisher is
+  updated. This is why versioning and publishing are separate workflows.
+- **npm cannot configure a trusted publisher for a package that does not exist
+  yet.** Every new `@loom-dev/*` package needs one bootstrap publish from a
+  local `npm publish` (or a `0.0.0` placeholder) before its trusted publisher
+  can be added.
+
+Requires pnpm 11.6+ (it performs the OIDC exchange itself) and Node 22.14+.
 
 ## Roadmap
 
