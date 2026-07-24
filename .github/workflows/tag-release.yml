@@ -1,7 +1,7 @@
 name: Tag Release
 
 # Cutting a GitHub Release is deliberately separate from publishing to npm.
-# npm is handled by publish.yml when the version bumps land on main; pushing a
+# npm is handled by publish.yaml when the version bumps land on main; pushing a
 # `v*` tag afterwards builds the release-profile wasm and publishes the GitHub
 # Release with the built artifacts attached.
 on:

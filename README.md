@@ -125,7 +125,7 @@ worked and is gone.)
    changelog generator links commits and authors — e.g.
    `GITHUB_TOKEN=$(gh auth token) pnpm version-packages`.
 3. Commit the result and push it to `main`.
-   [`publish.yml`](.github/workflows/publish.yml) runs on every push and ships
+   [`publish.yaml`](.github/workflows/publish.yaml) runs on every push and ships
    whatever the registry does not have yet: release-profile WASM, then the JS,
    then `pnpm publish:packages` (`pnpm -r publish` over `packages/*`, which
    skips versions npm already has). A push with no version change is a cheap
@@ -145,10 +145,12 @@ the job mints a GitHub OIDC token (`id-token: write`), pnpm exchanges it for a
 short-lived publish token, and npm attaches a provenance attestation
 automatically. Two constraints follow from that:
 
-- **The workflow filename is part of the trust config.** Each package's trusted
-  publisher on npmjs.com names `publish.yml`. Renaming the file — or moving the
-  publish step into another workflow — breaks publishing until the publisher is
-  updated. This is why versioning and publishing are separate workflows.
+- **The workflow filename is part of the trust config, extension included.**
+  Each package's trusted publisher on npmjs.com names `publish.yaml`. Renaming
+  the file — or moving the publish step into another workflow — breaks
+  publishing until the publisher is updated. A mismatch is not reported as a
+  permission error: the token exchange 404s, pnpm logs `Skipped OIDC` and
+  carries on unauthenticated, and every package then fails its PUT with `E404`.
 - **npm cannot configure a trusted publisher for a package that does not exist
   yet.** Every new `@loom-dev/*` package needs one bootstrap publish from a
   local `npm publish` (or a `0.0.0` placeholder) before its trusted publisher

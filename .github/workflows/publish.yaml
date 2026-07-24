@@ -1,7 +1,8 @@
-# The filename matters. npm binds a trusted publisher to one exact workflow
-# file, so the publisher registered on npmjs.com for every @loom-dev package
-# names `publish.yml` — renaming this file breaks publishing until the trusted
-# publisher is updated to match.
+# The filename matters, down to the extension. npm binds a trusted publisher to
+# one exact workflow file, and the publisher registered on npmjs.com for every
+# @loom-dev package names `publish.yaml` — this file was `publish.yml` for the
+# 0.2.0 release, and the OIDC token exchange answered 404 for every package.
+# Renaming this file breaks publishing until the publisher is updated to match.
 name: Publish
 
 # Runs on every push to main and no-ops unless there is something to publish:
