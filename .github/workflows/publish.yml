@@ -6,8 +6,9 @@ name: Publish
 
 # Runs on every push to main and no-ops unless there is something to publish:
 # `changeset publish` only pushes versions the registry does not already have,
-# so a normal commit is a cheap no-op and a merged "Version Packages" PR
-# (from release.yml) is what actually ships.
+# so an ordinary commit is a cheap no-op, and a commit carrying the version
+# bumps — `pnpm version-packages`, applied locally, see the README — is what
+# actually ships.
 on:
   push:
     branches: [main]

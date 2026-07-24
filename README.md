@@ -113,13 +113,21 @@ The workspace itself stays source-first: `exports` point at `src/`, so a
 checkout needs no build step and edits are picked up immediately. `dist/` is
 swapped in only for the published tarball, via `publishConfig`.
 
+Versioning is done locally and CI only publishes. (There used to be a workflow
+that kept a "Version Packages" PR in sync; it needed GitHub Actions to be
+allowed to open pull requests, which this repo does not permit, so it never
+worked and is gone.)
+
 1. Add a changeset to your PR: `pnpm changeset`.
-2. On merge to `main`, [`release.yml`](.github/workflows/release.yml) opens (or
-   refreshes) a **Version Packages** PR that applies the bumps and writes the
-   changelogs. This workflow only versions; it never publishes.
-3. Merging that PR lands the bumps on `main`, and
-   [`publish.yml`](.github/workflows/publish.yml) ships them: release-profile
-   WASM, then the JS, then `changeset publish`.
+2. When you want to cut a release, apply the pending changesets locally:
+   `pnpm version-packages`. That bumps every package to the same version and
+   writes the changelogs. It needs `GITHUB_TOKEN` in the environment — the
+   changelog generator links commits and authors — e.g.
+   `GITHUB_TOKEN=$(gh auth token) pnpm version-packages`.
+3. Commit the result and push it to `main`.
+   [`publish.yml`](.github/workflows/publish.yml) runs on every push and ships
+   whatever the registry does not have yet: release-profile WASM, then the JS,
+   then `changeset publish`. A push with no version change is a cheap no-op.
 4. Optionally push a `v<version>` tag to cut a GitHub Release;
    [`tag-release.yml`](.github/workflows/tag-release.yml) attaches the npm
    tarballs and the WASM bundle to it.
