@@ -16,7 +16,7 @@
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin } from "vite";
-import { findLoomTargets, generateTargetsModule } from "./gallery";
+import { findLoomTargets, generateTargetsModule } from "./gallery.ts";
 
 const TARGETS_ID = "virtual:loom-targets";
 const TARGETS_RESOLVED = `\0${TARGETS_ID}`;
@@ -87,7 +87,16 @@ export function loomGallery(patterns: string[]): Plugin {
 	};
 }
 
-/** Serve the generated gallery index.html on `/`. */
+/**
+ * Serve the generated gallery index.html on `/`.
+ *
+ * The middleware is registered ahead of Vite's own, so it sees request URLs
+ * *before* `viteBaseMiddleware` strips the configured base — hence the explicit
+ * base handling. Under `loom preview` the base is `/` and this is a no-op; an
+ * embedded gallery (`createGalleryServer`) is mounted under e.g.
+ * `/loom-preview/` and its index has to answer there. Everything the page
+ * references is base-prefixed by Vite's own dev HTML transform.
+ */
 export function loomGalleryIndexHtml(): Plugin {
 	const html = `<!doctype html>
 <html lang="en">
@@ -107,15 +116,23 @@ export function loomGalleryIndexHtml(): Plugin {
 		<script type="module" src="${SHELL_URL}"></script>
 	</body>
 </html>`;
+	let base = "/";
 	return {
 		name: "loom:gallery-index-html",
 		apply: "serve",
+		configResolved(config) {
+			base = config.base;
+		},
 		configureServer(server) {
 			// Registered before Vite's internal middlewares (no post-hook wrapper):
 			// in gallery mode the generated page wins even if the project ships its
 			// own index.html.
 			server.middlewares.use(async (req, res, next) => {
-				const url = (req.url ?? "/").split("?")[0];
+				const path = (req.url ?? "/").split("?")[0] ?? "/";
+				// `/loom-preview/index.html` → `/index.html`; `/` stays `/`.
+				const url = path.startsWith(base)
+					? `/${path.slice(base.length)}`
+					: path;
 				if (url !== "/" && url !== "/index.html") return next();
 				try {
 					const out = await server.transformIndexHtml(
