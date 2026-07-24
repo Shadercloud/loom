@@ -33,7 +33,18 @@ import { rewriteImportEquals } from "./transform.ts";
 // real file or served by the CLI's middleware.
 const GLOBALS_ID = "virtual:loom-globals";
 const GLOBALS_RESOLVED = `\0${GLOBALS_ID}`;
-const GLOBALS_URL = `/@id/__x00__${GLOBALS_ID}`;
+const GLOBALS_PATHNAME = `@id/__x00__${GLOBALS_ID}`;
+
+/**
+ * The served URL of the globals module. Tags injected by `transformIndexHtml`
+ * bypass Vite's own URL rewriting, so the base has to be applied here — an
+ * embedded gallery (`loom-dev/embed`) is mounted under a base like
+ * `/loom-preview/`, and a root-absolute `/@id/...` would miss the mount and be
+ * answered by the host app (a 404, and no Roblox globals).
+ */
+function globalsUrl(base: string): string {
+	return `${base.endsWith("/") ? base : `${base}/`}${GLOBALS_PATHNAME}`;
+}
 
 // The browser-facing modules are always aliased to their TypeScript *source*,
 // never to the build output: Vite transpiles them in the previewed project, and
@@ -263,10 +274,14 @@ export function loomPreview(): Plugin[] {
 	// module (there is no build chunk for the `/@id/` URL). Under `build` this
 	// plugin is inert — the CLI's generated HTML entry imports
 	// `@loom-dev/preview/globals` directly as its first module instead.
+	let base = "/";
 	const serveGlobals: Plugin = {
 		name: "loom-preview:serve-globals",
 		apply: "serve",
 		enforce: "pre",
+		configResolved(config) {
+			base = config.base;
+		},
 		resolveId(source) {
 			if (source === GLOBALS_ID) return GLOBALS_RESOLVED;
 		},
@@ -281,7 +296,7 @@ export function loomPreview(): Plugin[] {
 			return [
 				{
 					tag: "script",
-					attrs: { type: "module", src: GLOBALS_URL },
+					attrs: { type: "module", src: globalsUrl(base) },
 					injectTo: "head-prepend",
 				},
 			];
