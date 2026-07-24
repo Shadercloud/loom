@@ -127,7 +127,13 @@ worked and is gone.)
 3. Commit the result and push it to `main`.
    [`publish.yml`](.github/workflows/publish.yml) runs on every push and ships
    whatever the registry does not have yet: release-profile WASM, then the JS,
-   then `changeset publish`. A push with no version change is a cheap no-op.
+   then `pnpm publish:packages` (`pnpm -r publish` over `packages/*`, which
+   skips versions npm already has). A push with no version change is a cheap
+   no-op, and `pnpm publish:packages` is the same command you would run by hand.
+
+   Changesets is used for changelogs and version bumps only, never to publish:
+   `changeset publish` reports registry rejections as a bare `E404 undefined`
+   per package, which hides npm's actual error.
 4. Optionally push a `v<version>` tag to cut a GitHub Release;
    [`tag-release.yml`](.github/workflows/tag-release.yml) attaches the npm
    tarballs and the WASM bundle to it.

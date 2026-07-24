@@ -23,7 +23,9 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the per-package git tags changeset publish creates
+      # Nothing is written back to the repo: the release marker is the `v*` tag
+      # pushed by hand, not per-package tags.
+      contents: read
       id-token: write # mint the OIDC token npm exchanges for a publish token
     steps:
       - uses: actions/checkout@v4
@@ -38,17 +40,19 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
-      # No NPM_TOKEN: `changeset publish` shells out to `pnpm publish`, and pnpm
-      # 11.6+ performs the OIDC exchange itself (id-token -> short-lived publish
-      # token) and attaches provenance automatically. `pnpm release` builds the
-      # release-profile wasm and the JS first — changesets never builds.
+      # `pnpm release` builds the release-profile wasm and the JS, then runs
+      # `pnpm -r publish` over packages/* — pnpm skips any version the registry
+      # already has, so re-running this on an unchanged main is a no-op.
       #
-      # pnpm degrades to a warning rather than an error when OIDC is
-      # unavailable ("Skipped OIDC: ..."), and then fails later on a 401/E404.
-      # If a publish fails, read the log for that warning before assuming the
-      # trusted publisher config is wrong.
+      # Publishing is done by pnpm directly rather than by `changeset publish`:
+      # changesets swallows the publish output and reports a bare `E404
+      # undefined` per package, which says nothing about why the registry
+      # refused. pnpm surfaces npm's own error.
+      #
+      # No NPM_TOKEN: pnpm 11.6+ performs the OIDC exchange itself (id-token ->
+      # short-lived publish token) and attaches provenance automatically. It
+      # degrades to a warning rather than an error when OIDC is unavailable
+      # ("Skipped OIDC: ..."), then fails later on a 401/E404 — read the log for
+      # that warning before assuming the trusted publisher config is wrong.
       - name: Build and publish
         run: pnpm release
-
-      - name: Push release tags
-        run: git push origin --tags
