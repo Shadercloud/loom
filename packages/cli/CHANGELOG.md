@@ -1,5 +1,12 @@
 # loom-dev
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [[`00ac09b`](https://github.com/astra-void/loom/commit/00ac09b2a85a6cbf7481c83a3a33d85880adf8ac)]:
+  - @loom-dev/preview@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
