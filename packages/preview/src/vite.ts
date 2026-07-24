@@ -17,7 +17,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Plugin, searchForWorkspaceRoot } from "vite";
 import {
@@ -67,11 +67,22 @@ const SERVICES_PATH = join(PREVIEW_SRC, "services.ts");
 const REACT_SHIM_PATH = join(PREVIEW_SRC, "react-shim.js");
 const GLOBALS_PATH = join(PREVIEW_SRC, "globals.ts");
 
-// loom's internal packages own the WASM engine; don't pre-bundle them (their
-// `new URL(...wasm)` must stay intact), and pre-bundle the CJS react-reconciler.
-const LOOM_PACKAGES = [
+// loom's internal packages are served as-is: `@loom-dev/layout` reaches its
+// engine through `new URL("../pkg/….wasm", import.meta.url)`, which only
+// survives unbundled, and the rest hold module state (the instance tree, the
+// service singletons) that must exist exactly once across every importer.
+//
+// `@loom-dev/react` is the exception. It imports the CJS `react-reconciler`,
+// and Vite serves an excluded dep's imports raw — fine in a workspace checkout,
+// where the adapter resolves to TypeScript source outside node_modules and Vite
+// discovers the dep while scanning, but fatal in a published install: the
+// import comes from inside node_modules, nothing registers it, and the app dies
+// on `does not provide an export named 'DefaultEventPriority'`. Pre-bundling
+// the adapter folds the reconciler into its chunk; the other loom packages stay
+// excluded, so they remain external to that chunk and keep their single
+// instance.
+const LOOM_EXCLUDED_PACKAGES = [
 	"@loom-dev/preview",
-	"@loom-dev/react",
 	"@loom-dev/vide",
 	"@loom-dev/runtime",
 	"@loom-dev/renderer",
@@ -106,6 +117,100 @@ const requireFromPreview = createRequire(import.meta.url);
 const REACT_MAIN = requireFromPreview.resolve("react");
 const REACT_JSX = requireFromPreview.resolve("react/jsx-runtime");
 const REACT_JSX_DEV = requireFromPreview.resolve("react/jsx-dev-runtime");
+
+/**
+ * The react adapter, and the CJS `react-reconciler` living in *its* dependency
+ * tree — resolved from here, because nothing else can find them.
+ *
+ * Every `optimizeDeps.include` entry (and every nested `a > b` form) is resolved
+ * from the **previewed project's root**, which normally has no `@loom-dev`
+ * packages at all. So the ids are aliased to absolute paths as well: the
+ * optimizer honors `resolve.alias`, which is the same trick that pins react.
+ *
+ * Why the adapter must be pre-bundled at all: it imports the CJS reconciler,
+ * and Vite serves an excluded dep's imports raw. In a workspace checkout that
+ * is harmless — the adapter resolves to TypeScript source outside node_modules,
+ * so Vite discovers the reconciler while scanning and pre-bundles it. In a
+ * published install it is fatal: the import comes from inside node_modules,
+ * nothing registers it, raw CJS has no named exports, and the preview dies on
+ * `does not provide an export named 'DefaultEventPriority'`.
+ *
+ * Only done for an *installed* adapter. A workspace checkout resolves to source
+ * outside node_modules, where pre-bundling would freeze loom's own packages
+ * behind the optimizer and cost their HMR while developing loom itself.
+ */
+function resolveAdapter(): {
+	adapter?: string;
+	reconciler?: string;
+	constants?: string;
+} {
+	try {
+		const adapter = requireFromPreview.resolve("@loom-dev/react");
+		if (!adapter.includes(`${sep}node_modules${sep}`)) return {};
+		const fromAdapter = createRequire(adapter);
+		return {
+			adapter,
+			reconciler: fromAdapter.resolve("react-reconciler"),
+			constants: fromAdapter.resolve("react-reconciler/constants"),
+		};
+	} catch {
+		return {};
+	}
+}
+const ADAPTER = resolveAdapter();
+
+/**
+ * Absolute paths for the loom packages the adapter and the preview client pull
+ * in. Needed for the same reason as everything else here: the previewed project
+ * cannot resolve `@loom-dev/*`, and once the adapter is pre-bundled its chunk
+ * lives under the *project's* `node_modules/.vite/deps`, from where a bare
+ * `@loom-dev/runtime` resolves to nothing at all.
+ *
+ * Only for an installed adapter, matching {@link resolveAdapter}: a workspace
+ * checkout resolves these through its own link chain.
+ */
+function resolveLoomPackages(): Array<{ find: RegExp; replacement: string }> {
+	if (!ADAPTER.adapter) return [];
+	const fromAdapter = createRequire(ADAPTER.adapter);
+	const aliases: Array<{ find: RegExp; replacement: string }> = [];
+	for (const id of LOOM_EXCLUDED_PACKAGES) {
+		for (const from of [fromAdapter, requireFromPreview]) {
+			try {
+				aliases.push({
+					find: new RegExp(`^${id.replace("/", "\\/")}$`),
+					replacement: from.resolve(id),
+				});
+				break;
+			} catch {
+				// Not reachable from this package — try the next resolver, and
+				// leave the id bare if neither can see it.
+			}
+		}
+	}
+	return aliases;
+}
+const LOOM_PACKAGE_ALIASES = resolveLoomPackages();
+
+/**
+ * Directories the dev server must be allowed to read, beyond the previewed
+ * project itself. `LOOM_REPO_ROOT` covers a workspace checkout; an installed
+ * loom is spread across the installing project's `node_modules` (under pnpm,
+ * one store directory per package), and the layout package serves its wasm
+ * binary straight out of its own `pkg/` — a `fs.allow` miss there surfaces as a
+ * 403 the runtime reports as `TypeError: HTTP status code is not ok`. Allowing
+ * the outermost `node_modules` that contains a resolved loom package covers the
+ * whole store, which is what a project's own Vite allows anyway.
+ */
+function loomFsAllow(): string[] {
+	const roots = new Set([LOOM_REPO_ROOT]);
+	const marker = `${sep}node_modules${sep}`;
+	for (const { replacement } of LOOM_PACKAGE_ALIASES) {
+		const at = replacement.indexOf(marker);
+		if (at >= 0) roots.add(replacement.slice(0, at + marker.length - 1));
+	}
+	return [...roots];
+}
+const LOOM_FS_ALLOW = loomFsAllow();
 
 /** Bare npm specifiers only: not relative/absolute/virtual/builtin/url ids. */
 function isBareSpecifier(source: string): boolean {
@@ -211,18 +316,20 @@ export function loomPreview(): Plugin[] {
 				// classic transform would throw "React is not defined".
 				esbuild: { jsx: "automatic" },
 				optimizeDeps: {
-					// react-reconciler is CJS and imported by the (unoptimized, linked)
-					// @loom-dev/react package — the nested `>` form resolves it through
-					// the workspace link chain; a bare "react-reconciler" fails to
-					// resolve from the app root under pnpm's strict node_modules.
+					// react resolves through the `resolve.alias` entries below (the
+					// optimizer honors them), so the bare ids land on loom's own copy.
+					// react-reconciler cannot: see {@link resolveReconciler}.
 					include: [
 						"react",
 						"react/jsx-runtime",
 						"react/jsx-dev-runtime",
-						"@loom-dev/preview > @loom-dev/react > react-reconciler",
-						"@loom-dev/preview > @loom-dev/react > react-reconciler/constants",
+						...(ADAPTER.adapter ? ["@loom-dev/react"] : []),
+						...(ADAPTER.reconciler ? ["react-reconciler"] : []),
+						...(ADAPTER.constants ? ["react-reconciler/constants"] : []),
 					],
-					exclude: LOOM_PACKAGES,
+					exclude: ADAPTER.adapter
+						? LOOM_EXCLUDED_PACKAGES
+						: [...LOOM_EXCLUDED_PACKAGES, "@loom-dev/react"],
 				},
 				resolve: {
 					// One react instance is enforced by the absolute-path react aliases
@@ -252,6 +359,32 @@ export function loomPreview(): Plugin[] {
 						{ find: /^react\/jsx-runtime$/, replacement: REACT_JSX },
 						{ find: /^react\/jsx-dev-runtime$/, replacement: REACT_JSX_DEV },
 						{ find: /^react$/, replacement: REACT_MAIN },
+						// The adapter and its CJS reconciler, same treatment as react:
+						// one copy, at a path the optimizer can find from the previewed
+						// project's root. See {@link resolveAdapter}.
+						...(ADAPTER.constants
+							? [
+									{
+										find: /^react-reconciler\/constants$/,
+										replacement: ADAPTER.constants,
+									},
+								]
+							: []),
+						...(ADAPTER.reconciler
+							? [
+									{
+										find: /^react-reconciler$/,
+										replacement: ADAPTER.reconciler,
+									},
+								]
+							: []),
+						...(ADAPTER.adapter
+							? [{ find: /^@loom-dev\/react$/, replacement: ADAPTER.adapter }]
+							: []),
+						// …and the packages both of them import: the pre-bundled
+						// adapter's chunk sits in the project's own .vite/deps, where a
+						// bare @loom-dev id resolves to nothing.
+						...LOOM_PACKAGE_ALIASES,
 						// @rbxts/vide -> the loom vide adapter (same Scene IR target).
 						{ find: /^@rbxts\/vide$/, replacement: "@loom-dev/vide" },
 					],
@@ -262,7 +395,7 @@ export function loomPreview(): Plugin[] {
 						// loom itself (e.g. `loom preview ../lattice-ui/apps/x` run via
 						// tsx from the loom repo) — the server must be allowed to serve
 						// both trees. Merged additively with any user-supplied allow.
-						allow: [LOOM_REPO_ROOT, searchForWorkspaceRoot(projectRoot)],
+						allow: [...LOOM_FS_ALLOW, searchForWorkspaceRoot(projectRoot)],
 					},
 				},
 			};
