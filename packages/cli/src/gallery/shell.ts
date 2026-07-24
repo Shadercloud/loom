@@ -10,6 +10,6 @@
  */
 
 import { targets } from "virtual:loom-targets";
-import { startGallery } from "./gallery-shell";
+import { startGallery } from "./gallery-shell.ts";
 
 startGallery(targets);

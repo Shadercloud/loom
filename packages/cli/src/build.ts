@@ -32,7 +32,7 @@ import {
 	generateBuildIndexHtml,
 	generateBuildTargetsModule,
 	normalizeTargetsPatterns,
-} from "./gallery";
+} from "./gallery.ts";
 
 /**
  * A directory guaranteed to contain the shell sources, for Vite's
@@ -73,8 +73,11 @@ function relSpecifier(fromDir: string, toPath: string): string {
 export interface BuildOptions {
 	/** Project dir to discover targets under (resolved against cwd). */
 	dir: string;
-	/** `--targets` value: `true` for the default glob, or a glob/dir string. */
-	targets: string | true;
+	/**
+	 * `--targets` value: `true` for the default glob, or a glob/dir string — or a
+	 * list of either, which only programmatic callers (`loom-dev/embed`) pass.
+	 */
+	targets: string | string[] | true;
 	/** `--out` dir for the static bundle (resolved against cwd). */
 	out: string;
 	/** `--base` public path; `./` (default) keeps assets relative for any host. */

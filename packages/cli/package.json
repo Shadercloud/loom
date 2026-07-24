@@ -28,8 +28,17 @@
 		"src",
 		"!src/**/*.test.ts"
 	],
+	"exports": {
+		"./embed": "./src/embed.ts"
+	},
 	"publishConfig": {
-		"access": "public"
+		"access": "public",
+		"exports": {
+			"./embed": {
+				"types": "./dist/embed.d.ts",
+				"default": "./dist/embed.js"
+			}
+		}
 	},
 	"scripts": {
 		"build": "tsdown",

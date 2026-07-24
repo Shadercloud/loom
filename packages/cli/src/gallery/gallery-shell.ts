@@ -29,7 +29,7 @@ import {
 	setPreviewTheme,
 } from "@loom-dev/preview/client";
 import * as React from "react";
-import { parseGalleryParams } from "./params";
+import { parseGalleryParams } from "./params.ts";
 import "./shell.css";
 
 type TargetModule = Record<string, unknown>;
@@ -102,7 +102,7 @@ export function startGallery(targets: TargetMap): void {
 	applyTheme(initial.theme);
 	window.addEventListener("message", (event: MessageEvent) => {
 		const data = event.data as { type?: unknown; theme?: unknown } | null;
-		if (!data || data.type !== "loom-theme") return;
+		if (data?.type !== "loom-theme") return;
 		if (data.theme === "light" || data.theme === "dark") {
 			applyTheme(data.theme);
 		}

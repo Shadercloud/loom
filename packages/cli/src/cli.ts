@@ -25,13 +25,13 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loomPreview } from "@loom-dev/preview/vite";
 import { createServer, type Plugin, type PluginOption } from "vite";
-import { runBuild } from "./build";
-import { resolveGalleryOptions } from "./gallery";
+import { runBuild } from "./build.ts";
+import { findWorkspaceRoot, resolveGalleryOptions } from "./gallery.ts";
 import {
 	LOOM_REPO_ROOT,
 	loomGallery,
 	loomGalleryIndexHtml,
-} from "./gallery-plugin";
+} from "./gallery-plugin.ts";
 
 // roblox-ts client-entry conventions, in priority order.
 const ENTRY_CANDIDATES = [
@@ -48,22 +48,6 @@ const ENTRY_CANDIDATES = [
 function findEntry(root: string): string | undefined {
 	for (const candidate of ENTRY_CANDIDATES) {
 		if (existsSync(resolve(root, candidate))) return `/${candidate}`;
-	}
-	return undefined;
-}
-
-/**
- * The pnpm workspace root above the project, if any, so the dev server can read
- * shared workspace assets. Keyed on `pnpm-workspace.yaml` only — `.git` alone is
- * not a signal (it would over-widen `fs.allow` to e.g. a home-dir git repo).
- */
-function findWorkspaceRoot(start: string): string | undefined {
-	let dir = start;
-	for (let i = 0; i < 24; i++) {
-		if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) return dir;
-		const parent = resolve(dir, "..");
-		if (parent === dir) break;
-		dir = parent;
 	}
 	return undefined;
 }

@@ -15,7 +15,7 @@ import {
 	normalizeTargetsPatterns,
 	parseGalleryParams,
 	resolveGalleryOptions,
-} from "./gallery";
+} from "./gallery.ts";
 
 describe("globToRegExp", () => {
 	it("matches **/*.loom.tsx at any depth, including the top level", () => {

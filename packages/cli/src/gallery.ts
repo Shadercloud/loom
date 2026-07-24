@@ -4,7 +4,7 @@
  * module codegen, and the CLI-flag/loom.config.ts decision logic. Pure and
  * node-only so each piece is unit-testable without a Vite server.
  */
-import { type Dirent, readdirSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 /** Glob used when `--targets` is passed without a value (or a bare directory). */
@@ -118,6 +118,22 @@ export function resolveGalleryOptions(input: {
 }
 
 /**
+ * The pnpm workspace root above a project, if any, so a dev server can read
+ * shared workspace assets. Keyed on `pnpm-workspace.yaml` only — `.git` alone is
+ * not a signal (it would over-widen `fs.allow` to e.g. a home-dir git repo).
+ */
+export function findWorkspaceRoot(start: string): string | undefined {
+	let dir = start;
+	for (let i = 0; i < 24; i++) {
+		if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) return dir;
+		const parent = resolve(dir, "..");
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return undefined;
+}
+
+/**
  * Recursively find files under `root` matching any of the globs. Skips
  * `node_modules` and dot-directories. Returns sorted posix-style relative
  * paths.
@@ -175,7 +191,7 @@ export function generateTargetsModule(
 
 // The browser-side URL contract lives in `./gallery/params` (no node imports)
 // so the bundled shell can use it; re-exported here for the node-side test.
-export { type GalleryParams, parseGalleryParams } from "./gallery/params";
+export { type GalleryParams, parseGalleryParams } from "./gallery/params.ts";
 
 /**
  * The static-build `index.html`. Same DOM contract as the dev gallery (sidebar

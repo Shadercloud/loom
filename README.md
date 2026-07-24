@@ -35,6 +35,33 @@ and per-target error containment. `build` bundles that same gallery into a
 static, client-only site (default `dist-preview/`). Both read an optional
 `<dir>/loom.config.ts` exporting `{ targets?, port? }`.
 
+To embed the gallery in a host toolchain (a docs site, a design-system portal)
+rather than run it as its own program, `loom-dev/embed` exposes both pipelines
+programmatically:
+
+```ts
+import { buildGallery, createGalleryServer } from "loom-dev/embed";
+
+// dev: mount on the host's own dev server
+const gallery = await createGalleryServer({
+  root: "../my-ui",
+  targets: "src/scenes",
+  base: "/loom-preview/",
+});
+hostServer.middlewares.use(gallery.middleware);
+
+// build: emit the static gallery next to the host's own output
+await buildGallery({
+  root: "../my-ui",
+  targets: "src/scenes",
+  outDir: "dist/loom-preview",
+});
+```
+
+The gallery keeps a Vite instance of its own — the plugin rewrites `react` and
+`@rbxts/*` for the whole config it lives in, so the host forwards HTTP and
+nothing else.
+
 ## Layout
 
 - `crates/` — Rust workspace
