@@ -65,8 +65,11 @@ page, same entry detection. `--targets` switches to **gallery mode**: every
 `**/*.loom.tsx` under the directory gets a sidebar entry with lazy mounts and
 per-target error containment. `build` bundles that same gallery into a static,
 client-only site (default `dist-preview/`) — which is exactly what `vite build`
-does with `loomPreview({ targets })`. Both read an optional
-`<dir>/loom.config.ts` exporting `{ targets?, port? }`.
+does with `loomPreview({ targets })`.
+
+Only `preview` reads `<dir>/loom.config.ts` (an optional default export of
+`{ targets?, port? }`, used when the matching flag is absent). `build` does not
+load it at all — `--targets` is required on every invocation.
 
 ### Working on loom itself
 
