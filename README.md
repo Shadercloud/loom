@@ -15,25 +15,67 @@ so any frontend can plug into the same layout + rendering core.
 
 ## Quick start
 
+### As a Vite plugin
+
+Already have (or want) a `vite.config.ts`? The plugin is the whole setup:
+
 ```sh
-pnpm install                  # also builds the WASM layout engine (prepare hook)
-pnpm --filter @loom-dev/playground dev
+npm i -D @loom-dev/preview vite
 ```
 
-To preview an existing roblox-ts UI project with no config:
+```ts
+// vite.config.ts
+import { loomPreview } from "@loom-dev/preview/vite";
+import { defineConfig } from "vite";
+
+export default defineConfig({ plugins: [loomPreview()] });
+```
+
+`vite` and `vite build` now work against a roblox-ts source tree as-is — **no
+`index.html`, no entry wiring, no aliases**. `loomPreview()` generates the page
+around the detected client entry (`src/main.client.tsx` and friends), points
+`@rbxts/react` / `@rbxts/react-roblox` / `@rbxts/services` / `@rbxts/vide` at the
+loom adapters, pins one react, installs the Roblox datatype globals, sets the
+automatic JSX runtime, and rewrites roblox-ts `import X = require(...)`. HMR
+comes free from Vite. Options:
+
+```ts
+loomPreview({
+  entry: "src/ui/boot.tsx", // only if the entry isn't a conventional name
+  targets: "src/scenes",    // gallery mode: a glob, a dir, a list, or true
+  title: "my UI",           // <title> of the generated page
+  html: false,              // opt out of the generated page entirely
+})
+```
+
+A project that keeps its own `index.html` gets to use it — the plugin only fills
+in when there is none (gallery mode is the exception: its page always wins).
+
+### As a CLI
+
+Or skip the config file entirely:
 
 ```sh
 loom preview [dir] [--port <n>] [--host] [--targets [glob]]
 loom build   [dir] --targets [glob] [--out <dir>] [--base <path>]
 ```
 
-`preview` boots a Vite dev server with the loom plugin pre-applied, generates an
-`index.html` when the project has none, and auto-detects a client entry
-(`src/main.client.tsx` and friends). `--targets` switches to **gallery mode**:
-every `**/*.loom.tsx` under the directory gets a sidebar entry with lazy mounts
-and per-target error containment. `build` bundles that same gallery into a
-static, client-only site (default `dist-preview/`). Both read an optional
+`preview` boots a Vite dev server with the plugin pre-applied — same generated
+page, same entry detection. `--targets` switches to **gallery mode**: every
+`**/*.loom.tsx` under the directory gets a sidebar entry with lazy mounts and
+per-target error containment. `build` bundles that same gallery into a static,
+client-only site (default `dist-preview/`) — which is exactly what `vite build`
+does with `loomPreview({ targets })`. Both read an optional
 `<dir>/loom.config.ts` exporting `{ targets?, port? }`.
+
+### Working on loom itself
+
+```sh
+pnpm install                  # also builds the WASM layout engine (prepare hook)
+pnpm --filter @loom-dev/playground dev     # react harness, own index.html
+pnpm --filter @loom-dev/interactive dev    # plugin only, no index.html
+pnpm --filter @loom-dev/gallery-demo dev   # plugin gallery mode
+```
 
 To embed the gallery in a host toolchain (a docs site, a design-system portal)
 rather than run it as its own program, `loom-dev/embed` exposes both pipelines
@@ -78,8 +120,8 @@ nothing else.
   - `@loom-dev/react` — `@rbxts/react` adapter (custom `react-reconciler` host
     config driving live loom instances)
   - `@loom-dev/vide` — `vide` signals adapter on the same Scene IR
-  - `@loom-dev/preview` — zero-config Vite plugin, browser roblox-ts resolver,
-    globals, and client
+  - `@loom-dev/preview` — zero-config Vite plugin (generated page, entry
+    detection, gallery mode), browser roblox-ts resolver, globals, and client
   - `loom-dev` — the `loom` CLI (`preview` / `build`)
 - `apps/` — dev harnesses: `playground`, `example`, `interactive`,
   `gallery-demo`, `vide-example`
