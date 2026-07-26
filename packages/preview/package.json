@@ -77,7 +77,7 @@
 		"@loom-dev/runtime": "workspace:*"
 	},
 	"peerDependencies": {
-		"react": "^18.3.1 || ^19.0.0",
+		"react": "^18.3.1",
 		"vite": "^6.0.0 || ^7.0.0"
 	},
 	"peerDependenciesMeta": {
