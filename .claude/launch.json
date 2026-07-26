@@ -8,6 +8,32 @@
 			"port": 5173
 		},
 		{
+			"name": "plugin-only",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": [
+				"--filter",
+				"@loom-dev/interactive",
+				"dev",
+				"--port",
+				"5184",
+				"--strictPort"
+			],
+			"port": 5184
+		},
+		{
+			"name": "plugin-gallery",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": [
+				"--filter",
+				"@loom-dev/gallery-demo",
+				"dev",
+				"--port",
+				"5185",
+				"--strictPort"
+			],
+			"port": 5185
+		},
+		{
 			"name": "cli-example",
 			"runtimeExecutable": "pnpm",
 			"runtimeArgs": [
