@@ -5,10 +5,12 @@
  *   loom preview [dir] [--port <n>] [--host] [--targets [glob]]
  *   loom build [dir] --targets [glob] [--out <dir>] [--base <path>]
  *
- * `preview` runs a Vite dev server with the loom plugin pre-applied (so no
- * vite.config is needed), generates an index.html when the project has none,
- * and detects a self-mounting client entry. esbuild transpiles the TSX; HMR is
- * built in.
+ * `preview` runs a Vite dev server with the loom plugin pre-applied, so no
+ * vite.config is needed. Everything past that — the generated index.html, the
+ * client-entry detection, gallery mode — belongs to `loomPreview()` itself
+ * (`@loom-dev/preview/vite`), so a project that would rather keep its own
+ * vite.config gets exactly the same thing from the plugin alone. esbuild
+ * transpiles the TSX; HMR is built in.
  *
  * `--targets` switches to gallery mode: every `**\/*.loom.tsx` under the dir
  * (or the given glob/directory) is listed in a sidebar shell with lazy mounts
@@ -23,77 +25,15 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loomPreview } from "@loom-dev/preview/vite";
-import { createServer, type Plugin, type PluginOption } from "vite";
+import { LOOM_REPO_ROOT } from "@loom-dev/preview/gallery";
+import {
+	ENTRY_CANDIDATES,
+	findEntry,
+	loomPreview,
+} from "@loom-dev/preview/vite";
+import { createServer } from "vite";
 import { runBuild } from "./build.ts";
 import { findWorkspaceRoot, resolveGalleryOptions } from "./gallery.ts";
-import {
-	LOOM_REPO_ROOT,
-	loomGallery,
-	loomGalleryIndexHtml,
-} from "./gallery-plugin.ts";
-
-// roblox-ts client-entry conventions, in priority order.
-const ENTRY_CANDIDATES = [
-	"src/main.client.tsx",
-	"src/main.client.ts",
-	"src/client/main.client.tsx",
-	"src/client/main.client.ts",
-	"src/main.tsx",
-	"src/main.ts",
-	"src/index.tsx",
-	"src/client.tsx",
-];
-
-function findEntry(root: string): string | undefined {
-	for (const candidate of ENTRY_CANDIDATES) {
-		if (existsSync(resolve(root, candidate))) return `/${candidate}`;
-	}
-	return undefined;
-}
-
-/** Serve a generated index.html (with the loom mount point) when none exists. */
-function loomIndexHtml(entryUrl: string): Plugin {
-	const html = `<!doctype html>
-<html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>loom preview</title>
-		<style>
-			html, body { margin: 0; height: 100%; background: #14161a; }
-			#loom-root { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
-		</style>
-	</head>
-	<body>
-		<div id="loom-root"></div>
-		<script type="module" src="${entryUrl}"></script>
-	</body>
-</html>`;
-	return {
-		name: "loom:index-html",
-		configureServer(server) {
-			return () => {
-				server.middlewares.use(async (req, res, next) => {
-					const url = (req.url ?? "/").split("?")[0];
-					if (url !== "/" && url !== "/index.html") return next();
-					try {
-						const out = await server.transformIndexHtml(
-							url,
-							html,
-							req.originalUrl,
-						);
-						res.statusCode = 200;
-						res.setHeader("Content-Type", "text/html");
-						res.end(out);
-					} catch (err) {
-						next(err);
-					}
-				});
-			};
-		},
-	};
-}
 
 /**
  * Import `<root>/loom.config.ts` and return its default export, plus whether the
@@ -141,22 +81,23 @@ async function preview(
 	});
 	if (decision.hint) console.warn(decision.hint);
 
-	const plugins: PluginOption[] = [loomPreview()];
-	if (decision.patterns) {
-		// Gallery mode: no client entry needed — the shell mounts targets itself.
-		plugins.push(loomGallery(decision.patterns), loomGalleryIndexHtml());
-	} else if (!existsSync(resolve(root, "index.html"))) {
-		const entry = findEntry(root);
-		if (!entry) {
-			console.error(
-				`loom: no index.html and no client entry found in ${root}\n` +
-					`      looked for: ${ENTRY_CANDIDATES.join(", ")}\n` +
-					`      (or pass --targets to browse *.loom.tsx files as a gallery)`,
-			);
-			process.exit(1);
-		}
-		plugins.push(loomIndexHtml(entry));
+	// The plugin owns the page: gallery mode (the shell mounts targets itself) or
+	// a generated index.html around the detected client entry. The CLI only
+	// pre-flights the entry lookup so a project with neither fails with a hint
+	// instead of a server that 500s on the first request.
+	if (
+		!decision.patterns &&
+		!existsSync(resolve(root, "index.html")) &&
+		!findEntry(root)
+	) {
+		console.error(
+			`loom: no index.html and no client entry found in ${root}\n` +
+				`      looked for: ${ENTRY_CANDIDATES.join(", ")}\n` +
+				`      (or pass --targets to browse *.loom.tsx files as a gallery)`,
+		);
+		process.exit(1);
 	}
+	const plugins = [loomPreview({ targets: decision.patterns })];
 
 	// esbuild.jsx + optimizeDeps + the @rbxts aliases come from loomPreview().
 	// fs.allow includes the loom repo itself: the gallery shell (and, for

@@ -34,7 +34,8 @@
 		"./vite": "./src/vite.ts",
 		"./client": "./src/client.ts",
 		"./globals": "./src/globals.ts",
-		"./services": "./src/services.ts"
+		"./services": "./src/services.ts",
+		"./gallery": "./src/gallery.ts"
 	},
 	"types": "./src/index.ts",
 	"publishConfig": {
@@ -60,6 +61,10 @@
 			"./services": {
 				"types": "./dist/services.d.ts",
 				"default": "./dist/services.js"
+			},
+			"./gallery": {
+				"types": "./dist/gallery.d.ts",
+				"default": "./dist/gallery.js"
 			}
 		}
 	},

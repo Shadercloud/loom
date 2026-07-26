@@ -7,19 +7,33 @@
  * globals before the app entry. esbuild already transpiles the TSX, so no
  * separate roblox-ts compiler is needed for preview.
  *
+ * The plugin is the whole product: dropped into a `vite.config.ts` it needs no
+ * other setup, and no `index.html` either — it generates the page around the
+ * detected client entry (or, with `targets`, the `*.loom.tsx` gallery). See
+ * `./html.ts`. The `loom` CLI is the same plugin with `configFile: false`.
+ *
  * The resolver, the import-equals transform, and the config-hook aliases apply
  * in **both** `serve` and `build`, so the same source tree that runs under the
- * dev server also bundles into a static site via `loom build`. Only the
- * globals-injection mechanism differs: under `serve` it is a `<script src>`
- * pointing at a served virtual module (`loom-preview:serve-globals`); under
- * `build` the generated HTML entry imports `@loom-dev/preview/globals` as its
- * first module so `installGlobals()` runs before any app/gallery code.
+ * dev server also bundles into a static site. Only the globals-injection
+ * mechanism differs: under `serve` it is a `<script src>` pointing at a served
+ * virtual module (`loom-preview:serve-globals`); under `build` the html plugin
+ * prepends the globals import to the page's entry modules so `installGlobals()`
+ * runs before any app/gallery code.
  */
 import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, sep } from "node:path";
 import { type Plugin, searchForWorkspaceRoot } from "vite";
+import { normalizeTargetsPatterns, type TargetsInput } from "./gallery.ts";
+import { loomGallery } from "./gallery-plugin.ts";
+import { loomIndexHtml } from "./html.ts";
+import {
+	CLIENT_PATH,
+	GLOBALS_PATH,
+	LOOM_REPO_ROOT,
+	REACT_SHIM_PATH,
+	SERVICES_PATH,
+} from "./paths.ts";
 import {
 	isLuauId,
 	type ResolverFs,
@@ -46,26 +60,10 @@ function globalsUrl(base: string): string {
 	return `${base.endsWith("/") ? base : `${base}/`}${GLOBALS_PATHNAME}`;
 }
 
-// The browser-facing modules are always aliased to their TypeScript *source*,
-// never to the build output: Vite transpiles them in the previewed project, and
-// pointing at one fixed location keeps dev and published installs identical.
-// `src/` is shipped in the published tarball (see `files`), and it sits one
-// level under the package root either way — this module runs from `src/vite.ts`
-// in the workspace and from `dist/vite.js` once installed, so `../src` resolves
-// to the same directory in both.
-//
-// They are aliased by absolute path (not bare specifier) so they resolve even
-// when the previewed project's node_modules has no @loom-dev packages — e.g.
-// `loom preview` pointed at a different workspace entirely.
-const PREVIEW_SRC = fileURLToPath(new URL("../src", import.meta.url));
-// A directory that is guaranteed to contain the sources above, for Vite's
-// `server.fs.allow`: the repo root in the workspace, the installing project's
-// `node_modules` once published.
-const LOOM_REPO_ROOT = resolve(PREVIEW_SRC, "../../..");
-const CLIENT_PATH = join(PREVIEW_SRC, "client.ts");
-const SERVICES_PATH = join(PREVIEW_SRC, "services.ts");
-const REACT_SHIM_PATH = join(PREVIEW_SRC, "react-shim.js");
-const GLOBALS_PATH = join(PREVIEW_SRC, "globals.ts");
+// The browser-facing modules are aliased by absolute path (not bare specifier)
+// so they resolve even when the previewed project's node_modules has no
+// @loom-dev packages — e.g. `loom preview` pointed at a different workspace
+// entirely. See `./paths.ts` for why they always point at TypeScript source.
 
 // loom's internal packages are served as-is: `@loom-dev/layout` reaches its
 // engine through `new URL("../pkg/….wasm", import.meta.url)`, which only
@@ -222,7 +220,37 @@ function isBareSpecifier(source: string): boolean {
 	return true;
 }
 
-export function loomPreview(): Plugin[] {
+// Entry detection is part of the plugin's contract — re-exported so a caller
+// (the `loom` CLI) can pre-flight the same lookup and fail with a hint before
+// booting a server that would only 500 on the first request.
+export { ENTRY_CANDIDATES, findEntry } from "./html.ts";
+
+export interface LoomPreviewOptions {
+	/**
+	 * The client entry, root-relative (`/src/main.client.tsx`) or relative to the
+	 * project root. Auto-detected from the roblox-ts conventions
+	 * (`src/main.client.tsx` and friends) when omitted — only needed for an entry
+	 * that doesn't follow one.
+	 */
+	entry?: string;
+	/**
+	 * Gallery mode: a glob, a directory, a list of either, or `true` for the
+	 * default `**\/*.loom.tsx`. Every match gets a sidebar entry with a lazy
+	 * mount and per-target error containment — the same thing `loom preview
+	 * --targets` serves. Set, no client entry is needed.
+	 */
+	targets?: TargetsInput;
+	/** `<title>` of the generated page. */
+	title?: string;
+	/**
+	 * Set `false` to keep the plugin out of the HTML business entirely: no
+	 * generated page, no entry detection, no Rollup input. Only the module
+	 * plumbing (aliases, resolver, globals injection) stays.
+	 */
+	html?: boolean;
+}
+
+export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 	// Per-source memo of the `.luau` fallback verdict. Workspace packages are
 	// unique per specifier, so the importer doesn't need to be part of the key;
 	// a `false` verdict just means "not Luau — let normal resolution handle it".
@@ -436,5 +464,22 @@ export function loomPreview(): Plugin[] {
 		},
 	};
 
-	return [importEquals, main, serveGlobals];
+	const plugins: Plugin[] = [importEquals, main, serveGlobals];
+
+	// Gallery mode: the target import map (dev) + the generated gallery page.
+	const patterns =
+		options.targets !== undefined
+			? normalizeTargetsPatterns(options.targets)
+			: undefined;
+	if (patterns) plugins.push(loomGallery(patterns));
+	if (options.html !== false) {
+		plugins.push(
+			loomIndexHtml({
+				entry: options.entry,
+				title: options.title,
+				...(patterns ? { patterns } : {}),
+			}),
+		);
+	}
+	return plugins;
 }

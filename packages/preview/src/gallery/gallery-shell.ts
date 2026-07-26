@@ -13,22 +13,24 @@
  *   one on load without a hash.
  * - `?chrome=none` hides the sidebar and renders a single target full-bleed —
  *   this is what the docs-site iframes embed.
- * - Each target renders through `createRoot()` from @loom-dev/preview, inside
- *   a React error boundary; import failures, bad `preview` exports, and render
+ * - Each target renders through the preview's own `createRoot()`, inside a
+ *   React error boundary; import failures, bad `preview` exports, and render
  *   throws all land in the inline red error panel instead of taking the page.
  *
  * This module is loom-owned browser code (served via /@fs/ under the dev server,
- * bundled by Rollup under `loom build`), so it may import plain `react` directly
- * (the preview plugin dedupes it with the adapter's).
+ * bundled by Rollup under `vite build`), so it may import plain `react` directly
+ * (the preview plugin dedupes it with the adapter's). The client is reached by
+ * relative path: the previewed project's node_modules need not contain
+ * `@loom-dev/preview` at all.
  */
 
+import * as React from "react";
 import {
 	createRoot,
 	type LoomReactRoot,
 	type PreviewTheme,
 	setPreviewTheme,
-} from "@loom-dev/preview/client";
-import * as React from "react";
+} from "../client.ts";
 import { parseGalleryParams } from "./params.ts";
 import "./shell.css";
 

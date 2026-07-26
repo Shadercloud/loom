@@ -8,4 +8,5 @@
 
 export type { LoomReactRoot } from "./client.ts";
 export { createRoot } from "./client.ts";
+export type { LoomPreviewOptions } from "./vite.ts";
 export { loomPreview } from "./vite.ts";

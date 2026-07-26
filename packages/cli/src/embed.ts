@@ -29,6 +29,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // land after that runner has closed.
 import { createServer as createNetServer } from "node:net";
 import { resolve } from "node:path";
+import { LOOM_REPO_ROOT } from "@loom-dev/preview/gallery";
 import { loomPreview } from "@loom-dev/preview/vite";
 import { createServer, type ViteDevServer } from "vite";
 import { runBuild } from "./build.ts";
@@ -37,11 +38,6 @@ import {
 	findWorkspaceRoot,
 	normalizeTargetsPatterns,
 } from "./gallery.ts";
-import {
-	LOOM_REPO_ROOT,
-	loomGallery,
-	loomGalleryIndexHtml,
-} from "./gallery-plugin.ts";
 
 /** Where the gallery is mounted when the host doesn't say. */
 export const DEFAULT_GALLERY_BASE = "/loom-preview/";
@@ -176,7 +172,7 @@ export async function createGalleryServer(
 		configFile: false, // loom owns the config; ignore any project vite.config
 		// The host owns `/` — never let Vite's html/SPA fallback answer for it.
 		appType: "custom",
-		plugins: [loomPreview(), loomGallery(patterns), loomGalleryIndexHtml()],
+		plugins: [loomPreview({ targets: patterns })],
 		server: { middlewareMode: true, fs: { allow: fsAllow }, hmr },
 	});
 
