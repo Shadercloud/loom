@@ -160,6 +160,73 @@ Deep links keep working in both modes through the same `?target=<relPath>` /
 in a page. The `apps/next-demo` workspace app is a running example
 (`pnpm --filter @loom-dev/next-demo dev`).
 
+#### Fumadocs with a sibling Loom source tree
+
+A docs app can live inside the Roblox UI project:
+
+```text
+react-clean-ui/
+├── docs/          # Next.js + Fumadocs
+│   └── next.config.mjs
+├── out/           # compiled Luau
+└── src/           # roblox-ts source
+    └── Scenes/
+        └── Button.loom.tsx
+```
+
+Apply the Loom wrapper outermost. Relative `root` values are resolved from the
+Next app directory while `next.config.*` is evaluated, so `root: ".."` selects
+`react-clean-ui`, not `react-clean-ui/docs` or Loom's installed package:
+
+```js
+// docs/next.config.mjs
+import { withLoomGallery } from "loom-dev/next";
+
+export default withLoomGallery(withMDX(config), {
+  root: "..",
+});
+```
+
+Gallery targets use an explicit named `preview` export; a normal default React
+component is not a gallery entry:
+
+```tsx
+// src/Scenes/Button.loom.tsx
+import React from "@rbxts/react";
+import { Button } from "../Components";
+
+export const preview = {
+  render: () => <Button text="Hello World" />,
+  title: "Button",
+} as const;
+```
+
+Loom configures Vite's automatic JSX runtime, so the `React` import is optional
+when the file uses only JSX. Keep it when the scene also references the
+`React` namespace.
+
+Open the full gallery at `http://localhost:3000/loom-preview` or embed one
+target without gallery chrome:
+
+```text
+http://localhost:3000/loom-preview?chrome=none&target=src/Scenes/Button.loom.tsx
+```
+
+Development galleries support Windows, macOS, and Linux paths.
+
+#### Gallery troubleshooting
+
+- A black page plus a Vite error mentioning the gallery `shell.ts` or a
+  malformed `/@fs/` URL is a shell-loading/path failure: the gallery UI never
+  started. Current Loom releases generate Vite filesystem URLs for both POSIX
+  and Windows paths.
+- `invalid preview export in <target>` means the target module loaded, but it
+  did not export `const preview = { render, title }`. Use the complete target
+  example above; a default export alone is intentionally unsupported.
+- `no *.loom.tsx targets found` (and the matching terminal warning) means
+  `root` resolved successfully but no file matched `targets`. Check the root,
+  filename suffix, and any configured target glob or directory.
+
 ## Layout
 
 - `crates/` — Rust workspace
@@ -262,9 +329,11 @@ Requires pnpm 11.6+ (it performs the OIDC exchange itself) and Node 22.14+.
 - **M1** — vertical slice: Scene IR + WASM layout + DOM renderer ✅
 - **M2** — Roblox runtime datatypes + `@rbxts/react` adapter ✅
 - **M3** — layout completeness ✅ list/grid/padding/constraints/automatic size/
-  text; `UIPageLayout` / `UITableLayout` are recognized but not implemented
-- **M4** — visual fidelity — text, corners, strokes, gradients, clipping,
-  transparency, rotation, and scrolling frames done; **images pending**
+  text/flex (`HorizontalFlex`/`VerticalFlex`, `UIFlexItem`);
+  `UIPageLayout` / `UITableLayout` are recognized but not implemented
+- **M4** — visual fidelity — text (both the legacy `Font` enum and the modern
+  `FontFace`), corners, strokes, gradients, clipping, transparency, rotation,
+  and scrolling frames done; **images pending**
 - **M5** — dev loop ✅ (Vite plugin, HMR, `loom preview`, `loom build`);
   a standalone roblox-ts compiler transform is still open
 - **M6** — extensibility proof — `vide` adapter shipped on the same Scene IR;
