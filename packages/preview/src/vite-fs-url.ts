@@ -1,0 +1,14 @@
+import { posix } from "node:path";
+import { normalizePath } from "vite";
+
+const VITE_FS_PREFIX = "/@fs/";
+
+/**
+ * Convert an absolute filesystem path to Vite's development-only `/@fs/` URL
+ * space. Normalize backslashes before calling Vite so synthetic Windows paths
+ * behave the same on every host OS (Vite's `normalizePath` is host-sensitive).
+ */
+export function toViteFsUrl(filePath: string): string {
+	const normalized = normalizePath(filePath.replaceAll("\\", "/"));
+	return posix.join(VITE_FS_PREFIX, normalized);
+}

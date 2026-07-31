@@ -17,5 +17,6 @@ export const ContextActionService: LoomInstance = getService(
 export const GuiService: LoomInstance = getService("GuiService");
 export const Players: LoomInstance = getService("Players");
 export const RunService: LoomInstance = getService("RunService");
+export const TweenService: LoomInstance = getService("TweenService");
 export const UserInputService: LoomInstance = getService("UserInputService");
 export const Workspace: LoomInstance = getService("Workspace");

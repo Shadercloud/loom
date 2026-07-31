@@ -11,18 +11,19 @@
  * entry there imports a *real* generated targets module instead, so Rollup can
  * code-split each target into its own async chunk.
  */
-import { sep } from "node:path";
 import type { Plugin } from "vite";
-import { findLoomTargets, generateTargetsModule } from "./gallery.ts";
+import {
+	findLoomTargets,
+	generateTargetsModule,
+	toViteFsUrl,
+} from "./gallery.ts";
 import { GALLERY_DEV_SHELL_PATH, LOOM_REPO_ROOT } from "./paths.ts";
 
 const TARGETS_ID = "virtual:loom-targets";
 const TARGETS_RESOLVED = `\0${TARGETS_ID}`;
 
-const toPosix = (p: string): string => p.split(sep).join("/");
-
 /** The dev shell's `/@fs/` URL — the module script of the generated page. */
-export const GALLERY_SHELL_URL = `/@fs${toPosix(GALLERY_DEV_SHELL_PATH)}`;
+export const GALLERY_SHELL_URL = toViteFsUrl(GALLERY_DEV_SHELL_PATH);
 
 /** Serve + watch the `virtual:loom-targets` import map. */
 export function loomGallery(patterns: string[]): Plugin {

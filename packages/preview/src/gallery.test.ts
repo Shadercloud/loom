@@ -12,8 +12,41 @@ import {
 	globToRegExp,
 	normalizeTargetsPatterns,
 	parseGalleryParams,
+	toViteFsUrl,
 } from "./gallery.ts";
+import { GALLERY_SHELL_URL } from "./gallery-plugin.ts";
 import { generateGalleryHtml, generateIndexHtml } from "./html.ts";
+import { GALLERY_DEV_SHELL_PATH } from "./paths.ts";
+
+describe("toViteFsUrl", () => {
+	it("converts POSIX and Windows absolute paths on every host OS", () => {
+		expect(toViteFsUrl("/proj/app/src/Scene.loom.tsx")).toBe(
+			"/@fs/proj/app/src/Scene.loom.tsx",
+		);
+		expect(toViteFsUrl("C:\\proj\\app\\src\\Scene.loom.tsx")).toBe(
+			"/@fs/C:/proj/app/src/Scene.loom.tsx",
+		);
+		expect(toViteFsUrl("C:/proj/app/src/Scene.loom.tsx")).toBe(
+			"/@fs/C:/proj/app/src/Scene.loom.tsx",
+		);
+	});
+
+	it("uses Vite's prefix joining for UNC and repeated leading separators", () => {
+		expect(toViteFsUrl("\\\\server\\share\\Scene.loom.tsx")).toBe(
+			"/@fs/server/share/Scene.loom.tsx",
+		);
+		expect(toViteFsUrl("///proj//app/Scene.loom.tsx")).toBe(
+			"/@fs/proj/app/Scene.loom.tsx",
+		);
+	});
+
+	it("builds the gallery shell URL through the same helper", () => {
+		expect(GALLERY_SHELL_URL).toBe(toViteFsUrl(GALLERY_DEV_SHELL_PATH));
+		expect(toViteFsUrl("C:\\loom\\preview\\src\\gallery\\shell.ts")).toBe(
+			"/@fs/C:/loom/preview/src/gallery/shell.ts",
+		);
+	});
+});
 
 describe("globToRegExp", () => {
 	it("matches **/*.loom.tsx at any depth, including the top level", () => {
@@ -115,6 +148,16 @@ describe("generateTargetsModule", () => {
 		expect(code).toContain(
 			'"src/targets/Card.loom.tsx": () => import("/@fs/proj/app/src/targets/Card.loom.tsx"),',
 		);
+	});
+
+	it("emits a valid lazy import for a Windows root on every host OS", () => {
+		const code = generateTargetsModule("C:\\proj\\app", [
+			"src/Scenes/Button.loom.tsx",
+		]);
+		expect(code).toContain(
+			'"src/Scenes/Button.loom.tsx": () => import("/@fs/C:/proj/app/src/Scenes/Button.loom.tsx"),',
+		);
+		expect(code).not.toContain("/@fsC:");
 	});
 
 	it("escapes quotes and backslashes in paths", () => {

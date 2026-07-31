@@ -35,6 +35,7 @@ declare global {
 	const Rect: typeof runtime.Rect;
 	const CFrame: typeof runtime.CFrame;
 	const TweenInfo: typeof runtime.TweenInfo;
+	const Font: typeof runtime.Font;
 	const Enum: typeof runtime.Enum;
 	const game: runtime.DataModel;
 	const Instance: typeof runtime.Instance;
