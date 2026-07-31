@@ -1,5 +1,62 @@
 # @loom-dev/preview
 
+## 0.5.1
+
+### Patch Changes
+
+- [`225a3e5`](https://github.com/astra-void/loom/commit/225a3e5fb64d729ed1b3ec6501da86d6983726d6) Thanks [@astra-void](https://github.com/astra-void)! - Add browser runtime compatibility for `@rbxts/ripple` and `@rbxts/react-ripple`,
+  preventing Luau package entries from reaching Vite and Rollup during gallery
+  development and static builds.
+
+  Both packages publish a Luau runtime (`"main": "src/init.luau"`) and a `.d.ts`,
+  so normal resolution handed Rollup a Luau file and `loom build` / `next build`
+  failed with `Expected ';', '}' or <eof>` — while development could look fine,
+  because a gallery target is only fetched when it is opened. Both packages now
+  alias to loom's own adapters, in serve and build alike.
+
+  The adapters are a port of the published implementation, not a stub:
+  `createSpring`, `createTween`, `createMotion`, `config`, `easing` and the
+  `useSpring` / `useTween` / `useMotion` hooks, animating `number`, `Vector2`,
+  `Vector3`, `Color3`, `UDim`, `UDim2`, `Rect` and records of numbers. `CFrame`
+  throws with a named loom error rather than animating. Controllers share one
+  `RunService.Heartbeat` connection and release it when the last one settles.
+
+  `@loom-dev/react` gains the React bindings this needs: `createBinding`,
+  `useBinding` and `joinBindings` (re-exported from `@rbxts/react`), with every
+  host prop accepting a value or a `Binding` of one. A bound prop is written
+  straight onto the live instance, so an animation costs no React renders.
+
+- [`225a3e5`](https://github.com/astra-void/loom/commit/225a3e5fb64d729ed1b3ec6501da86d6983726d6) Thanks [@astra-void](https://github.com/astra-void)! - Add zero-config Loom compatibility for the root `@rbxts/ui-labs` `Environment`
+  import while preserving user-provided shim overrides.
+
+  The package ships a Luau runtime plus `.d.ts` and nothing a browser can run, so
+  importing it used to fail outright. Loom now aliases the root specifier — and
+  only the root specifier — to a built-in module modelling the **non-story** UI
+  Labs environment: `IsStory()` is `false`, `InputListener` is `undefined`, and
+  `UserInput` is loom's own `UserInputService` singleton, so the common
+  `Environment.IsStory() ? Environment.InputListener : UserInputService` guard
+  selects loom's service with no configuration. Story creators, controls,
+  snapshots and the Studio plugin APIs are not emulated.
+
+  A `shims` entry for the same specifier still wins, and a Luau-only package with
+  no shim now fails with a loom diagnostic naming the package and the `shims`
+  option instead of handing Luau to the JavaScript parser.
+
+- [`225a3e5`](https://github.com/astra-void/loom/commit/225a3e5fb64d729ed1b3ec6501da86d6983726d6) Thanks [@astra-void](https://github.com/astra-void)! - Add a `shims` option for roblox-ts packages loom can't run in the browser.
+
+  A declaration-only Luau package (`"main": "src/init.lua"` plus a `.d.ts`, no
+  `src/index.ts`) has no source entry the `.luau`-main fallback can redirect to,
+  so importing one fails with `Failed to resolve entry for package`.
+  `shims: { "<specifier>": "<module>" }` redirects the package to a browser module
+  the project supplies — exact-match only, applied before loom's own `@rbxts/*`
+  aliases, and available on every entry path (`loomPreview()`, `loom.config.ts`,
+  `loom-dev/embed`, `withLoomGallery()`). See "Package compatibility" in the
+  README.
+
+- Updated dependencies [[`225a3e5`](https://github.com/astra-void/loom/commit/225a3e5fb64d729ed1b3ec6501da86d6983726d6)]:
+  - @loom-dev/react@0.5.1
+  - @loom-dev/runtime@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @loom-dev/renderer
 
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.5.1
+  - @loom-dev/runtime@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes
