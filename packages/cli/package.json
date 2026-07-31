@@ -8,7 +8,8 @@
 		"roblox-ts",
 		"cli",
 		"preview",
-		"gallery"
+		"gallery",
+		"nextjs"
 	],
 	"license": "MIT",
 	"author": "astra-void",
@@ -29,7 +30,8 @@
 		"!src/**/*.test.ts"
 	],
 	"exports": {
-		"./embed": "./src/embed.ts"
+		"./embed": "./src/embed.ts",
+		"./next": "./src/next.ts"
 	},
 	"publishConfig": {
 		"access": "public",
@@ -37,6 +39,10 @@
 			"./embed": {
 				"types": "./dist/embed.d.ts",
 				"default": "./dist/embed.js"
+			},
+			"./next": {
+				"types": "./dist/next.d.ts",
+				"default": "./dist/next.js"
 			}
 		}
 	},
