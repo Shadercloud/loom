@@ -166,8 +166,11 @@ fn resolve_size(node: &SceneNode, parent: Rect) -> (f64, f64) {
     let (l, r, t, b) = padding_insets(node, w, h);
     let (pad_x, pad_y) = (l + r, t + b);
     let (content_w, content_h) = measure_content(node, (w - pad_x).max(0.0), (h - pad_y).max(0.0));
-    let new_w = if ax { content_w + pad_x } else { w };
-    let new_h = if ay { content_h + pad_y } else { h };
+    let measured_w = content_w + pad_x;
+    let measured_h = content_h + pad_y;
+
+    let new_w = if ax { w.max(measured_w) } else { w };
+    let new_h = if ay { h.max(measured_h) } else { h };
     (new_w, new_h)
 }
 
