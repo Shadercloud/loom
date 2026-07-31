@@ -30,6 +30,25 @@ export const SERVICES_PATH = join(PREVIEW_SRC, "services.ts");
 export const REACT_SHIM_PATH = join(PREVIEW_SRC, "react-shim.js");
 /** Installs the Roblox datatype globals; imported first by every entry. */
 export const GLOBALS_PATH = join(PREVIEW_SRC, "globals.ts");
+
+/**
+ * Browser runtimes for roblox-ts packages that ship Luau only. Unlike a
+ * project-supplied `shims` entry these are loom's own, aliased by default,
+ * because the packages are unusable in a browser without them — see
+ * `./compat/ripple.ts`.
+ */
+export const RIPPLE_COMPAT_PATH = join(PREVIEW_SRC, "compat", "ripple.ts");
+/** `@rbxts/react-ripple` stand-in (`useSpring`/`useTween`/`useMotion`). */
+export const REACT_RIPPLE_COMPAT_PATH = join(
+	PREVIEW_SRC,
+	"compat",
+	"react-ripple.ts",
+);
+/**
+ * Built-in `@rbxts/ui-labs` compatibility: the non-story `Environment`. Aliased
+ * from `compat/aliases.ts`, never imported by loom itself.
+ */
+export const UI_LABS_COMPAT_PATH = join(PREVIEW_SRC, "compat", "ui-labs.ts");
 /** The shared gallery shell (dev server and static build both start here). */
 export const GALLERY_SHELL_PATH = join(
 	PREVIEW_SRC,
