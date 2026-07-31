@@ -638,6 +638,103 @@ loomPreview({
 })
 ```
 
+### Built-in: `@rbxts/services`
+
+`@rbxts/services` needs no configuration either: the specifier is aliased to
+loom's own service singletons, and every export is the same object
+`game.GetService(...)` returns — never a copy.
+
+```ts
+import { HttpService, RunService, UserInputService } from "@rbxts/services";
+
+HttpService === game.GetService("HttpService"); // true
+```
+
+The exported services are the ones loom implements for the browser:
+
+| Service | What loom provides |
+| --- | --- |
+| `CollectionService` | the real tag registry (code-set tags; no Studio tag editor) |
+| `ContextActionService` | `BindAction` / `BindActionAtPriority` / `UnbindAction` as no-ops |
+| `GuiService` | `SelectedObject` with selection signals, `GetGuiInset`, `ReducedMotionEnabled` |
+| `HttpService` | `GenerateGUID` and the JSON pair — see below |
+| `Players` | `LocalPlayer` with a pre-built `PlayerGui` |
+| `RunService` | `RenderStepped` / `Heartbeat` / `PostSimulation`, `IsStudio` / `IsRunning` / `IsClient` |
+| `TweenService` | `Create` and real tween playback |
+| `UserInputService` | input signals, `GetMouseLocation`, `GetFocusedTextBox`, capability flags |
+| `Workspace` | `CurrentCamera` with a live `ViewportSize` |
+
+That list is deliberate rather than exhaustive. Importing a service loom does
+*not* implement fails with the normal ESM missing-export error, which is better
+than a stub that quietly does nothing in a scene you are trying to trust.
+
+#### `HttpService`
+
+```ts
+import { HttpService } from "@rbxts/services";
+
+const id = HttpService.GenerateGUID(false);
+```
+
+- `GenerateGUID(wrapInCurlyBraces?)` returns an RFC 9562 (RFC 4122) **version 4
+  UUID**, lowercase, in canonical `8-4-4-4-12` form, fresh on every call.
+- `wrapInCurlyBraces` defaults to **`true`**, as in Roblox:
+  `GenerateGUID()` and `GenerateGUID(true)` return
+  `{xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx}`, `GenerateGUID(false)` returns the
+  bare 36 characters.
+- Entropy comes from the **Web Crypto API** — `crypto.randomUUID()` when the
+  browser offers it (it is secure-context only), otherwise
+  `crypto.getRandomValues()` with the version and variant bits set explicitly.
+  Never `Math.random`, never a timestamp or a counter. Without Web Crypto it
+  throws rather than generating a weak identifier:
+
+  ```text
+  [loom] HttpService.GenerateGUID requires the Web Crypto API
+  ```
+
+- `JSONEncode(value)` / `JSONDecode(value)` are `JSON.stringify` /
+  `JSON.parse` — loom's values *are* JavaScript values, so what roblox-ts
+  writes as an array or an object encodes exactly as it does in Studio.
+  `JSONEncode(undefined)` yields `"null"`; a malformed `JSONDecode` input
+  throws a loom error rather than returning `undefined`.
+
+**No networking is implied.** A loom preview renders in a browser and never
+issues requests on your behalf, so `GetAsync`, `PostAsync` and `RequestAsync`
+throw by name — a preview says why it can't run that code instead of silently
+doing nothing or firing a request while documentation renders. `UrlEncode` is
+absent on purpose: the engine encodes more than `encodeURIComponent` does (`.`
+becomes `%2E`), and a near-miss encoder is worse than an honest omission.
+
+### Roblox datatypes
+
+The datatypes roblox-ts code reaches as globals (`UDim2`, `Color3`, `Vector2`,
+`Font`, `TweenInfo`, …) are loom's own, installed before any app module runs.
+
+#### `Color3.fromHex`
+
+```ts
+const accent = Color3.fromHex("#6366F1");
+```
+
+Accepts **exactly six** RGB hex digits, in either case, with or without one
+leading `#` — `"6366F1"`, `"6366f1"`, `"#6366F1"`, `"#6366f1"` all give the
+same color. Channels then go through `Color3.fromRGB`, so rounding and clamping
+match every other color in the scene.
+
+Anything else throws instead of guessing:
+
+```text
+[loom] Color3.fromHex expected exactly 6 hexadecimal digits, received "#FFF"
+```
+
+CSS shorthand (`#FFF`), an alpha channel (`#FFFFFFFF`), `0x` notation and
+surrounding whitespace are all rejected — accepting them would render a color
+the same source never shows in Studio.
+
+`Color3:ToHex()` is **not** implemented yet: its casing and rounding could not
+be verified against a running engine, and guessing them would make round trips
+quietly wrong.
+
 ### `shims`
 
 For any other package loom can't run, point the specifier at a browser module
