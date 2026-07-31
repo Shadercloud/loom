@@ -55,9 +55,13 @@ const CLASS_PARENTS: Record<string, string> = {
 	UISizeConstraint: "UIConstraint",
 	UITextSizeConstraint: "UIConstraint",
 	UIAspectRatioConstraint: "UIConstraint",
+	// Tweening.
+	TweenBase: "Instance",
+	Tween: "TweenBase",
 	// Service classnames (`game.GetService` singletons).
 	GuiService: "Instance",
 	RunService: "Instance",
+	TweenService: "Instance",
 	UserInputService: "Instance",
 	Players: "Instance",
 	Workspace: "Instance",

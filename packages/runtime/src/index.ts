@@ -19,12 +19,14 @@ export * from "./registry";
 export * from "./scheduler";
 export * from "./services";
 export * from "./signal";
+export * from "./tween";
 
 import {
 	CFrame,
 	Color3,
 	ColorSequence,
 	ColorSequenceKeypoint,
+	Font,
 	Rect,
 	TweenInfo,
 	UDim,
@@ -80,6 +82,7 @@ export function installGlobals(
 	target.Rect = Rect;
 	target.CFrame = CFrame;
 	target.TweenInfo = TweenInfo;
+	target.Font = Font;
 	target.Enum = Enum;
 	// The live tree.
 	target.game = game;

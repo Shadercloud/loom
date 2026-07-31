@@ -195,7 +195,87 @@ export class CFrame {
 	}
 }
 
-/** An inert Roblox `TweenInfo` bag (read by motion code, never executed here). */
+/**
+ * A Roblox `Font` — the modern typeface value behind `TextLabel.FontFace`,
+ * which supersedes the legacy `Font` *enum*. `Family` is a font-family asset
+ * URI (`rbxasset://fonts/families/SourceSansPro.json`); the renderer maps its
+ * basename onto a CSS family stack, and `Weight.Value` is already the CSS
+ * weight number.
+ */
+export class Font {
+	constructor(
+		readonly Family = "rbxasset://fonts/families/SourceSansPro.json",
+		readonly Weight: EnumItem<"FontWeight"> = Enum.FontWeight.Regular,
+		readonly Style: EnumItem<"FontStyle"> = Enum.FontStyle.Normal,
+	) {}
+
+	/** Roblox's convenience flag: true from `SemiBold` up, as in the engine. */
+	get Bold(): boolean {
+		return this.Weight.Value >= Enum.FontWeight.SemiBold.Value;
+	}
+
+	static new(
+		family?: string,
+		weight?: EnumItem<"FontWeight">,
+		style?: EnumItem<"FontStyle">,
+	): Font {
+		return new Font(family, weight, style);
+	}
+
+	/**
+	 * `Font.fromEnum(Enum.Font.GothamBold)` — the bridge from the legacy enum,
+	 * whose names fold a family and a weight into one identifier.
+	 */
+	static fromEnum(item: EnumItem<"Font">): Font {
+		return new Font(
+			`rbxasset://fonts/families/${LEGACY_FONT_FAMILIES[item.Name] ?? "SourceSansPro"}.json`,
+			legacyFontWeight(item.Name),
+			item.Name.includes("Italic")
+				? Enum.FontStyle.Italic
+				: Enum.FontStyle.Normal,
+		);
+	}
+
+	/** `Font.fromName("SourceSansPro", …)` — family by bare name, not URI. */
+	static fromName(
+		name: string,
+		weight?: EnumItem<"FontWeight">,
+		style?: EnumItem<"FontStyle">,
+	): Font {
+		return new Font(`rbxasset://fonts/families/${name}.json`, weight, style);
+	}
+}
+
+/** Legacy `Enum.Font` name → the family the modern datatype names it by. */
+const LEGACY_FONT_FAMILIES: Record<string, string> = {
+	SourceSans: "SourceSansPro",
+	SourceSansBold: "SourceSansPro",
+	SourceSansSemibold: "SourceSansPro",
+	SourceSansLight: "SourceSansPro",
+	SourceSansItalic: "SourceSansPro",
+	Gotham: "GothamSSm",
+	GothamMedium: "GothamSSm",
+	GothamBold: "GothamSSm",
+	GothamBlack: "GothamSSm",
+	Arial: "Arial",
+	ArialBold: "Arial",
+	Highway: "HighwayGothic",
+	Code: "Inconsolata",
+	RobotoMono: "RobotoMono",
+	Roboto: "Roboto",
+	Legacy: "LegacyArial",
+};
+
+function legacyFontWeight(name: string): EnumItem<"FontWeight"> {
+	if (name.includes("Black")) return Enum.FontWeight.Heavy;
+	if (name.includes("Bold")) return Enum.FontWeight.Bold;
+	if (name.includes("Semibold")) return Enum.FontWeight.SemiBold;
+	if (name.includes("Medium")) return Enum.FontWeight.Medium;
+	if (name.includes("Light")) return Enum.FontWeight.Light;
+	return Enum.FontWeight.Regular;
+}
+
+/** An inert Roblox `TweenInfo` bag: the shape `TweenService` reads. */
 export class TweenInfo {
 	constructor(
 		readonly Time = 1,
@@ -260,21 +340,26 @@ export class ColorSequenceKeypoint {
 /** A Roblox `ColorSequence` (gradient color ramp). */
 export class ColorSequence {
 	readonly Keypoints: readonly ColorSequenceKeypoint[];
-	constructor(keypoints: readonly ColorSequenceKeypoint[]) {
-		this.Keypoints = keypoints;
+	/**
+	 * Takes every form `ColorSequence.new` does, because roblox-ts compiles all
+	 * of them to `new ColorSequence(...)`: a keypoint list, one color (a flat
+	 * ramp), or a two-color ramp. A `(keypoints)`-only constructor would store a
+	 * `Color3` in `Keypoints` and blow up when the gradient is encoded.
+	 */
+	constructor(a: Color3 | readonly ColorSequenceKeypoint[] = [], b?: Color3) {
+		this.Keypoints = Array.isArray(a)
+			? (a as readonly ColorSequenceKeypoint[])
+			: [
+					new ColorSequenceKeypoint(0, a as Color3),
+					new ColorSequenceKeypoint(1, b ?? (a as Color3)),
+				];
 	}
 	/** `ColorSequence.new(c)`, `.new(c0, c1)`, or `.new(keypoints)`. */
 	static new(
 		a: Color3 | readonly ColorSequenceKeypoint[],
 		b?: Color3,
 	): ColorSequence {
-		if (Array.isArray(a)) return new ColorSequence(a);
-		const c0 = a as Color3;
-		const c1 = b ?? c0;
-		return new ColorSequence([
-			new ColorSequenceKeypoint(0, c0),
-			new ColorSequenceKeypoint(1, c1),
-		]);
+		return new ColorSequence(a, b);
 	}
 }
 
@@ -300,6 +385,13 @@ export function toPropertyValue(v: unknown): PropertyValue | undefined {
 				time: k.Time,
 				color: { r: k.Value.R, g: k.Value.G, b: k.Value.B },
 			})),
+		});
+	}
+	if (v instanceof Font) {
+		return prop.font({
+			family: v.Family,
+			weight: v.Weight.Value,
+			style: v.Style.Name,
 		});
 	}
 	if (v instanceof EnumItem) {

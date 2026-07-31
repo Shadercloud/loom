@@ -35,6 +35,22 @@ function makeEnum<E extends string, T extends readonly string[]>(
 	return out as { [K in T[number]]: EnumItem<E> };
 }
 
+/**
+ * Like {@link makeEnum}, but for the enums whose numeric value carries meaning
+ * rather than being a declaration index. `Enum.FontWeight.SemiBold.Value` is
+ * `600` in Roblox — the same number CSS wants — and font code reads it.
+ */
+function makeValuedEnum<E extends string, T extends Record<string, number>>(
+	enumType: E,
+	values: T,
+): { [K in keyof T]: EnumItem<E> } {
+	const out = {} as Record<string, EnumItem<E>>;
+	for (const [name, value] of Object.entries(values)) {
+		out[name] = new EnumItem(enumType, name, value);
+	}
+	return out as { [K in keyof T]: EnumItem<E> };
+}
+
 // `AutomaticCanvasSize` has no enum of its own in Roblox — the property reads
 // `Enum.AutomaticSize` — so both keys alias one item set.
 const automaticSize = makeEnum("AutomaticSize", [
@@ -85,6 +101,43 @@ export const Enum = {
 		"Contextual",
 		"Border",
 	] as const),
+	/**
+	 * `UIListLayout.HorizontalFlex` / `.VerticalFlex` — how leftover space along
+	 * an axis is distributed. On the fill axis every value applies; on the cross
+	 * axis only `Fill` (stretch) means anything.
+	 */
+	UIFlexAlignment: makeEnum("UIFlexAlignment", [
+		"None",
+		"Fill",
+		"SpaceAround",
+		"SpaceBetween",
+		"SpaceEvenly",
+	] as const),
+	/** `UIFlexItem.FlexMode` — how one child takes part in that distribution. */
+	UIFlexMode: makeEnum("UIFlexMode", [
+		"None",
+		"Grow",
+		"Shrink",
+		"Fill",
+		"Custom",
+	] as const),
+	/**
+	 * The modern `Font` datatype's weight axis. Values are Roblox's own (and
+	 * CSS's) 100–900 scale, not declaration indices.
+	 */
+	FontWeight: makeValuedEnum("FontWeight", {
+		Thin: 100,
+		ExtraLight: 200,
+		Light: 300,
+		Regular: 400,
+		Medium: 500,
+		SemiBold: 600,
+		Bold: 700,
+		ExtraBold: 800,
+		Heavy: 900,
+	}),
+	FontStyle: makeEnum("FontStyle", ["Normal", "Italic"] as const),
+	/** The legacy `Font` enum (`TextLabel.Font`), superseded by `FontFace`. */
 	Font: makeEnum("Font", [
 		"SourceSans",
 		"SourceSansBold",
@@ -177,13 +230,24 @@ export const Enum = {
 		"Quad",
 		"Cubic",
 		"Quart",
+		"Quint",
 		"Sine",
 		"Back",
 		"Bounce",
 		"Elastic",
 		"Exponential",
+		"Circular",
 	] as const),
 	EasingDirection: makeEnum("EasingDirection", ["In", "Out", "InOut"] as const),
+	/** `Tween.PlaybackState`, and the argument `Tween.Completed` carries. */
+	PlaybackState: makeEnum("PlaybackState", [
+		"Begin",
+		"Delayed",
+		"Playing",
+		"Paused",
+		"Completed",
+		"Cancelled",
+	] as const),
 	TextTruncate: makeEnum("TextTruncate", ["None", "AtEnd"] as const),
 	ElasticBehavior: makeEnum("ElasticBehavior", [
 		"WhenScrollable",

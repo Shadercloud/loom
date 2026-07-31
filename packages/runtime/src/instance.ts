@@ -34,6 +34,10 @@ export const EVENT_NAMES: ReadonlySet<string> = new Set([
 	"ChildRemoved",
 	"AncestryChanged",
 	"Destroying",
+	// Tween.Completed — read straight off a freshly created tween
+	// (`TweenService:Create(...).Completed:Connect(...)`), so it has to resolve
+	// before anything has fired it.
+	"Completed",
 ]);
 
 /**
