@@ -139,6 +139,8 @@ treatment, not a config kit:
 
 Options: `base` (default `/loom-preview/`), `port`, `hmrPort`, `staticBuild`,
 `shims` (paths relative to `root` — see [Package compatibility](#package-compatibility)).
+`base` is the mount **relative to the Next app**; a `basePath` is added to it
+automatically (see [below](#deploying-under-a-basepath-github-pages)).
 The wrapper returns a Next *function config* (phase-aware), and accepts yours
 as an object or function — apply it outermost when composing wrappers, e.g.
 around Fumadocs' `createMDX`:
@@ -161,6 +163,84 @@ Deep links keep working in both modes through the same `?target=<relPath>` /
 `<iframe src="/loom-preview/?chrome=none&target=src/scenes/Card.loom.tsx" />`
 in a page. The `apps/next-demo` workspace app is a running example
 (`pnpm --filter @loom-dev/next-demo dev`).
+
+#### Deploying under a `basePath` (GitHub Pages)
+
+A project site on GitHub Pages serves the whole app below the repository path,
+which Next models as `basePath`. Loom reads it off the **resolved** Next config
+— after wrappers like Fumadocs' `createMDX` have run — and generates the
+gallery for the URL the browser really uses. Nothing loom-specific to add:
+
+```js
+// docs/next.config.mjs
+const isProduction = process.env.NODE_ENV === "production";
+
+const config = {
+  output: "export",
+  basePath: isProduction ? "/rbxts-react-clean-ui" : "",
+  images: {
+    unoptimized: true,
+  },
+};
+
+export default withLoomGallery(withMDX(config), {
+  root: "..",
+});
+```
+
+That deploys to `https://<user>.github.io/rbxts-react-clean-ui/loom-preview/`,
+with every script, stylesheet, lazily imported scene chunk and runtime URL
+(the WASM layout engine included) generated for that prefix.
+
+The two bases stay separate, and only one of them is yours to set:
+
+| | what it is | who sets it |
+| --- | --- | --- |
+| Next `basePath` | the prefix the whole site is deployed under | you, in the Next config |
+| loom `base` | the gallery mount **relative to the app** (default `/loom-preview/`) | you, only to move the mount |
+| generated gallery base | `basePath` + `base` | loom, automatically |
+
+So do **not** repeat the deployment prefix in loom's `base` — with
+`basePath: "/docs"`, a `base: "/docs/loom-preview/"` deploys the gallery at
+`/docs/docs/loom-preview/` (loom warns when it sees that shape). Custom mounts
+compose the same way: `base: "previews"` under `basePath: "/docs"` serves at
+`/docs/previews/`.
+
+The static output is unchanged by any of this: `next build` still writes
+`public/loom-preview` (or `public/previews`), never
+`public/rbxts-react-clean-ui/…`. The `basePath` is a URL prefix Next applies
+when it serves `public/`, not a directory.
+
+One thing loom cannot fix for you is a **literal** iframe URL in MDX or JSX:
+
+```mdx
+<iframe src="/loom-preview/?chrome=none&target=src/Scenes/Button.loom.tsx" />
+```
+
+That string never passes through `next/link` or Next's router, so nothing
+prefixes it, and it keeps pointing at the domain root once deployed. Put the
+prefix in one project-level constant instead:
+
+```ts
+// lib/site-config.ts
+export const siteBasePath =
+  process.env.NODE_ENV === "production" ? "/rbxts-react-clean-ui" : "";
+```
+
+```mdx
+import { siteBasePath } from '@/lib/site-config';
+
+<iframe
+  src={`${siteBasePath}/loom-preview/?chrome=none&target=src/Scenes/Button.loom.tsx`}
+/>
+```
+
+`apps/fumadocs-demo` does exactly this (`lib/site-config.ts`), and runs under a
+prefix on demand:
+
+```sh
+LOOM_DEMO_BASE_PATH=/rbxts-react-clean-ui pnpm --filter @loom-dev/fumadocs-demo dev
+```
 
 #### Fumadocs with a sibling Loom source tree
 
@@ -689,6 +769,12 @@ loom applies the same aliases and the same resolver in both modes.
   Next from the network) and deliberately outside `pnpm test`, but it is the
   only check that covers the *published* layout — `files`, tarball contents,
   and loom's React winning over a host app's
+- `pnpm test:base-path` — assembles a Fumadocs app in the reported
+  `rbxts-react-clean-ui/{docs,src}` shape, runs three real `next build
+  --output export` passes (with a `basePath`, the user's `root: ".."` layout,
+  and a no-`basePath` control), then serves the export under
+  `/rbxts-react-clean-ui/` and fetches every gallery resource it names. Needs
+  no network; outside `pnpm test` because it runs Next builds
 - `pnpm lint` / `pnpm format` — Biome
 - `pnpm changeset` — record a release note for the packages you touched
 
