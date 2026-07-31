@@ -169,10 +169,10 @@ export function instanceFont(inst: {
 }): ResolvedFont {
 	const face = inst.FontFace as
 		| {
-				Family?: unknown;
-				Weight?: { Value?: unknown };
-				Style?: { Name?: unknown };
-		  }
+			Family?: unknown;
+			Weight?: { Value?: unknown };
+			Style?: { Name?: unknown };
+		}
 		| undefined;
 	if (face && typeof face.Family === "string") {
 		return resolveFont(undefined, {
@@ -390,6 +390,85 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	return layer;
 }
 
+async function resolveRobloxImageUrl(image: string): Promise<string> {
+	const match = image.match(/^rbxassetid:\/\/(\d+)$/);
+
+	if (!match) {
+		throw new Error(`Invalid Roblox asset id: ${image}`);
+	}
+
+	const assetId = match[1];
+
+	const response = await fetch(
+		`https://proxy.corsfix.com/?https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=150x150&format=Webp&isCircular=false`,
+	);
+
+	if (!response.ok) {
+		throw new Error(
+			`Failed to fetch thumbnail (${response.status} ${response.statusText})`,
+		);
+	}
+
+	const json = (await response.json()) as {
+		data: Array<{
+			targetId: number;
+			state: string;
+			imageUrl?: string;
+		}>;
+	};
+
+	const thumbnail = json.data[0];
+
+	if (!thumbnail || thumbnail.state !== "Completed" || !thumbnail.imageUrl) {
+		throw new Error(`Thumbnail not available for asset ${assetId}`);
+	}
+
+	return thumbnail.imageUrl;
+}
+
+function createImageLayer(
+	node: SceneNode,
+): HTMLImageElement | undefined {
+	if (
+		node.className !== "ImageLabel" &&
+		node.className !== "ImageButton"
+	) {
+		return undefined;
+	}
+
+	const image = asString(node.properties?.Image);
+
+	if (image === undefined || image === "") {
+		return undefined;
+	}
+
+	const element = document.createElement("img");
+
+	resolveRobloxImageUrl(image)
+		.then((url) => {
+			element.src = url;
+		})
+		.catch(console.error);
+	element.style.position = "absolute";
+	element.style.inset = "0";
+	element.style.width = "100%";
+	element.style.height = "100%";
+	element.style.pointerEvents = "none";
+
+	return element;
+}
+
+function imageLayerKey(node: SceneNode): string {
+	if (
+		node.className !== "ImageLabel" &&
+		node.className !== "ImageButton"
+	) {
+		return "";
+	}
+
+	return asString(node.properties?.Image) ?? "";
+}
+
 /**
  * Fingerprint of every input `createTextLayer` reads, so the session rebuilds
  * the overlay only when a text-affecting prop actually changed.
@@ -560,10 +639,10 @@ function createTextBoxBinding(
 		if (getFocusedTextBox() === inst) setFocusedTextBox(undefined);
 		const input = enterPressed
 			? makeInputObject({
-					UserInputType: Enum.UserInputType.Keyboard,
-					UserInputState: Enum.UserInputState.End,
-					KeyCode: Enum.KeyCode.Return,
-				})
+				UserInputType: Enum.UserInputType.Keyboard,
+				UserInputState: Enum.UserInputState.End,
+				KeyCode: Enum.KeyCode.Return,
+			})
 			: undefined;
 		getEventSignal(inst, "FocusLost").fire(enterPressed, input);
 	};
@@ -640,6 +719,9 @@ function renderNode(
 	el.dataset.loomName = node.name;
 	applyBoxStyle(el.style, node, rect, parentRect, isRoot);
 
+	const imageLayer = createImageLayer(node);
+	if (imageLayer) el.appendChild(imageLayer);
+
 	const textLayer = createTextLayer(node);
 	if (textLayer) el.appendChild(textLayer);
 
@@ -701,8 +783,10 @@ export interface DomSession {
 interface SessionEntry {
 	el: HTMLDivElement;
 	textEl: HTMLDivElement | undefined;
+	imageEl: HTMLImageElement | undefined;
 	styleKey: string;
 	textKey: string;
+	imageKey: string;
 	/** Present only on TextBox nodes: the persistent input element. */
 	input: TextBoxBinding | undefined;
 	/** Present only on ScrollingFrame nodes: the -CanvasPosition child wrapper. */
@@ -823,8 +907,10 @@ export function createDomSession(
 			entry = {
 				el,
 				textEl: undefined,
+				imageEl: undefined,
 				styleKey: "",
 				textKey: "",
+				imageKey: "",
 				input: undefined,
 				canvas: undefined,
 			};
@@ -841,6 +927,17 @@ export function createDomSession(
 		if (styleKey !== entry.styleKey) {
 			el.style.cssText = styleKey;
 			entry.styleKey = styleKey;
+		}
+
+		const imageKey = imageLayerKey(node);
+
+		if (imageKey !== entry.imageKey) {
+			entry.imageEl?.remove();
+			entry.imageEl =
+				imageKey === ""
+					? undefined
+					: createImageLayer(node);
+			entry.imageKey = imageKey;
 		}
 
 		// TextBox paints its text in a persistent input element, not the overlay.
@@ -872,6 +969,7 @@ export function createDomSession(
 		}
 
 		const overlays: HTMLElement[] = [];
+		if (entry.imageEl) overlays.push(entry.imageEl);
 		if (entry.input) overlays.push(entry.input.el);
 		if (entry.textEl) overlays.push(entry.textEl);
 		const children: HTMLElement[] = [];
@@ -1071,18 +1169,18 @@ export function createDomSession(
 			direction === "Y"
 				? current.X
 				: clamp(
-						current.X + e.deltaX,
-						0,
-						Math.max(0, canvasSize.X - windowSize.X),
-					);
+					current.X + e.deltaX,
+					0,
+					Math.max(0, canvasSize.X - windowSize.X),
+				);
 		const nextY =
 			direction === "X"
 				? current.Y
 				: clamp(
-						current.Y + e.deltaY,
-						0,
-						Math.max(0, canvasSize.Y - windowSize.Y),
-					);
+					current.Y + e.deltaY,
+					0,
+					Math.max(0, canvasSize.Y - windowSize.Y),
+				);
 		if (nextX === current.X && nextY === current.Y) return;
 		frame.CanvasPosition = Vector2.new(nextX, nextY);
 		e.preventDefault();
