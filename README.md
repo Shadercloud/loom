@@ -249,6 +249,175 @@ not an option, so such a package can only be answered by a browser module that
 stands in for it. Loom ships that module for the packages whose browser meaning
 is unambiguous, and lets you supply one for anything else.
 
+### Built-in: `@rbxts/react`
+
+Loom exposes the complete browser-meaningful runtime surface of the supported
+`@rbxts/react` version (currently **17.3.7-ts.2**), forwarding standard React
+APIs to one pinned React instance and adapting Roblox-specific APIs where
+necessary. An existing roblox-ts React file compiles and runs unchanged:
+
+```tsx
+import React, {
+  Component,
+  PureComponent,
+  ReactComponent,
+  ReactPureComponent,
+  createContext,
+  createElement,
+  createRef,
+  forwardRef,
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "@rbxts/react";
+```
+
+#### Standard React
+
+`Children`, `Component`, `PureComponent`, `Fragment`, `Profiler`,
+`StrictMode`, `Suspense`, `cloneElement`, `createContext`, `createElement`,
+`createRef`, `forwardRef`, `isValidElement`, `lazy`, `memo` and every hook come
+straight from loom's own React 18 — **by identity**, not through wrappers:
+
+```ts
+import ReactDefault, { Component, useState } from "@rbxts/react";
+import * as BrowserReact from "react";
+
+ReactDefault.Component === Component; // true
+Component === BrowserReact.Component;  // true
+useState === BrowserReact.useState;    // true
+```
+
+That matters because `@loom-dev/react` is a `react-reconciler` host config: a
+second React copy would mean a second hook dispatcher, and every function
+component would throw *Invalid hook call*. Loom pins its React by absolute-path
+alias, so a project that hoists React 19 for its own use keeps it — the gallery
+still renders on loom's React 18.
+
+#### `ReactComponent` / `ReactPureComponent`
+
+Both decorators are the **identity function**. React-Lua needs them because it
+has no `class` statement — upstream copies the decorated table onto a fresh
+`Component:extend(...)`. Browser React already recognises a class that extends
+`Component`, so loom hands the constructor straight back: nothing is wrapped or
+subclassed, statics and `displayName` keep their identity, the prototype chain
+is untouched, and the constructor is never invoked.
+
+```tsx
+@ReactComponent
+export class Column extends Component<{ gap?: number }> {
+  render() {
+    return <frame />;
+  }
+}
+
+Column === ReactComponent(Column); // true
+```
+
+Both TypeScript decorator dialects work: `experimentalDecorators` (what
+roblox-ts projects enable) and TC39 standard decorators.
+
+#### `Event`, `Change`, `Tag`
+
+The handler-table props work as upstream documents them, and the renderer reads
+them directly:
+
+```tsx
+<textbutton
+  Event={{ Activated: (rbx) => print(rbx) }}
+  Change={{ AbsoluteSize: (rbx) => print(rbx.AbsoluteSize) }}
+  Tag="surface"
+/>
+```
+
+`React.Event`, `React.Change` and `React.Tag` also exist as runtime values, and
+the named imports are the same values as the ones on the default export:
+
+```tsx
+import { Change, Event, Tag } from "@rbxts/react";
+
+<textbutton {...{ [Event.Activated]: onClick, [Tag]: "surface" }} />;
+```
+
+`Event` and `Change` mint a prefixed prop key for any signal or property name.
+`Tag` is a single key, matching upstream, and it writes to a real
+`CollectionService` in loom's runtime — `AddTag`, `RemoveTag`, `HasTag`,
+`GetTags`, `GetTagged`, `GetAllTags`, `GetInstanceAddedSignal` and
+`GetInstanceRemovedSignal` all work, and the tag is retracted when the element
+unmounts. What a preview has no equivalent for is Studio's tag editor, so tags
+only ever come from code.
+
+#### Bindings
+
+`createBinding`, `useBinding` and `joinBindings` come from `@loom-dev/react` —
+the implementation the renderer resolves — so there is exactly one kind of
+binding. A binding minted by `React.useBinding` and one minted by
+`@rbxts/react-ripple`'s `useSpring` are the same object to the renderer, and
+any host prop accepts a plain value or a `Binding` of one.
+
+#### `React.None`
+
+**Intentionally unsupported, and it says so.** React-Lua uses `None` to *delete*
+a key from class-component state. React's update queue merges partial state with
+`Object.assign({}, prev, partial)`, which can add and overwrite keys but never
+remove one, and the only place that could change is `Component` itself — which
+has to stay identical to browser React's for hooks and the reconciler to work.
+
+`None` is still a real, importable value (`React.None === None`), so code that
+merely mentions it keeps compiling. Using it in `setState` throws immediately,
+naming the offending key, instead of letting the sentinel settle into state and
+corrupt a render later. Set the field to `undefined` and treat that as absent,
+or move the state into a hook where you own the whole value.
+
+#### JSX runtime entrypoints
+
+`@rbxts/react`, `@rbxts/react/jsx-runtime` and `@rbxts/react/jsx-dev-runtime`
+all converge on the same React instance, as do bare `react`,
+`react/jsx-runtime` and `react/jsx-dev-runtime`. Classic
+(`React.createElement("frame")`) and automatic (`<frame />`) JSX both work; loom
+configures the automatic runtime by default, so the `React` import is optional
+in a file that only uses JSX.
+
+Any other subpath is a compatibility boundary loom names rather than guesses at:
+
+```text
+[loom] The @rbxts/react subpath "@rbxts/react/internal" is not supported by
+Loom's browser compatibility layer.
+
+Supported entrypoints:
+- @rbxts/react
+- @rbxts/react/jsx-runtime
+- @rbxts/react/jsx-dev-runtime
+```
+
+#### `@rbxts/react-roblox`
+
+The root import is answered by loom's preview client, covering every value
+upstream declares: `createRoot` (and its React 17 flavours `createBlockingRoot`
+and `createLegacyRoot`, which map onto the same root because loom commits
+synchronously either way), `createPortal`, `act`, `version`, and a root's
+`render` / `unmount`. `RootOptions` is accepted and ignored — every field is
+React-Lua hydration machinery with no browser meaning. Unsupported subpaths get
+the same named diagnostic as above.
+
+#### Intentional differences from React-Lua
+
+| Upstream | Under loom |
+| --- | --- |
+| `ReactComponent` re-creates the class via `Component:extend` | identity — browser React already accepts the class |
+| `createElement` lower-cases host tags and folds `Event`/`Change`/`Tag` into keyed props | `createElement` is browser React's own; the renderer reads those props directly |
+| `React.None` removes a state key | throws a loom error (see above) |
+| `React.Tag` reaches Studio's CollectionService | loom's own CollectionService: code-set tags only, no tag editor |
+| React 17 semantics | React 18 — loom also exposes `act`, `startTransition`, `useId`, `useDeferredValue`, `useInsertionEffect`, `useSyncExternalStore`, `useTransition`, `version` and `createFactory`, which **roblox-ts will reject** when the same file is compiled for Roblox |
+| `createMutableSource` / `useMutableSource`, `unstable_DebugTracingMode`, `unstable_LegacyHidden`, `unstable_parseReactError`, `__subscribeToBinding` | not exposed — React 17 experiments or React-Lua internals with no browser counterpart |
+
+The runtime surface is derived from upstream rather than hand-listed: a contract
+test parses `@rbxts/react`'s own `index.d.ts` with the TypeScript compiler API
+and fails if a declared runtime export is missing, and every deliberate omission
+carries a written reason. See `packages/preview/src/compat/react.contract.test.ts`.
+
 ### Built-in: `@rbxts/ui-labs`
 
 The root import works with **no configuration at all** — no `shims` entry, no
@@ -515,6 +684,11 @@ loom applies the same aliases and the same resolver in both modes.
 - `cargo build` — build the Rust workspace
 - `pnpm typecheck` / `pnpm build`
 - `pnpm test` — `cargo test` + `vitest run`
+- `pnpm test:packed` — packs the tarballs, installs them into a throwaway
+  external Next.js app and runs `next build` against it. Slow (it installs
+  Next from the network) and deliberately outside `pnpm test`, but it is the
+  only check that covers the *published* layout — `files`, tarball contents,
+  and loom's React winning over a host app's
 - `pnpm lint` / `pnpm format` — Biome
 - `pnpm changeset` — record a release note for the packages you touched
 
