@@ -314,6 +314,58 @@ fn list_metrics(content: Rect, list: &SceneNode, children: &[(usize, &SceneNode)
     }
 }
 
+/// `UIFlexItem.FlexMode` on a child → its share of the leftover main-axis space.
+/// `Grow`/`Fill` take an equal share; `Custom` uses `GrowRatio`; everything else
+/// (and no `UIFlexItem` at all) keeps its resolved size.
+fn flex_grow_weight(child: &SceneNode) -> f64 {
+    let item = match find_modifier(child, "UIFlexItem") {
+        Some(item) => item,
+        None => return 0.0,
+    };
+    match enum_name(item, "FlexMode") {
+        Some("Grow") | Some("Fill") => 1.0,
+        Some("Custom") => num_prop(item, "GrowRatio").unwrap_or(0.0).max(0.0),
+        _ => 0.0,
+    }
+}
+
+/// How `UIListLayout`'s flex spreads leftover main-axis space: an offset before
+/// the first item and an extra gap between items. Alignment still decides the
+/// offset when there is no flex (or nothing left to spread).
+struct FlexSpacing {
+    start: f64,
+    between: f64,
+}
+
+fn flex_spacing(flex: &str, free: f64, count: usize) -> Option<FlexSpacing> {
+    if free <= 0.0 || count == 0 {
+        return None;
+    }
+    match flex {
+        // With one item there is nothing to space *between*, and Roblox leaves it
+        // where the alignment put it.
+        "SpaceBetween" if count > 1 => Some(FlexSpacing {
+            start: 0.0,
+            between: free / (count - 1) as f64,
+        }),
+        "SpaceAround" => {
+            let pad = free / count as f64;
+            Some(FlexSpacing {
+                start: pad / 2.0,
+                between: pad,
+            })
+        }
+        "SpaceEvenly" => {
+            let pad = free / (count + 1) as f64;
+            Some(FlexSpacing {
+                start: pad,
+                between: pad,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn place_with_list(
     content: Rect,
     list: &SceneNode,
@@ -341,10 +393,64 @@ fn place_with_list(
     let main_align = if vertical { v_align } else { h_align };
     let cross_align = if vertical { h_align } else { v_align };
 
-    let mut cursor = align_offset(main_content, m.total_main, main_align);
+    // `HorizontalFlex`/`VerticalFlex` are axis-named, like the alignment
+    // properties: whichever one matches the fill direction spreads the leftover
+    // space along it, and the other one only means anything as `Fill` (stretch).
+    let h_flex = enum_name(list, "HorizontalFlex").unwrap_or("None");
+    let v_flex = enum_name(list, "VerticalFlex").unwrap_or("None");
+    let main_flex = if vertical { v_flex } else { h_flex };
+    let cross_flex = if vertical { h_flex } else { v_flex };
+
+    let visible_count = order.iter().filter(|(_, c)| c.visible()).count();
+    let free = (main_content - m.total_main).max(0.0);
+
+    // `Fill` on the main axis grows every item, which is the same distribution a
+    // per-child `UIFlexItem` asks for — so an explicit `UIFlexItem` anywhere in
+    // the row wins, and `Fill` is the fallback that gives each item weight 1.
+    let explicit_weight: f64 = order
+        .iter()
+        .filter(|(_, c)| c.visible())
+        .map(|&(_, c)| flex_grow_weight(c))
+        .sum();
+    let fill_all = explicit_weight <= 0.0 && main_flex == "Fill";
+    let weight_sum = if fill_all {
+        visible_count as f64
+    } else {
+        explicit_weight
+    };
+    let per_weight = if weight_sum > 0.0 {
+        free / weight_sum
+    } else {
+        0.0
+    };
+
+    // Growing consumes the leftover space, so the two never apply at once.
+    let spacing = if weight_sum > 0.0 {
+        None
+    } else {
+        flex_spacing(main_flex, free, visible_count)
+    };
+
+    let mut cursor = match &spacing {
+        Some(s) => s.start,
+        None => align_offset(main_content, m.total_main, main_align),
+    };
+    let between = spacing.as_ref().map_or(0.0, |s| s.between);
+
     for &(idx, child) in &order {
         let (w, h) = resolve_size(child, content);
-        let (main_size, cross_size) = if vertical { (h, w) } else { (w, h) };
+        let (mut main_size, mut cross_size) = if vertical { (h, w) } else { (w, h) };
+        if child.visible() && per_weight > 0.0 {
+            let weight = if fill_all {
+                1.0
+            } else {
+                flex_grow_weight(child)
+            };
+            main_size += weight * per_weight;
+        }
+        if cross_flex == "Fill" {
+            cross_size = cross_content;
+        }
         let cross_off = align_offset(cross_content, cross_size, cross_align);
         let rect = if vertical {
             Rect {
@@ -366,7 +472,7 @@ fn place_with_list(
         // CSS), but they must not consume flow space — mirror Roblox by advancing
         // the cursor only for visible items so the rest pack up against them.
         if child.visible() {
-            cursor += main_size + gap;
+            cursor += main_size + gap + between;
         }
     }
     Ok(())
@@ -1157,6 +1263,152 @@ mod tests {
         let r = compute_layout(&screen(vec![container]), VP).unwrap();
         assert_eq!(r.rects["0/0"].rect.width, 100.0);
         assert_eq!(r.rects["0/0"].rect.height, 60.0);
+    }
+
+    /// A 600-wide row of three 100-wide items: 300px of it is leftover space,
+    /// which is what every flex value below divides up.
+    fn flex_row(flex_property: &str, flex_value: &str) -> LayoutResult {
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                (flex_property, enum_item("UIFlexAlignment", flex_value)),
+            ],
+        );
+        let item = |name: &str| with("Frame", name, &[("Size", udim2(0.0, 100.0, 0.0, 50.0))]);
+        let mut row = with("Frame", "Row", &[("Size", udim2(0.0, 600.0, 0.0, 200.0))]);
+        row.children = vec![list, item("A"), item("B"), item("C")];
+        compute_layout(&screen(vec![row]), VP).unwrap()
+    }
+
+    #[test]
+    fn horizontal_flex_space_between_pushes_the_ends_apart() {
+        let r = flex_row("HorizontalFlex", "SpaceBetween");
+        // First flush left, last flush right, 150px of air between each pair.
+        assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 250.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 500.0);
+    }
+
+    #[test]
+    fn horizontal_flex_space_evenly_pads_every_gap_equally() {
+        let r = flex_row("HorizontalFlex", "SpaceEvenly");
+        // Four 75px gaps: before, between, between, after.
+        assert_eq!(r.rects["0/0/0"].rect.x, 75.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 250.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 425.0);
+    }
+
+    #[test]
+    fn horizontal_flex_space_around_halves_the_outer_gaps() {
+        let r = flex_row("HorizontalFlex", "SpaceAround");
+        // 100px per item, split half before and half after each.
+        assert_eq!(r.rects["0/0/0"].rect.x, 50.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 250.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 450.0);
+    }
+
+    #[test]
+    fn horizontal_flex_fill_grows_every_item() {
+        let r = flex_row("HorizontalFlex", "Fill");
+        for (id, x) in [("0/0/0", 0.0), ("0/0/1", 200.0), ("0/0/2", 400.0)] {
+            assert_eq!(r.rects[id].rect.x, x);
+            assert_eq!(r.rects[id].rect.width, 200.0);
+        }
+    }
+
+    #[test]
+    fn cross_axis_flex_fill_stretches_instead_of_spacing() {
+        // VerticalFlex on a horizontal list is the cross axis: only Fill applies,
+        // and it stretches each item over the row's height rather than moving it.
+        let r = flex_row("VerticalFlex", "Fill");
+        assert_eq!(r.rects["0/0/0"].rect.height, 200.0);
+        assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 100.0);
+    }
+
+    #[test]
+    fn cross_axis_space_values_are_ignored() {
+        let r = flex_row("VerticalFlex", "SpaceBetween");
+        assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 100.0);
+        assert_eq!(r.rects["0/0/0"].rect.height, 50.0);
+    }
+
+    #[test]
+    fn flex_never_spaces_when_the_row_is_full() {
+        // No leftover space => alignment still decides, nothing to distribute.
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                (
+                    "HorizontalFlex",
+                    enum_item("UIFlexAlignment", "SpaceBetween"),
+                ),
+            ],
+        );
+        let item = |name: &str| with("Frame", name, &[("Size", udim2(0.0, 300.0, 0.0, 50.0))]);
+        let mut row = with("Frame", "Row", &[("Size", udim2(0.0, 600.0, 0.0, 200.0))]);
+        row.children = vec![list, item("A"), item("B")];
+        let r = compute_layout(&screen(vec![row]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 300.0);
+    }
+
+    #[test]
+    fn ui_flex_item_grows_only_the_marked_child() {
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[("FillDirection", enum_item("FillDirection", "Horizontal"))],
+        );
+        let mut grower = with("Frame", "Grow", &[("Size", udim2(0.0, 100.0, 0.0, 50.0))]);
+        grower.children = vec![with(
+            "UIFlexItem",
+            "Flex",
+            &[("FlexMode", enum_item("UIFlexMode", "Fill"))],
+        )];
+        let mut row = with("Frame", "Row", &[("Size", udim2(0.0, 600.0, 0.0, 200.0))]);
+        row.children = vec![
+            list,
+            with("Frame", "Fixed", &[("Size", udim2(0.0, 100.0, 0.0, 50.0))]),
+            grower,
+        ];
+        let r = compute_layout(&screen(vec![row]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.width, 100.0);
+        // The marked child swallows all 400px of leftover space.
+        assert_eq!(r.rects["0/0/1"].rect.x, 100.0);
+        assert_eq!(r.rects["0/0/1"].rect.width, 500.0);
+    }
+
+    #[test]
+    fn invisible_children_do_not_get_flex_space() {
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                (
+                    "HorizontalFlex",
+                    enum_item("UIFlexAlignment", "SpaceBetween"),
+                ),
+            ],
+        );
+        let item = |name: &str| with("Frame", name, &[("Size", udim2(0.0, 100.0, 0.0, 50.0))]);
+        let mut hidden = item("Hidden");
+        hidden.properties.insert(
+            "Visible".into(),
+            PropertyValue::Known(KnownProperty::Bool(false)),
+        );
+        let mut row = with("Frame", "Row", &[("Size", udim2(0.0, 600.0, 0.0, 200.0))]);
+        row.children = vec![list, item("A"), hidden, item("B")];
+        let r = compute_layout(&screen(vec![row]), VP).unwrap();
+        // Two visible items => one 400px gap; the hidden one takes no slot.
+        assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 500.0);
     }
 
     #[test]
