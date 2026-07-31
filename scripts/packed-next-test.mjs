@@ -15,11 +15,13 @@
  *   2. `pnpm pack` each one into tarballs;
  *   3. create an external Next.js app in a temp directory — no workspace, no
  *      pnpm links — that installs those tarballs with npm;
- *   4. give it a gallery target that imports `Component` and `ReactComponent`
- *      from `@rbxts/react`, the exact import from the report;
+ *   4. give it gallery targets carrying the exact imports from the reports —
+ *      `Component`/`ReactComponent` from `@rbxts/react`, and `HttpService` from
+ *      `@rbxts/services` alongside a `Color3.fromHex` theme;
  *   5. run `next build`, which invokes `withLoomGallery`'s static-gallery hook;
- *   6. assert the scene really is in the emitted static gallery, and that the
- *      host app's React 19 never reached it.
+ *   6. assert both scenes really are in the emitted static gallery, that the
+ *      published preview exports a named `HttpService`, and that the host app's
+ *      React 19 never reached it.
  *
  * Run with `pnpm test:packed`. Kept out of `pnpm test` because it installs
  * Next.js from the network and takes minutes, not seconds.
@@ -56,6 +58,8 @@ const PACKAGES = [
 
 /** A marker the built gallery chunk must contain, proving the scene shipped. */
 const SCENE_MARKER = "packed-external-react-class-scene";
+/** The same, for the `@rbxts/services` + `Color3.fromHex` scene. */
+const HTTP_SCENE_MARKER = "packed-external-http-color-scene";
 /** Nothing in the gallery may report React 19 — that is the host app's copy. */
 const HOST_REACT = "19.";
 
@@ -283,6 +287,36 @@ export const preview = {
 `,
 );
 
+// The other report: `HttpService` through `@rbxts/services` (a *named* export of
+// the published preview bundle, which is where the missing one surfaced as
+// "does not provide an export named HttpService") and a `Color3.fromHex` theme.
+write(
+	"loom/targets/HttpColorScene.loom.tsx",
+	`import { HttpService } from "@rbxts/services";
+
+const ACCENT = Color3.fromHex("#6366F1");
+const ID = HttpService.GenerateGUID(false);
+
+export const preview = {
+	title: "${HTTP_SCENE_MARKER}",
+	render: () => (
+		<frame
+			Name={\`Card-\${ID}\`}
+			Size={UDim2.fromOffset(240, 100)}
+			BackgroundColor3={ACCENT}
+		>
+			<textlabel
+				Size={UDim2.fromScale(1, 1)}
+				BackgroundTransparency={1}
+				Text={ID}
+				TextColor3={Color3.fromHex("FFFFFF")}
+			/>
+		</frame>
+	),
+} as const;
+`,
+);
+
 // --- 4. install --------------------------------------------------------------
 
 run("npm", ["install", "--no-audit", "--no-fund", "--loglevel", "error"], {
@@ -305,6 +339,20 @@ if (!existsSync(join(installedPreview, "src/compat/react.ts"))) {
 }
 if (existsSync(join(installedPreview, "src/react-shim.js"))) {
 	fail("the old react-shim.js is still being published");
+}
+// The `@rbxts/services` alias module as *published*: a named `HttpService`
+// export has to be in the tarball, not merely in the workspace source.
+const publishedServices = join(installedPreview, "src/services.ts");
+if (!existsSync(publishedServices)) {
+	fail("the published @loom-dev/preview has no src/services.ts");
+}
+if (
+	!/export const HttpService\b/.test(readFileSync(publishedServices, "utf8"))
+) {
+	fail(
+		"the published @loom-dev/preview exports no named HttpService — " +
+			'`import { HttpService } from "@rbxts/services"` cannot link',
+	);
 }
 
 // --- 5. next build -----------------------------------------------------------
@@ -335,9 +383,24 @@ if (!sceneCode.includes(SCENE_MARKER)) {
 	fail("the scene chunk does not contain the scene's own marker");
 }
 
+const httpSceneChunk = js.find((f) => f.startsWith("HttpColorScene"));
+if (!httpSceneChunk) {
+	fail(`no HttpColorScene chunk in the static gallery (saw: ${js.join(", ")})`);
+}
+const httpSceneCode = readFileSync(join(assetsDir, httpSceneChunk), "utf8");
+if (!httpSceneCode.includes(HTTP_SCENE_MARKER)) {
+	fail("the HttpService/Color3 chunk does not contain the scene's own marker");
+}
+if (!httpSceneCode.includes("GenerateGUID")) {
+	fail("the HttpService/Color3 chunk never calls GenerateGUID");
+}
+
 const allCode = js
 	.map((f) => readFileSync(join(assetsDir, f), "utf8"))
 	.join("\n");
+if (/(from|import|require)\s*\(?\s*["'`]@rbxts\/services["'`]/.test(allCode)) {
+	fail("an unresolved @rbxts/services import survived into the gallery bundle");
+}
 const unresolved = [...allCode.matchAll(/.{0,80}@rbxts\/react.{0,80}/g)].map(
 	(m) => m[0],
 );
@@ -371,9 +434,9 @@ if (!indexHtml.includes("loom")) fail("the gallery index.html looks empty");
 
 console.log(`
 [packed-next-test] PASS
-  tarballs:      ${Object.keys(tarballFor).length}
-  gallery chunk: ${sceneChunk}
-  fixture:       ${app}
+  tarballs:       ${Object.keys(tarballFor).length}
+  gallery chunks: ${sceneChunk}, ${httpSceneChunk}
+  fixture:        ${app}
 `);
 
 if (KEEP) {
