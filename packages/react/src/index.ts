@@ -121,17 +121,35 @@ function classNameOf(type: string): string {
 	return CLASS_NAMES[type] ?? type.charAt(0).toUpperCase() + type.slice(1);
 }
 
-// Props that are not Roblox instance properties (handled elsewhere / ignored).
-const RESERVED = new Set(["children", "Name", "key", "ref", "Event", "Change"]);
-
 /**
  * Prop-key prefixes for @rbxts/react's `React.Event.X` / `React.Change.X`
  * keyed-handler convention (`{ [React.Event.Activated]: fn }`). The preview's
- * @rbxts/react shim mints keys with these prefixes; the adapter routes them
- * to the same signal connections as `Event`/`Change` handler tables.
+ * @rbxts/react compatibility facade mints keys with these prefixes; the adapter
+ * routes them to the same signal connections as `Event`/`Change` handler
+ * tables.
  */
 export const EVENT_PROP_PREFIX = "LoomEvent:";
 export const CHANGE_PROP_PREFIX = "LoomChange:";
+
+/**
+ * The key `React.Tag` resolves to. Upstream, `Tag` is a lone symbol rather than
+ * an indexed namespace — `props[React.Tag] = props.Tag` is all `createElement`
+ * does with it — so this is one fixed key, not a prefix. Both spellings reach
+ * the same place: `<frame Tag="x" />` and `<frame {...{[React.Tag]: "x"}} />`.
+ */
+export const TAG_PROP_KEY = "LoomTag";
+
+// Props that are not Roblox instance properties (handled elsewhere / ignored).
+const RESERVED = new Set([
+	"children",
+	"Name",
+	"key",
+	"ref",
+	"Event",
+	"Change",
+	"Tag",
+	TAG_PROP_KEY,
+]);
 
 /** Split `LoomEvent:`/`LoomChange:` keyed props out of a prop bag. */
 function extractKeyedHandlers(props: Props): {
@@ -211,9 +229,53 @@ function syncHandlers(
 	}
 }
 
+// --- CollectionService tags ---------------------------------------------------
+
+/** The tag currently applied by the `Tag` prop, so a change can retract it. */
+const APPLIED_TAG = new WeakMap<LoomInstance, string>();
+
+/** `props.Tag` or `props[React.Tag]` — the keyed form wins, as upstream. */
+function tagOf(props: Props): string | undefined {
+	const value = props[TAG_PROP_KEY] ?? props.Tag;
+	return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * Reconcile the `Tag` prop against CollectionService. Roblox's tag registry is
+ * a plain string index with change signals — nothing engine-bound — so the
+ * runtime implements the real service and this writes to it, rather than
+ * dropping the prop on the floor. Tags an instance did not get from this prop
+ * are left alone: app code is free to `AddTag` on its own.
+ */
+function syncTag(inst: LoomInstance, prev: Props, next: Props): void {
+	const before = tagOf(prev);
+	const after = tagOf(next);
+	if (before === after) return;
+	const collection = getService("CollectionService") as unknown as {
+		AddTag(instance: LoomInstance, tag: string): void;
+		RemoveTag(instance: LoomInstance, tag: string): void;
+	};
+	if (before !== undefined) collection.RemoveTag(inst, before);
+	if (after !== undefined) {
+		collection.AddTag(inst, after);
+		APPLIED_TAG.set(inst, after);
+	} else {
+		APPLIED_TAG.delete(inst);
+	}
+}
+
 /** Disconnect every adapter-made connection (instance leaves the tree). */
 function disposeInstance(inst: LoomInstance): void {
 	unbindProps(inst);
+	const tag = APPLIED_TAG.get(inst);
+	if (tag !== undefined) {
+		APPLIED_TAG.delete(inst);
+		(
+			getService("CollectionService") as unknown as {
+				RemoveTag(instance: LoomInstance, tag: string): void;
+			}
+		).RemoveTag(inst, tag);
+	}
 	const connections = CONNECTIONS.get(inst);
 	if (!connections) return;
 	for (const connection of connections.values()) connection.Disconnect();
@@ -327,6 +389,7 @@ function applyProps(inst: LoomInstance, prev: Props, next: Props): void {
 		mergeHandlerSources(prev.Change, prevKeyed.changes),
 		mergeHandlerSources(next.Change, nextKeyed.changes),
 	);
+	syncTag(inst, prev, next);
 }
 
 // --- encode: LoomInstance tree → Scene IR ------------------------------------
@@ -1072,6 +1135,8 @@ export interface GuiProps {
 	ClipsDescendants?: Bindable<boolean>;
 	Event?: EventHandlers;
 	Change?: ChangeHandlers;
+	/** CollectionService tag, applied for as long as the element is mounted. */
+	Tag?: string;
 	ref?: Ref<LoomInstance>;
 	key?: Key;
 	children?: ReactNode;
