@@ -67,6 +67,7 @@ const CLASS_PARENTS: Record<string, string> = {
 	Workspace: "Instance",
 	ContextActionService: "Instance",
 	HttpService: "Instance",
+	CollectionService: "Instance",
 };
 
 const warnedUnknown = new Set<string>();

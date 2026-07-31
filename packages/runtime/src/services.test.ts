@@ -310,6 +310,18 @@ describe("CollectionService", () => {
 	const tags = (): Tags =>
 		game.GetService("CollectionService") as unknown as Tags;
 
+	// Must run before anything else here resolves the singleton: `classParent`
+	// only warns once per class, so a later spy would miss the warning.
+	it("resolves as a known class without warning", () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const service = game.GetService("CollectionService");
+		expect(service.IsA("CollectionService")).toBe(true);
+		// A miss walks the whole chain, so an unregistered class would warn here.
+		expect(service.IsA("GuiObject")).toBe(false);
+		expect(warnSpy).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
 	it("adds, reports and removes tags", () => {
 		const service = tags();
 		const frame = createInstance("Frame");
