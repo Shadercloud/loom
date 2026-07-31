@@ -26,8 +26,12 @@ export const LOOM_REPO_ROOT = resolve(PREVIEW_SRC, "../../..");
 export const CLIENT_PATH = join(PREVIEW_SRC, "client.ts");
 /** `@rbxts/services` stand-in. */
 export const SERVICES_PATH = join(PREVIEW_SRC, "services.ts");
-/** `@rbxts/react` shim: React plus the `Event`/`Change` keyed-prop namespaces. */
-export const REACT_SHIM_PATH = join(PREVIEW_SRC, "react-shim.js");
+/**
+ * `@rbxts/react` compatibility facade: the pinned browser React forwarded by
+ * identity, plus the Roblox-only surface (`ReactComponent`, `Event`, `Change`,
+ * `Tag`, `None`) and loom's bindings. See `./compat/react.ts`.
+ */
+export const REACT_COMPAT_PATH = join(PREVIEW_SRC, "compat", "react.ts");
 /** Installs the Roblox datatype globals; imported first by every entry. */
 export const GLOBALS_PATH = join(PREVIEW_SRC, "globals.ts");
 

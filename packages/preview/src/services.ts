@@ -11,6 +11,7 @@
  */
 import { getService, type LoomInstance } from "@loom-dev/runtime";
 
+export const CollectionService: LoomInstance = getService("CollectionService");
 export const ContextActionService: LoomInstance = getService(
 	"ContextActionService",
 );

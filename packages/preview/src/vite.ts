@@ -29,6 +29,10 @@ import {
 	builtInCompatibilityAliases,
 	exactSpecifierPattern,
 } from "./compat/aliases.ts";
+import {
+	unsupportedEntrypoint,
+	unsupportedEntrypointError,
+} from "./compat/entrypoints.ts";
 import { normalizeTargetsPatterns, type TargetsInput } from "./gallery.ts";
 import { loomGallery } from "./gallery-plugin.ts";
 import { loomIndexHtml } from "./html.ts";
@@ -36,7 +40,7 @@ import {
 	CLIENT_PATH,
 	GLOBALS_PATH,
 	LOOM_REPO_ROOT,
-	REACT_SHIM_PATH,
+	REACT_COMPAT_PATH,
 	SERVICES_PATH,
 } from "./paths.ts";
 import {
@@ -369,6 +373,17 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 		async resolveId(source, importer, options) {
 			if (!importer || !isBareSpecifier(source)) return;
 
+			// A subpath of a package loom adapts, that loom does not adapt. The
+			// `resolve.alias` entries are exact, so this would otherwise fall
+			// through to real resolution and fail as a missing Luau entry —
+			// mentioning neither loom nor what the compatibility layer covers.
+			// Not during the optimizer scan, for the same reason the Luau-only
+			// diagnostic isn't: a throw there refuses to start the dev server, and
+			// the same import fails properly a moment later when it's transformed.
+			if (!isScan(options) && unsupportedEntrypoint(source)) {
+				throw unsupportedEntrypointError(source, importer);
+			}
+
 			const verdict = luauVerdicts.get(source);
 			if (verdict !== undefined) {
 				// `false` = known non-Luau: fall through to normal resolution.
@@ -479,13 +494,12 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 						// `Environment`), so those import with no configuration at all.
 						// See `./compat/aliases.ts`.
 						...builtInCompatibilityAliases(),
-						// More specific first: react-roblox (+ any subpath) -> client
-						// shim. Absolute paths so the previewed project's node_modules
-						// doesn't need @loom-dev packages.
-						{
-							find: /^@rbxts\/react-roblox(\/.*)?$/,
-							replacement: CLIENT_PATH,
-						},
+						// More specific first: react-roblox -> the preview client.
+						// Absolute paths so the previewed project's node_modules
+						// doesn't need @loom-dev packages. Exact, not `(\/.*)?`: an
+						// unadapted subpath must reach the diagnostic in
+						// `./compat/entrypoints.ts`, not silently land on `createRoot`.
+						{ find: /^@rbxts\/react-roblox$/, replacement: CLIENT_PATH },
 						// @rbxts/services -> the preview's service singletons.
 						{ find: /^@rbxts\/services$/, replacement: SERVICES_PATH },
 						// @rbxts/react (+ jsx runtimes) and bare react -> loom's react.
@@ -494,9 +508,10 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 							find: /^@rbxts\/react\/jsx-dev-runtime$/,
 							replacement: REACT_JSX_DEV,
 						},
-						// @rbxts/react -> a shim adding React.Event/React.Change
-						// keyed-prop namespaces on top of loom's react instance.
-						{ find: /^@rbxts\/react$/, replacement: REACT_SHIM_PATH },
+						// @rbxts/react -> the compatibility facade: loom's one react
+						// instance forwarded by identity, plus the Roblox-only surface
+						// (ReactComponent, Event/Change/Tag, None) and bindings.
+						{ find: /^@rbxts\/react$/, replacement: REACT_COMPAT_PATH },
 						{ find: /^react\/jsx-runtime$/, replacement: REACT_JSX },
 						{ find: /^react\/jsx-dev-runtime$/, replacement: REACT_JSX_DEV },
 						{ find: /^react$/, replacement: REACT_MAIN },

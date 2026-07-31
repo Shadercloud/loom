@@ -7,7 +7,7 @@
 import type { LoomRoot } from "@loom-dev/react";
 import { render as loomRender } from "@loom-dev/react";
 import { getService } from "@loom-dev/runtime";
-import type { ReactElement } from "react";
+import React, { type ReactElement } from "react";
 
 /**
  * Stand-in for `ReactRoblox.createPortal`. Renders children into a LoomInstance
@@ -55,12 +55,26 @@ export interface LoomReactRoot {
 }
 
 /**
+ * `ReactRoblox.RootOptions`. Every field is React-Lua hydration machinery,
+ * which has no browser meaning under loom (there is no serialised Roblox tree
+ * to hydrate), so the argument is accepted and ignored rather than rejected —
+ * app code that passes one keeps compiling.
+ */
+export interface RootOptions {
+	hydrate?: boolean;
+	hydrationOptions?: Record<string, unknown>;
+}
+
+/**
  * Stand-in for `ReactRoblox.createRoot`. The Roblox target instance is ignored,
  * but each root gets its own container under `#loom-root`, so independent roots
  * (portals, multiple mounts) don't clobber each other — the renderer
  * `replaceChildren()`es its own mount on every commit.
  */
-export function createRoot(_target?: unknown): LoomReactRoot {
+export function createRoot(
+	_target?: unknown,
+	_options?: RootOptions,
+): LoomReactRoot {
 	const mount = document.createElement("div");
 	mount.style.position = "absolute";
 	mount.style.inset = "0";
@@ -87,3 +101,34 @@ export function createRoot(_target?: unknown): LoomReactRoot {
 		},
 	};
 }
+
+/**
+ * `ReactRoblox.createBlockingRoot` / `createLegacyRoot` — the React 17 root
+ * flavours, both mapped onto {@link createRoot}.
+ *
+ * The three differ only in how React *schedules* work (legacy sync mode,
+ * blocking mode, concurrent mode). Loom's world commits and flushes
+ * synchronously either way — encode → layout → DOM patch runs inside
+ * `resetAfterCommit` — so the distinction has nothing to express here, and the
+ * tree that mounts is identical. Kept as separate exports because upstream
+ * declares them and roblox-ts code written against React 17 calls them.
+ */
+export const createBlockingRoot = createRoot;
+export const createLegacyRoot = createRoot;
+
+/**
+ * `ReactRoblox.act` — browser React's own, re-exported.
+ *
+ * Same purpose (flush effects and pending work before returning) and the same
+ * implementation React's own test utilities use, so a roblox-ts test helper
+ * that wraps updates in `act` behaves as written. React requires
+ * `globalThis.IS_REACT_ACT_ENVIRONMENT = true` before it will run without
+ * warning.
+ */
+export const act: typeof React.act = React.act;
+
+/**
+ * `ReactRoblox.version` — the React version loom actually renders with, not a
+ * React-Lua version string. A preview reports what it is.
+ */
+export const version: string = React.version;
