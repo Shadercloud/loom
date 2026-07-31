@@ -9,7 +9,7 @@ import type { InputObject, LoomInstance } from "@loom-dev/runtime";
 import { Color3, Enum, flushDirtyNow, UDim2 } from "@loom-dev/runtime";
 import type { LayoutResult, SceneNode, Viewport } from "@loom-dev/scene";
 import { createElement, type ReactElement, useState } from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ComputeLayout, type MountedWorld, mountSync } from "./index";
 
 /** Stub layout: every node gets x=0, y=0 and the (mutable) shared size. */
@@ -85,6 +85,32 @@ describe("mountSync world", () => {
 		expect(card.getAttribute("style")).toContain("255, 0, 0");
 		const label = mount.querySelector('[data-loom-name="Label"]');
 		expect(label?.textContent).toBe("hi");
+	});
+
+	it("maps modifier intrinsics the fallback casing would mangle", () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const root = mountWith(
+			createElement(
+				"frame",
+				{ Name: "Card" },
+				createElement("uipagelayout", { Name: "Pager" }),
+				createElement("uitablelayout", { Name: "Table" }),
+				createElement("uitextsizeconstraint", { Name: "TextSize" }),
+			),
+		);
+		const card = root.world.defaultGui.FindFirstChild("Card") as LoomInstance;
+		const classOf = (name: string): string =>
+			(card.FindFirstChild(name) as LoomInstance).ClassName;
+		expect(classOf("Pager")).toBe("UIPageLayout");
+		expect(classOf("Table")).toBe("UITableLayout");
+		expect(classOf("TextSize")).toBe("UITextSizeConstraint");
+		// Named properly they are non-layout modifiers: nothing painted, and no
+		// unknown-class warning out of the registry.
+		expect(mount.querySelector('[data-loom-name="Pager"]')).toBeNull();
+		expect(mount.querySelector('[data-loom-name="Table"]')).toBeNull();
+		expect(mount.querySelector('[data-loom-name="TextSize"]')).toBeNull();
+		expect(warnSpy).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
 	});
 
 	it("preserves element identity across setState commits", () => {

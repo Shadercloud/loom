@@ -116,6 +116,14 @@ const CLASS_NAMES: Record<string, string> = {
 	uisizeconstraint: "UISizeConstraint",
 	uiscale: "UIScale",
 	uiflexitem: "UIFlexItem",
+	// Inert here — loom implements none of their behavior — but an app authored
+	// for Roblox may still render one, and the fallback casing would mint
+	// "Uipagelayout": an unknown class the engine lays out and paints as a plain
+	// box. Named properly they land in the non-layout modifier set and disappear,
+	// which is what a preview should show for a modifier it can't apply.
+	uipagelayout: "UIPageLayout",
+	uitablelayout: "UITableLayout",
+	uitextsizeconstraint: "UITextSizeConstraint",
 };
 function classNameOf(type: string): string {
 	return CLASS_NAMES[type] ?? type.charAt(0).toUpperCase() + type.slice(1);
