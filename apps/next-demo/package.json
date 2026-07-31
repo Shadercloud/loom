@@ -1,0 +1,21 @@
+{
+	"name": "@loom-dev/next-demo",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"dev": "next dev",
+		"build": "next build",
+		"start": "next start",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"loom-dev": "workspace:*",
+		"next": "^15.0.0",
+		"react": "catalog:",
+		"react-dom": "^18.3.1"
+	},
+	"devDependencies": {
+		"@types/react": "catalog:",
+		"typescript": "catalog:"
+	}
+}

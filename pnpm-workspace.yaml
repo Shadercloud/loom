@@ -4,6 +4,10 @@ packages:
 
 allowBuilds:
   esbuild: true
+  # next-demo's transitive sharp: its native build is only for production image
+  # optimization — not needed by the harness, so keep the script off (and the
+  # install prompt quiet).
+  sharp: false
 
 # Shared dependency versions, referenced from packages with "catalog:".
 catalog:
@@ -19,3 +23,6 @@ catalog:
 minimumReleaseAgeExclude:
   - tsdown@0.22.12
   - verkit@0.1.0
+  - '@fumadocs/base-ui@16.14.0'
+  - fumadocs-core@16.14.0
+  - fumadocs-mdx@15.2.1

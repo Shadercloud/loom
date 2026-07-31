@@ -13,3 +13,9 @@ pkg/
 
 .serena
 digest.txt
+
+# Next.js harnesses (apps/next-demo, apps/fumadocs-demo)
+.next/
+next-env.d.ts
+# the auto-built static gallery (withLoomGallery emits it on `next build`)
+apps/*/public/loom-preview/
