@@ -107,6 +107,59 @@ The gallery keeps a Vite instance of its own — the plugin rewrites `react` and
 `@rbxts/*` for the whole config it lives in, so the host forwards HTTP and
 nothing else.
 
+### In a Next.js app
+
+Next.js can't mount the embed middleware on its dev server, so `loom-dev/next`
+wraps the same isolated gallery in a config-level integration instead:
+
+```ts
+// next.config.ts
+import { withLoomGallery } from "loom-dev/next";
+
+export default withLoomGallery(
+  { /* your Next config */ },
+  { root: "../my-ui", targets: "src/scenes" },
+);
+```
+
+That one wrapper is the whole setup, dev and build both — the Astro-embed
+treatment, not a config kit:
+
+- `next dev` lazily boots the gallery on its own ephemeral port and proxies
+  `/loom-preview/*` to it through `rewrites()` — full HMR, and the host app's
+  React (18, 19, whatever Next wants) is never touched, because the loom
+  aliases live entirely in the gallery's own Vite instance. Works with webpack
+  and Turbopack alike: the integration sits at Next's routing layer, not its
+  bundler.
+- `next build` emits the static gallery into `public/loom-preview`
+  automatically (add it to `.gitignore`; `staticBuild: false` opts out for a
+  CI that runs `loom build` itself), and `next start` just serves it — the
+  wrapper's rewrite maps the bare mount path onto its `index.html`.
+
+Options: `base` (default `/loom-preview/`), `port`, `hmrPort`, `staticBuild`.
+The wrapper returns a Next *function config* (phase-aware), and accepts yours
+as an object or function — apply it outermost when composing wrappers, e.g.
+around Fumadocs' `createMDX`:
+
+```ts
+// next.config.mjs of a Fumadocs site
+export default withLoomGallery(withMDX(config), {
+  root: "../my-ui",
+  targets: "src/scenes",
+});
+```
+
+Verified against both harnesses in `apps/`: `next-demo` (Next 15, pages
+router, webpack, React 18) and `fumadocs-demo` (Fumadocs 16 on Next 16, App
+Router, Turbopack, React 19, `proxy.ts` middleware) — the integration sits at
+the routing layer, so none of those axes touch it.
+
+Deep links keep working in both modes through the same `?target=<relPath>` /
+`?chrome=none` URL contract, e.g. an
+`<iframe src="/loom-preview/?chrome=none&target=src/scenes/Card.loom.tsx" />`
+in a page. The `apps/next-demo` workspace app is a running example
+(`pnpm --filter @loom-dev/next-demo dev`).
+
 ## Layout
 
 - `crates/` — Rust workspace
