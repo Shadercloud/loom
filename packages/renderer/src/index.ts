@@ -37,7 +37,13 @@ import {
 	Vector2,
 	Vector3,
 } from "@loom-dev/runtime";
-import type { Color3, LayoutResult, Rect, SceneNode } from "@loom-dev/scene";
+import type {
+	Color3,
+	FontValue,
+	LayoutResult,
+	Rect,
+	SceneNode,
+} from "@loom-dev/scene";
 import {
 	asBool,
 	asColor3,
@@ -51,6 +57,7 @@ import {
 	getBackgroundColor3,
 	getBackgroundTransparency,
 	getClipsDescendants,
+	getFontFace,
 	getFontName,
 	getText,
 	getTextColor3,
@@ -80,18 +87,23 @@ function cssColor(c: Color3, transparency: number): string {
 
 // --- font / alignment mapping ------------------------------------------------
 
-/** Roblox Font name -> CSS font-family stack. Exported so the adapter can measure
- *  text with the exact font the renderer will paint (AutomaticSize text bounds). */
+/**
+ * Roblox font name -> CSS font-family stack. Takes either a legacy `Enum.Font`
+ * item name (`"GothamBold"`) or a `FontFace` family name (`"GothamSSm"`) —
+ * both identify the family by prefix. Exported so the adapter can measure text
+ * with the exact font the renderer will paint (AutomaticSize text bounds).
+ */
 export function fontFamily(name: string | undefined): string {
 	if (!name) return SANS;
-	if (name === "Code" || name === "RobotoMono") return MONO;
+	if (name === "Code" || name === "Inconsolata") return MONO;
+	if (name.startsWith("RobotoMono")) return MONO;
 	if (name.startsWith("Gotham")) return `"Gotham", ${SANS}`;
 	if (name.startsWith("SourceSans")) return `"Source Sans Pro", ${SANS}`;
 	if (name.startsWith("Roboto")) return `"Roboto", ${SANS}`;
 	if (name.startsWith("Arial")) return `Arial, ${SANS}`;
 	return SANS;
 }
-/** Roblox Font name -> CSS font-weight. */
+/** Legacy `Enum.Font` item name -> CSS font-weight (the name folds one in). */
 export function fontWeight(name: string | undefined): string {
 	if (!name) return "400";
 	if (name.includes("Black")) return "900";
@@ -100,6 +112,85 @@ export function fontWeight(name: string | undefined): string {
 	if (name.includes("Medium")) return "500";
 	if (name.includes("Light")) return "300";
 	return "400";
+}
+
+/** What the text painters actually need: a CSS family, weight, and slant. */
+export interface ResolvedFont {
+	family: string;
+	weight: string;
+	italic: boolean;
+}
+
+/** `rbxasset://fonts/families/SourceSansPro.json` -> `SourceSansPro`. */
+function familyName(uri: string): string {
+	return (uri.split("/").pop() ?? uri).replace(/\.json$/i, "");
+}
+
+/**
+ * Resolve the two ways a Roblox text instance can carry a typeface. `FontFace`
+ * (the modern `Font` datatype) wins when both are set, matching the engine —
+ * and it is the only one roblox-ts code written this decade tends to use.
+ */
+export function resolveFont(
+	fontName: string | undefined,
+	face: FontValue | undefined,
+): ResolvedFont {
+	if (face) {
+		// Roblox clamps a Font's weight to the 100–900 scale; anything else came
+		// from hand-built data, so fall back to regular rather than emit garbage.
+		const weight =
+			Number.isFinite(face.weight) && face.weight >= 100 && face.weight <= 900
+				? String(Math.round(face.weight / 100) * 100)
+				: "400";
+		return {
+			family: fontFamily(familyName(face.family)),
+			weight,
+			italic: face.style === "Italic",
+		};
+	}
+	return {
+		family: fontFamily(fontName),
+		weight: fontWeight(fontName),
+		italic: fontName?.includes("Italic") ?? false,
+	};
+}
+
+/** {@link resolveFont} for a scene node. */
+export function nodeFont(node: SceneNode): ResolvedFont {
+	return resolveFont(getFontName(node), getFontFace(node));
+}
+
+/**
+ * {@link resolveFont} for a live instance — the adapter measures text off the
+ * instance, before the node is encoded.
+ */
+export function instanceFont(inst: {
+	readonly [key: string]: unknown;
+}): ResolvedFont {
+	const face = inst.FontFace as
+		| {
+				Family?: unknown;
+				Weight?: { Value?: unknown };
+				Style?: { Name?: unknown };
+		  }
+		| undefined;
+	if (face && typeof face.Family === "string") {
+		return resolveFont(undefined, {
+			family: face.Family,
+			weight: typeof face.Weight?.Value === "number" ? face.Weight.Value : 400,
+			style: typeof face.Style?.Name === "string" ? face.Style.Name : "Normal",
+		});
+	}
+	const legacy = inst.Font as { Name?: unknown } | undefined;
+	return resolveFont(
+		typeof legacy?.Name === "string" ? legacy.Name : undefined,
+		undefined,
+	);
+}
+
+/** CSS `font` shorthand for canvas measurement. */
+export function fontShorthand(font: ResolvedFont, sizePx: number): string {
+	return `${font.italic ? "italic " : ""}${font.weight} ${sizePx}px ${font.family}`;
 }
 const yAlignFlex = (a: string): string =>
 	a === "Top" ? "flex-start" : a === "Bottom" ? "flex-end" : "center";
@@ -274,7 +365,7 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	// `text-align` align every (wrapped) line over the whole label width.
 	const layer = document.createElement("div");
 	const s = layer.style;
-	const fontName = getFontName(node);
+	const font = nodeFont(node);
 	s.position = "absolute";
 	s.inset = "0";
 	s.display = "flex";
@@ -282,9 +373,9 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	s.justifyContent = yAlignFlex(getTextYAlignment(node));
 	s.color = cssColor(getTextColor3(node), getTextTransparency(node));
 	s.fontSize = `${getTextSize(node)}px`;
-	s.fontFamily = fontFamily(fontName);
-	s.fontWeight = fontWeight(fontName);
-	if (fontName?.includes("Italic")) s.fontStyle = "italic";
+	s.fontFamily = font.family;
+	s.fontWeight = font.weight;
+	if (font.italic) s.fontStyle = "italic";
 	s.lineHeight = "1"; // Roblox default LineHeight is 1.0
 	s.overflow = "hidden";
 	s.pointerEvents = "none";
@@ -307,9 +398,12 @@ function textLayerKey(node: SceneNode): string {
 	if (!TEXT_CLASSES.has(node.className)) return "";
 	const text = getText(node);
 	if (text === undefined || text === "") return "";
+	const font = nodeFont(node);
 	return [
 		text,
-		getFontName(node) ?? "",
+		font.family,
+		font.weight,
+		font.italic ? 1 : 0,
 		getTextSize(node),
 		cssColor(getTextColor3(node), getTextTransparency(node)),
 		getTextWrapped(node) ? 1 : 0,
@@ -506,7 +600,7 @@ function createTextBoxBinding(
  * mapping the text overlay layer uses — the input IS the text layer here.
  */
 function applyTextBoxStyle(s: CSSStyleDeclaration, node: SceneNode): void {
-	const fontName = getFontName(node);
+	const font = nodeFont(node);
 	s.position = "absolute";
 	s.inset = "0";
 	s.width = "100%";
@@ -520,9 +614,9 @@ function applyTextBoxStyle(s: CSSStyleDeclaration, node: SceneNode): void {
 	s.resize = "none";
 	s.color = cssColor(getTextColor3(node), getTextTransparency(node));
 	s.fontSize = `${getTextSize(node)}px`;
-	s.fontFamily = fontFamily(fontName);
-	s.fontWeight = fontWeight(fontName);
-	if (fontName?.includes("Italic")) s.fontStyle = "italic";
+	s.fontFamily = font.family;
+	s.fontWeight = font.weight;
+	if (font.italic) s.fontStyle = "italic";
 	s.textAlign = xAlignText(getTextXAlignment(node));
 	s.zIndex = String(getZIndex(node));
 }
