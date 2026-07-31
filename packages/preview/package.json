@@ -86,6 +86,8 @@
 		}
 	},
 	"devDependencies": {
+		"@rbxts/react": "17.3.7-ts.2",
+		"@rbxts/react-roblox": "17.3.7-ts.2",
 		"@types/node": "^22.0.0",
 		"@types/react": "catalog:",
 		"react": "catalog:",
