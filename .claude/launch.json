@@ -34,6 +34,20 @@
 			"port": 5185
 		},
 		{
+			"name": "fumadocs-demo",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": ["--filter", "@loom-dev/fumadocs-demo", "dev"],
+			"port": 3000,
+			"autoPort": true
+		},
+		{
+			"name": "fumadocs-demo-prod",
+			"runtimeExecutable": "pnpm",
+			"runtimeArgs": ["--filter", "@loom-dev/fumadocs-demo", "start"],
+			"port": 3000,
+			"autoPort": true
+		},
+		{
 			"name": "cli-example",
 			"runtimeExecutable": "pnpm",
 			"runtimeArgs": [
