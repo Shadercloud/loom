@@ -1,5 +1,22 @@
 # @loom-dev/preview
 
+## 0.4.0
+
+### Patch Changes
+
+- [`12c6c8e`](https://github.com/astra-void/loom/commit/12c6c8e59e6b7276e0c9245470746a1a9121fe39) Thanks [@astra-void](https://github.com/astra-void)! - Narrow the `react` peer range to `^18.3.1`.
+
+  The declared range allowed `^19.0.0`, but the React adapter drives
+  `react-reconciler@^0.29.2`, which reads React 18 internals that React 19
+  renamed — a React 19 install fails at evaluation time with an
+  `Invalid hook call` / duplicate-React error. The range now matches what the
+  reconciler actually supports, so the failure surfaces at install time instead
+  of at first render.
+
+- Updated dependencies []:
+  - @loom-dev/runtime@0.4.0
+  - @loom-dev/react@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes

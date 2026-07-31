@@ -1,5 +1,16 @@
 # loom-dev
 
+## 0.4.0
+
+### Minor Changes
+
+- [`0a883fe`](https://github.com/astra-void/loom/commit/0a883feb2f22fe9bcd04cd73faf8dff2b2fcd556) Thanks [@astra-void](https://github.com/astra-void)! - Add `loom-dev/next` — a Next.js integration for the loom gallery with the same one-line setup the Astro embed gets. `withLoomGallery(nextConfig, { root, targets })` returns a phase-aware function config: `next dev` proxies `/loom-preview/*` to an isolated, lazily-booted gallery Vite server (full HMR, host React untouched, webpack and Turbopack alike), `next build` emits the static gallery into `public/<base>` automatically (`staticBuild: false` to opt out), and `next start` serves it with the bare mount path mapped onto its `index.html`. Also exports `startGalleryServer`, a standalone HTTP wrapper around the embed middleware for hosts that can only forward to a URL.
+
+### Patch Changes
+
+- Updated dependencies [[`12c6c8e`](https://github.com/astra-void/loom/commit/12c6c8e59e6b7276e0c9245470746a1a9121fe39)]:
+  - @loom-dev/preview@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
