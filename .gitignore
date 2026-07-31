@@ -19,3 +19,7 @@ digest.txt
 next-env.d.ts
 # the auto-built static gallery (withLoomGallery emits it on `next build`)
 apps/*/public/loom-preview/
+# `next build` with output: "export"
+out/
+# scripts/next-base-path-test.mjs assembles its Next app here
+apps/.loom-base-path-fixture/

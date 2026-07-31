@@ -15,6 +15,7 @@
 		"typecheck": "pnpm -r run typecheck",
 		"test": "cargo test && vitest run --passWithNoTests",
 		"test:packed": "node scripts/packed-next-test.mjs",
+		"test:base-path": "node scripts/next-base-path-test.mjs",
 		"lint": "biome check .",
 		"format": "biome format --write .",
 		"changeset": "changeset",
