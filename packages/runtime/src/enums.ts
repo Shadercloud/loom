@@ -16,7 +16,7 @@ export class EnumItem<T extends string = string> {
 		readonly EnumType: T,
 		readonly Name: string,
 		readonly Value: number,
-	) {}
+	) { }
 
 	/** Roblox `tostring(enumItem)` shape: `Enum.<Type>.<Name>`. */
 	toString(): string {
@@ -260,4 +260,20 @@ export const Enum = {
 		"ScrollBar",
 		"Always",
 	] as const),
+	FontSize: makeEnum("FontSize", ["Size8",
+		"Size9",
+		"Size10",
+		"Size11",
+		"Size12",
+		"Size14",
+		"Size18",
+		"Size24",
+		"Size36",
+		"Size48",
+		"Size28",
+		"Size32",
+		"Size42",
+		"Size60",
+		"Size96"] as const),
+	BorderStrokePosition: makeEnum("BorderStrokePosition", ["Outer", "Center", "Inner"]),
 };

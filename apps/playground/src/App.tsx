@@ -45,7 +45,7 @@ export function App() {
 					Size={UDim2.new(1, 0, 0, 30)}
 					Text="MAIN MENU"
 					TextColor3={TEXT}
-					TextSize={20}
+					FontSize={Enum.FontSize.Size24}
 					Font={Enum.Font.GothamBold}
 					TextXAlignment={Enum.TextXAlignment.Left}
 					BackgroundTransparency={1}

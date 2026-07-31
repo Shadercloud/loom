@@ -1178,6 +1178,7 @@ export interface TextGuiProps extends GuiProps {
 	/** The legacy font enum. `FontFace` wins when both are set, as in Roblox. */
 	Font?: Bindable<EnumItem<"Font">>;
 	FontFace?: Bindable<Font>;
+	FontSize?: Bindable<EnumItem<"FontSize">>;
 }
 
 /** `TextBox` adds the editable-text props the DOM input maps. */

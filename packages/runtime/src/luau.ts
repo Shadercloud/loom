@@ -533,6 +533,18 @@ export function tick(): number {
 	return performance.now() / 1000;
 }
 
+/**
+ * Luau `assert` — returns the value when truthy, otherwise throws.
+ */
+export function assert<T>(
+	condition: T,
+	message = "assertion failed!",
+): asserts condition {
+	if (!condition) {
+		throw new Error(message);
+	}
+}
+
 // --- prototype patches -------------------------------------------------------
 
 function definePatch(
@@ -585,5 +597,36 @@ export function applyPrototypePatches(): void {
 	});
 	definePatch(String.prototype, "size", function (this: string) {
 		return this.length;
+	});
+	definePatch(String.prototype, "lower", function (this: string) {
+		return string.lower(this);
+	});
+
+	definePatch(String.prototype, "upper", function (this: string) {
+		return string.upper(this);
+	});
+
+	definePatch(String.prototype, "sub", function (this: string, i?: number, j?: number) {
+		return string.sub(this, i, j);
+	});
+
+	definePatch(String.prototype, "rep", function (this: string, n: number, separator?: string) {
+		return string.rep(this, n, separator);
+	});
+
+	definePatch(String.prototype, "split", function (this: string, separator?: string) {
+		return string.split(this, separator);
+	});
+
+	definePatch(String.prototype, "find", function (this: string, pattern: string, init?: number, plain?: boolean) {
+		return string.find(this, pattern, init, plain);
+	});
+
+	definePatch(String.prototype, "gsub", function (this: string, pattern: string, replacement: string, maxCount?: number,) {
+		return string.gsub(this, pattern, replacement, maxCount);
+	});
+
+	definePatch(String.prototype, "format", function (this: string, ...args: unknown[]) {
+		return string.format(this, ...args);
 	});
 }

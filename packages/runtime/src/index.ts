@@ -106,4 +106,5 @@ export function installGlobals(
 	target.error = luau.error;
 	target.warn = luau.warn;
 	target.print = luau.print;
+	target.assert = luau.assert;
 }
