@@ -14,6 +14,7 @@
 		"build:packages": "pnpm -r --filter \"./packages/*\" run build",
 		"typecheck": "pnpm -r run typecheck",
 		"test": "cargo test && vitest run --passWithNoTests",
+		"test:packed": "node scripts/packed-next-test.mjs",
 		"lint": "biome check .",
 		"format": "biome format --write .",
 		"changeset": "changeset",
