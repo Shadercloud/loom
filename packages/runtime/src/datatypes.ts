@@ -321,6 +321,29 @@ export class Color3 {
 			Math.round(Math.min(255, Math.max(0, n))) / 255;
 		return new Color3(c(r), c(g), c(b));
 	}
+	/**
+	 * `Color3.fromHex("#6366F1")` — the hexadecimal form theme code writes.
+	 *
+	 * Strictly six RGB digits after at most one leading `#`, either case; the
+	 * channels then go through {@link Color3.fromRGB}, so rounding and clamping
+	 * stay on the one conversion path. Anything else throws rather than guessing:
+	 * CSS shorthand (`#FFF`), an alpha channel (`#FFFFFFFF`), `0x` notation and
+	 * surrounding whitespace are all rejected, because silently accepting them
+	 * would render a color the same source never shows in Studio.
+	 */
+	static fromHex(hex: string): Color3 {
+		const value = hex.startsWith("#") ? hex.slice(1) : hex;
+		if (!/^[0-9a-fA-F]{6}$/.test(value)) {
+			throw new Error(
+				`[loom] Color3.fromHex expected exactly 6 hexadecimal digits, received "${hex}"`,
+			);
+		}
+		return Color3.fromRGB(
+			Number.parseInt(value.slice(0, 2), 16),
+			Number.parseInt(value.slice(2, 4), 16),
+			Number.parseInt(value.slice(4, 6), 16),
+		);
+	}
 	Lerp(other: Color3, alpha: number): Color3 {
 		return new Color3(
 			this.R + (other.R - this.R) * alpha,

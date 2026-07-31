@@ -9,6 +9,7 @@ import {
 	UDim2,
 } from "./datatypes";
 import { Enum } from "./enums";
+import { installGlobals } from "./index";
 
 describe("UDim2 constructor", () => {
 	it("accepts the four-number roblox-ts form (xScale, xOffset, yScale, yOffset)", () => {
@@ -88,6 +89,104 @@ describe("ColorSequence constructor", () => {
 				],
 			},
 		});
+	});
+});
+
+describe("Color3.fromHex", () => {
+	const channels = (color: Color3): [number, number, number] => [
+		color.R,
+		color.G,
+		color.B,
+	];
+
+	it("converts the primaries exactly", () => {
+		expect(channels(Color3.fromHex("#FF0000"))).toEqual([1, 0, 0]);
+		expect(channels(Color3.fromHex("00FF00"))).toEqual([0, 1, 0]);
+		expect(channels(Color3.fromHex("0000FF"))).toEqual([0, 0, 1]);
+		expect(channels(Color3.fromHex("000000"))).toEqual([0, 0, 0]);
+		expect(channels(Color3.fromHex("FFFFFF"))).toEqual([1, 1, 1]);
+	});
+
+	it("normalizes a mixed color the way fromRGB does", () => {
+		const accent = Color3.fromHex("#6366F1");
+		expect(accent.R).toBeCloseTo(99 / 255, 10);
+		expect(accent.G).toBeCloseTo(102 / 255, 10);
+		expect(accent.B).toBeCloseTo(241 / 255, 10);
+		// The same channel conversion path, not a second one.
+		expect(accent).toEqual(Color3.fromRGB(99, 102, 241));
+	});
+
+	it("accepts either case, with or without the leading #", () => {
+		const expected = Color3.fromRGB(99, 102, 241);
+		for (const hex of ["6366F1", "6366f1", "#6366F1", "#6366f1"]) {
+			expect(Color3.fromHex(hex)).toEqual(expected);
+		}
+	});
+
+	it("returns a new Color3 instance on every call", () => {
+		const a = Color3.fromHex("#6366F1");
+		const b = Color3.fromHex("#6366F1");
+		expect(a).toBeInstanceOf(Color3);
+		expect(a).not.toBe(b);
+		expect(a).toEqual(b);
+	});
+
+	it("rejects everything that is not exactly six hex digits", () => {
+		// CSS shorthand, alpha, `0x` notation, stray whitespace and non-hex digits
+		// are all refused rather than silently reinterpreted.
+		for (const hex of [
+			"",
+			"#",
+			"FFF",
+			"#FFF",
+			"FFFFFFFF",
+			"#FFFFFFFF",
+			"GG0000",
+			"0xFF0000",
+			"##FF0000",
+			" FF0000 ",
+		]) {
+			expect(() => Color3.fromHex(hex)).toThrow(
+				`[loom] Color3.fromHex expected exactly 6 hexadecimal digits, received "${hex}"`,
+			);
+		}
+	});
+
+	it("leaves the rest of Color3 untouched", () => {
+		expect(channels(Color3.new(0.25, 0.5, 0.75))).toEqual([0.25, 0.5, 0.75]);
+		expect(channels(Color3.fromRGB(255, 128, 0))).toEqual([1, 128 / 255, 0]);
+		const mid = Color3.fromHex("#000000").Lerp(Color3.fromHex("#FFFFFF"), 0.5);
+		expect(channels(mid)).toEqual([0.5, 0.5, 0.5]);
+		expect(toPropertyValue(Color3.fromHex("#FF0000"))).toEqual({
+			type: "Color3",
+			value: { r: 1, g: 0, b: 0 },
+		});
+	});
+
+	it("reaches roblox-ts code through the installed global, unpatched", () => {
+		// `installGlobals` installs the runtime's own constructor, so a static
+		// added to the class is on the global by construction — no second patch,
+		// and no risk of the two drifting.
+		const target: Record<string, unknown> = {};
+		installGlobals(target);
+		expect(target.Color3).toBe(Color3);
+
+		installGlobals();
+		const Global = (globalThis as { Color3?: typeof Color3 }).Color3;
+		expect(Global).toBe(Color3);
+		expect(Global?.fromHex("#6366F1")).toBeInstanceOf(Color3);
+		expect(Global?.fromHex("#6366F1")).toEqual(Color3.fromHex("#6366F1"));
+		expect(Global?.fromHex("#FFFFFF")).toEqual(Color3.fromRGB(255, 255, 255));
+	});
+
+	it("has no ToHex counterpart yet (documented gap, not a silent one)", () => {
+		// Roblox's `Color3:ToHex()` is not implemented: its casing and rounding
+		// could not be verified against a running engine, and guessing them would
+		// make round trips quietly wrong. Asserted so adding it is a deliberate
+		// change to this test, with the round trip written at the same time.
+		expect(
+			(Color3.fromHex("#6366F1") as unknown as { ToHex?: unknown }).ToHex,
+		).toBeUndefined();
 	});
 });
 

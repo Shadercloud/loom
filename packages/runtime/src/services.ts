@@ -5,8 +5,9 @@
  * UserInputService (global input signals + focus/mouse stores), Players
  * (LocalPlayer → PlayerGui, pre-built so `WaitForChild` works synchronously),
  * Workspace (CurrentCamera + viewport size), a real CollectionService (the tag
- * registry behind `@rbxts/react`'s `Tag` prop), and a no-op
- * ContextActionService. Each is a real `LoomInstance` parented under `game`, so
+ * registry behind `@rbxts/react`'s `Tag` prop), a no-op ContextActionService,
+ * and the deterministic slice of HttpService (`GenerateGUID` over Web Crypto,
+ * plus JSON encoding). Each is a real `LoomInstance` parented under `game`, so
  * `GetFullName`, `GetPropertyChangedSignal`, and `IsA` behave normally.
  */
 import { Vector2 } from "./datatypes";
@@ -194,6 +195,100 @@ registerClassMethods("ContextActionService", {
 
 registerService("ContextActionService", () =>
 	createInstance("ContextActionService", "ContextActionService"),
+);
+
+// --- HttpService -------------------------------------------------------------
+
+/**
+ * A fresh RFC 9562 (RFC 4122) version 4 UUID, lowercase and unbraced.
+ *
+ * `crypto.randomUUID` when the browser offers it (it is secure-context only),
+ * otherwise the same value assembled from `crypto.getRandomValues` with the
+ * version and variant bits set by hand. Never `Math.random`, never a timestamp
+ * or a counter: app code uses a GUID as an identity, and a predictable one is a
+ * bug waiting to be blamed on loom.
+ */
+function randomUuidV4(): string {
+	const webCrypto = globalThis.crypto as Crypto | undefined;
+	if (typeof webCrypto?.randomUUID === "function")
+		return webCrypto.randomUUID();
+	if (typeof webCrypto?.getRandomValues === "function") {
+		const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+		// Version 4 in the high nibble of byte 6, variant 10xx in byte 8 — the two
+		// fields `randomUUID` would have set for us.
+		bytes[6] = ((bytes[6] as number) & 0x0f) | 0x40;
+		bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80;
+		const hex = Array.from(bytes, (byte) =>
+			byte.toString(16).padStart(2, "0"),
+		).join("");
+		return [
+			hex.slice(0, 8),
+			hex.slice(8, 12),
+			hex.slice(12, 16),
+			hex.slice(16, 20),
+			hex.slice(20, 32),
+		].join("-");
+	}
+	throw new Error(
+		"[loom] HttpService.GenerateGUID requires the Web Crypto API",
+	);
+}
+
+/** Every network method, with the one message that explains all of them. */
+function networkUnsupported(method: string): () => never {
+	return () => {
+		throw new Error(
+			`[loom] HttpService.${method} is not supported — loom previews render in ` +
+				"the browser and never issue requests on your behalf. Call fetch (or " +
+				"your own service layer) directly instead.",
+		);
+	};
+}
+
+/**
+ * `HttpService` — the deterministic, browser-safe slice of the real service.
+ *
+ * `GenerateGUID` (Web Crypto) and the JSON pair are the whole of it: they are
+ * pure computation with an unambiguous browser meaning, and they are what UI
+ * code actually reaches for — component ids, serialized props. The network
+ * methods throw by name rather than being silently absent, so a preview says
+ * *why* it can't run that code instead of dying on `GetAsync is not a
+ * function`; nothing here ever performs a request while documentation renders.
+ *
+ * `UrlEncode` is deliberately missing: the engine encodes more than
+ * `encodeURIComponent` does (`.` becomes `%2E`), and the exact reserved set
+ * could not be verified against a running engine — a near-miss encoder is worse
+ * than an honest absence.
+ */
+registerClassMethods("HttpService", {
+	GenerateGUID: (_self: LoomInstance, wrapInCurlyBraces = true) => {
+		const guid = randomUuidV4();
+		return wrapInCurlyBraces ? `{${guid}}` : guid;
+	},
+	// The Luau ↔ JSON mapping is `JSON.stringify`/`JSON.parse` here, because
+	// loom's values *are* JavaScript values: what roblox-ts writes as an array or
+	// an object is exactly what these encode. `undefined` encodes as `null` so the
+	// declared string return always holds (`JSON.stringify(undefined)` is not a
+	// string), matching `JSONEncode(nil)`.
+	JSONEncode: (_self: LoomInstance, value: unknown) =>
+		JSON.stringify(value) ?? "null",
+	JSONDecode: (_self: LoomInstance, value: string) => {
+		try {
+			return JSON.parse(value) as unknown;
+		} catch (cause) {
+			throw new Error(
+				"[loom] HttpService.JSONDecode could not parse the given string as JSON",
+				{ cause },
+			);
+		}
+	},
+	GetAsync: networkUnsupported("GetAsync"),
+	PostAsync: networkUnsupported("PostAsync"),
+	RequestAsync: networkUnsupported("RequestAsync"),
+});
+
+registerService("HttpService", () =>
+	createInstance("HttpService", "HttpService"),
 );
 
 // --- CollectionService -------------------------------------------------------

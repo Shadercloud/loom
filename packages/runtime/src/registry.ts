@@ -66,6 +66,7 @@ const CLASS_PARENTS: Record<string, string> = {
 	Players: "Instance",
 	Workspace: "Instance",
 	ContextActionService: "Instance",
+	HttpService: "Instance",
 };
 
 const warnedUnknown = new Set<string>();

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Vector2 } from "./datatypes";
 import { game } from "./game";
 import { createInstance, type LoomInstance } from "./instance";
@@ -179,6 +179,120 @@ describe("ContextActionService", () => {
 			);
 			(cas.UnbindAction as (...args: unknown[]) => void)("action");
 		}).not.toThrow();
+	});
+});
+
+describe("HttpService", () => {
+	/** RFC 9562 v4: version nibble `4`, variant nibble `8`/`9`/`a`/`b`. */
+	const UUID_V4 =
+		/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+	const http = (): LoomInstance => game.GetService("HttpService");
+	const generateGUID = (...args: [] | [boolean]): string =>
+		(http().GenerateGUID as (wrapInCurlyBraces?: boolean) => string)(...args);
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	it("is a real service instance, not a plain object", () => {
+		const service = http();
+		expect(service.ClassName).toBe("HttpService");
+		expect(service.Name).toBe("HttpService");
+		expect(service.Parent).toBe(game);
+		expect(service.IsA("HttpService")).toBe(true);
+		expect(service.IsA("Instance")).toBe(true);
+		expect(service.GetFullName()).toBe("HttpService");
+	});
+
+	it("returns the same cached singleton every time", () => {
+		expect(http()).toBe(http());
+	});
+
+	it("GenerateGUID(false) returns a bare v4 UUID", () => {
+		const guid = generateGUID(false);
+		expect(guid).toMatch(UUID_V4);
+		expect(guid).toHaveLength(36);
+	});
+
+	it("GenerateGUID(true) wraps the same value in curly braces", () => {
+		const guid = generateGUID(true);
+		expect(guid.startsWith("{")).toBe(true);
+		expect(guid.endsWith("}")).toBe(true);
+		expect(guid.slice(1, -1)).toMatch(UUID_V4);
+	});
+
+	it("defaults wrapInCurlyBraces to true, as Roblox does", () => {
+		expect(generateGUID()).toMatch(/^\{.+\}$/);
+		expect(generateGUID().slice(1, -1)).toMatch(UUID_V4);
+	});
+
+	it("returns a fresh value on every call", () => {
+		const guids = new Set(Array.from({ length: 8 }, () => generateGUID(false)));
+		expect(guids.size).toBe(8);
+	});
+
+	it("never falls back to Math.random", () => {
+		const randomSpy = vi.spyOn(Math, "random");
+		for (let i = 0; i < 4; i++) expect(generateGUID(false)).toMatch(UUID_V4);
+		expect(randomSpy).not.toHaveBeenCalled();
+	});
+
+	it("generates a valid v4 UUID from getRandomValues alone", () => {
+		// No `randomUUID` — the shape of a non-secure browsing context.
+		const source = globalThis.crypto;
+		vi.stubGlobal("crypto", {
+			getRandomValues: (array: Uint8Array) => source.getRandomValues(array),
+		});
+		const guid = generateGUID(false);
+		expect(guid).toMatch(UUID_V4);
+		expect(generateGUID(false)).not.toBe(guid);
+	});
+
+	it("sets the version and variant bits itself in the fallback", () => {
+		// All-zero entropy: whatever survives is what the implementation wrote.
+		vi.stubGlobal("crypto", {
+			getRandomValues: (array: Uint8Array) => array.fill(0),
+		});
+		expect(generateGUID(false)).toBe("00000000-0000-4000-8000-000000000000");
+		// …and all-ones, for the other end of each masked nibble.
+		vi.stubGlobal("crypto", {
+			getRandomValues: (array: Uint8Array) => array.fill(0xff),
+		});
+		expect(generateGUID(false)).toBe("ffffffff-ffff-4fff-bfff-ffffffffffff");
+	});
+
+	it("throws an explicit loom error without Web Crypto", () => {
+		vi.stubGlobal("crypto", undefined);
+		expect(() => generateGUID(false)).toThrow(
+			"[loom] HttpService.GenerateGUID requires the Web Crypto API",
+		);
+		// Not a weak identifier quietly handed back instead.
+		vi.stubGlobal("crypto", {});
+		expect(() => generateGUID(false)).toThrow(/Web Crypto API/);
+	});
+
+	it("round-trips JSON", () => {
+		const service = http();
+		const encode = service.JSONEncode as (value: unknown) => string;
+		const decode = service.JSONDecode as (value: string) => unknown;
+		expect(encode({ a: 1, b: [true, "x"] })).toBe('{"a":1,"b":[true,"x"]}');
+		expect(decode('{"a":1,"b":[true,"x"]}')).toEqual({ a: 1, b: [true, "x"] });
+		// `nil` encodes as null rather than returning a non-string.
+		expect(encode(undefined)).toBe("null");
+		expect(decode("null")).toBeNull();
+		expect(() => decode("{oops")).toThrow(/\[loom\] HttpService\.JSONDecode/);
+	});
+
+	it("refuses network methods by name instead of issuing requests", () => {
+		const service = http();
+		for (const method of ["GetAsync", "PostAsync", "RequestAsync"]) {
+			expect(service[method]).toBeTypeOf("function");
+			expect(() => (service[method] as () => unknown)()).toThrow(
+				new RegExp(`\\[loom\\] HttpService\\.${method} is not supported`),
+			);
+		}
 	});
 });
 
