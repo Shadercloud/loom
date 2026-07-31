@@ -4,9 +4,10 @@
  * GuiService (selection + reduced motion), RunService (frame signals),
  * UserInputService (global input signals + focus/mouse stores), Players
  * (LocalPlayer → PlayerGui, pre-built so `WaitForChild` works synchronously),
- * Workspace (CurrentCamera + viewport size), and a no-op ContextActionService.
- * Each is a real `LoomInstance` parented under `game`, so `GetFullName`,
- * `GetPropertyChangedSignal`, and `IsA` behave normally.
+ * Workspace (CurrentCamera + viewport size), a real CollectionService (the tag
+ * registry behind `@rbxts/react`'s `Tag` prop), and a no-op
+ * ContextActionService. Each is a real `LoomInstance` parented under `game`, so
+ * `GetFullName`, `GetPropertyChangedSignal`, and `IsA` behave normally.
  */
 import { Vector2 } from "./datatypes";
 import { getService, registerService } from "./game";
@@ -19,7 +20,7 @@ import {
 	setRawProperty,
 } from "./instance";
 import { heartbeat, renderStepped } from "./scheduler";
-import type { LoomConnection } from "./signal";
+import { type LoomConnection, LoomSignal } from "./signal";
 
 // --- GuiService --------------------------------------------------------------
 
@@ -194,6 +195,103 @@ registerClassMethods("ContextActionService", {
 registerService("ContextActionService", () =>
 	createInstance("ContextActionService", "ContextActionService"),
 );
+
+// --- CollectionService -------------------------------------------------------
+
+/**
+ * Tags per instance, and the reverse index. Two maps rather than one: `GetTags`
+ * and `GetTagged` are both O(1) lookups in Roblox, and the reverse index is
+ * what `GetInstanceAddedSignal` fires from.
+ *
+ * The forward map is weak (an instance dropped by the app takes its tags with
+ * it); the reverse index holds strong references, exactly as Roblox's does —
+ * `GetTagged` must keep returning a tagged instance nobody else references.
+ */
+const INSTANCE_TAGS = new WeakMap<LoomInstance, Set<string>>();
+const TAGGED = new Map<string, Set<LoomInstance>>();
+const TAG_ADDED = new Map<string, LoomSignal<[LoomInstance]>>();
+const TAG_REMOVED = new Map<string, LoomSignal<[LoomInstance]>>();
+
+function tagSignal(
+	registry: Map<string, LoomSignal<[LoomInstance]>>,
+	tag: string,
+): LoomSignal<[LoomInstance]> {
+	let signal = registry.get(tag);
+	if (!signal) {
+		signal = new LoomSignal<[LoomInstance]>();
+		registry.set(tag, signal);
+	}
+	return signal;
+}
+
+/**
+ * `CollectionService` — the browser home for `@rbxts/react`'s `Tag` prop.
+ *
+ * Roblox's tag system is a plain string registry with change signals, none of
+ * which needs the engine, so this is the real thing rather than a stand-in: the
+ * adapter's `Tag` prop routes here (see `@loom-dev/react`), and app code that
+ * queries tags — a theme pass walking `GetTagged("theme-surface")`, say — works
+ * unchanged. What a preview does *not* have is Studio's tag editor, so tags only
+ * ever come from code.
+ */
+registerClassMethods("CollectionService", {
+	AddTag: (_self: LoomInstance, instance: LoomInstance, tag: string) => {
+		let tags = INSTANCE_TAGS.get(instance);
+		if (!tags) {
+			tags = new Set();
+			INSTANCE_TAGS.set(instance, tags);
+		}
+		if (tags.has(tag)) return undefined;
+		tags.add(tag);
+		let members = TAGGED.get(tag);
+		if (!members) {
+			members = new Set();
+			TAGGED.set(tag, members);
+		}
+		members.add(instance);
+		TAG_ADDED.get(tag)?.fire(instance);
+		return undefined;
+	},
+	RemoveTag: (_self: LoomInstance, instance: LoomInstance, tag: string) => {
+		const tags = INSTANCE_TAGS.get(instance);
+		if (!tags?.delete(tag)) return undefined;
+		TAGGED.get(tag)?.delete(instance);
+		TAG_REMOVED.get(tag)?.fire(instance);
+		return undefined;
+	},
+	HasTag: (_self: LoomInstance, instance: LoomInstance, tag: string) =>
+		INSTANCE_TAGS.get(instance)?.has(tag) ?? false,
+	// Roblox returns fresh arrays, so mutating a result can't corrupt the
+	// registry.
+	GetTags: (_self: LoomInstance, instance: LoomInstance) => [
+		...(INSTANCE_TAGS.get(instance) ?? []),
+	],
+	GetTagged: (_self: LoomInstance, tag: string) => [...(TAGGED.get(tag) ?? [])],
+	GetAllTags: () => [...TAGGED.keys()].filter((tag) => TAGGED.get(tag)?.size),
+	GetInstanceAddedSignal: (_self: LoomInstance, tag: string) =>
+		tagSignal(TAG_ADDED, tag),
+	GetInstanceRemovedSignal: (_self: LoomInstance, tag: string) =>
+		tagSignal(TAG_REMOVED, tag),
+});
+
+registerService("CollectionService", () =>
+	createInstance("CollectionService", "CollectionService"),
+);
+
+/**
+ * Drop every tag an instance carries — called when the adapter unmounts it, so
+ * the strong reverse index doesn't pin a dead subtree. Fires the removal
+ * signals, matching what Roblox does when a tagged instance is destroyed.
+ */
+export function clearTags(instance: LoomInstance): void {
+	const tags = INSTANCE_TAGS.get(instance);
+	if (!tags) return;
+	INSTANCE_TAGS.delete(instance);
+	for (const tag of tags) {
+		TAGGED.get(tag)?.delete(instance);
+		TAG_REMOVED.get(tag)?.fire(instance);
+	}
+}
 
 // --- eager construction ------------------------------------------------------
 

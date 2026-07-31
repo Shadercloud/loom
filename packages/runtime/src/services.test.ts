@@ -181,3 +181,63 @@ describe("ContextActionService", () => {
 		}).not.toThrow();
 	});
 });
+
+describe("CollectionService", () => {
+	interface Tags {
+		AddTag(instance: LoomInstance, tag: string): void;
+		RemoveTag(instance: LoomInstance, tag: string): void;
+		HasTag(instance: LoomInstance, tag: string): boolean;
+		GetTags(instance: LoomInstance): string[];
+		GetTagged(tag: string): LoomInstance[];
+		GetAllTags(): string[];
+		GetInstanceAddedSignal(tag: string): LoomSignal<[LoomInstance]>;
+		GetInstanceRemovedSignal(tag: string): LoomSignal<[LoomInstance]>;
+	}
+	const tags = (): Tags =>
+		game.GetService("CollectionService") as unknown as Tags;
+
+	it("adds, reports and removes tags", () => {
+		const service = tags();
+		const frame = createInstance("Frame");
+		expect(service.HasTag(frame, "card")).toBe(false);
+
+		service.AddTag(frame, "card");
+		expect(service.HasTag(frame, "card")).toBe(true);
+		expect(service.GetTags(frame)).toEqual(["card"]);
+		expect(service.GetTagged("card")).toContain(frame);
+		expect(service.GetAllTags()).toContain("card");
+
+		service.RemoveTag(frame, "card");
+		expect(service.HasTag(frame, "card")).toBe(false);
+		expect(service.GetTagged("card")).not.toContain(frame);
+	});
+
+	it("returns fresh arrays a caller can mutate safely", () => {
+		const service = tags();
+		const frame = createInstance("Frame");
+		service.AddTag(frame, "fresh");
+		const first = service.GetTagged("fresh");
+		first.length = 0;
+		expect(service.GetTagged("fresh")).toContain(frame);
+		service.RemoveTag(frame, "fresh");
+	});
+
+	it("fires the added and removed signals once per real change", () => {
+		const service = tags();
+		const frame = createInstance("Frame");
+		const added: LoomInstance[] = [];
+		const removed: LoomInstance[] = [];
+		service.GetInstanceAddedSignal("signalled").Connect((i) => added.push(i));
+		service
+			.GetInstanceRemovedSignal("signalled")
+			.Connect((i) => removed.push(i));
+
+		service.AddTag(frame, "signalled");
+		service.AddTag(frame, "signalled"); // already tagged — no second fire
+		expect(added).toEqual([frame]);
+
+		service.RemoveTag(frame, "signalled");
+		service.RemoveTag(frame, "signalled");
+		expect(removed).toEqual([frame]);
+	});
+});
