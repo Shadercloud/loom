@@ -34,7 +34,7 @@
  * never fires.
  */
 import { createServer as createHttpServer } from "node:http";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 // Type-only: the value import happens lazily inside the dev path so evaluating
 // a next.config that uses `withLoomGallery` (every `next build` / `next start`)
 // doesn't pay for loading Vite.
@@ -100,6 +100,21 @@ export interface LoomNextOptions {
 	 * --targets <glob> --out public/loom-preview --base /loom-preview/`).
 	 */
 	staticBuild?: boolean;
+}
+
+/**
+ * Resolve the Loom project root once, relative to the Next app directory.
+ *
+ * Next evaluates `next.config.*` with the app as its cwd. Capturing the
+ * absolute path while the wrapper is created keeps later config workers or
+ * deferred `rewrites()` calls from changing what a relative `root` means.
+ * `appDir` is injectable so the contract can be tested without a Next process.
+ */
+export function resolveLoomNextOptions(
+	options: LoomNextOptions,
+	appDir = process.cwd(),
+): LoomNextOptions {
+	return { ...options, root: resolve(appDir, options.root) };
 }
 
 export interface StandaloneGalleryServer {
@@ -313,17 +328,22 @@ export function withLoomGallery<C extends object>(
 	nextConfig: C | ((phase: string, context: unknown) => C | Promise<C>),
 	options: LoomNextOptions,
 ): NextConfigPhaseFn<C> {
-	const base = normalizeBase(options.base);
+	const resolvedOptions = resolveLoomNextOptions(options);
+	const base = normalizeBase(resolvedOptions.base);
 	// One gallery per process, however many times Next re-asks for rewrites
 	// (config reloads re-invoke the function; the server survives them all).
 	let server: Promise<Pick<StandaloneGalleryServer, "origin">> | undefined;
 	const ensureServer = (): Promise<Pick<StandaloneGalleryServer, "origin">> => {
 		server ??= startGalleryServer({
-			root: options.root,
-			targets: options.targets ?? true,
+			root: resolvedOptions.root,
+			targets: resolvedOptions.targets ?? true,
 			base,
-			...(options.port !== undefined ? { port: options.port } : {}),
-			...(options.hmrPort !== undefined ? { hmrPort: options.hmrPort } : {}),
+			...(resolvedOptions.port !== undefined
+				? { port: resolvedOptions.port }
+				: {}),
+			...(resolvedOptions.hmrPort !== undefined
+				? { hmrPort: resolvedOptions.hmrPort }
+				: {}),
 		}).catch((err) => {
 			// Only memoize a successful boot, so a transient failure (a pinned
 			// port still busy, a half-written config) is retried next time Next
@@ -342,8 +362,11 @@ export function withLoomGallery<C extends object>(
 			typeof nextConfig === "function"
 				? await nextConfig(phase, context)
 				: nextConfig;
-		if (phase === PHASE_PRODUCTION_BUILD && options.staticBuild !== false) {
-			await buildStaticGalleryOnce(options, base);
+		if (
+			phase === PHASE_PRODUCTION_BUILD &&
+			resolvedOptions.staticBuild !== false
+		) {
+			await buildStaticGalleryOnce(resolvedOptions, base);
 		}
 		const rewrites = createLoomRewrites(
 			(resolved as NextConfigLike).rewrites,

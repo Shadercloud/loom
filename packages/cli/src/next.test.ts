@@ -1,6 +1,9 @@
 // @vitest-environment node
-import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { generateTargetsModule, toViteFsUrl } from "@loom-dev/preview/gallery";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
 	createLoomRewrites,
 	loomDevRewrites,
@@ -8,6 +11,7 @@ import {
 	mergeRewrites,
 	type NextRewritesResult,
 	PHASE_PRODUCTION_BUILD,
+	resolveLoomNextOptions,
 	staticGalleryOutDir,
 	withLoomGallery,
 } from "./next.ts";
@@ -133,6 +137,34 @@ describe("staticGalleryOutDir", () => {
 	it("maps the base under public/", () => {
 		expect(staticGalleryOutDir("/loom-preview/")).toBe("public/loom-preview");
 		expect(staticGalleryOutDir("/a/b/")).toBe(join("public", "a", "b"));
+	});
+});
+
+describe("resolveLoomNextOptions", () => {
+	const project = mkdtempSync(join(tmpdir(), "loom-next-root-"));
+	const docs = join(project, "docs");
+	const target = "src/Scenes/Button.loom.tsx";
+	mkdirSync(join(project, "src", "Scenes"), { recursive: true });
+	mkdirSync(docs, { recursive: true });
+	writeFileSync(
+		join(project, ...target.split("/")),
+		"export const preview = {};",
+	);
+
+	afterAll(() => rmSync(project, { recursive: true, force: true }));
+
+	it("resolves root: '..' against the Next app directory and captures it", () => {
+		const options = resolveLoomNextOptions({ root: ".." }, docs);
+		expect(options.root).toBe(project);
+		expect(isAbsolute(options.root)).toBe(true);
+
+		const code = generateTargetsModule(options.root, [target]);
+		expect(code).toContain(
+			`${JSON.stringify(target)}: () => import(${JSON.stringify(
+				toViteFsUrl(join(project, ...target.split("/"))),
+			)})`,
+		);
+		expect(code).not.toContain("/@fsC:");
 	});
 });
 
