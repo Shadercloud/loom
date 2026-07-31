@@ -50,6 +50,17 @@ export interface ColorSequenceValue {
 	keypoints: ColorSequenceKeypointValue[];
 }
 
+/**
+ * A `Font` datatype payload (`TextLabel.FontFace`). `family` is the font-family
+ * asset URI, `weight` the Roblox 100–900 number (which is also the CSS one),
+ * and `style` an `Enum.FontStyle` name.
+ */
+export interface FontValue {
+	family: string;
+	weight: number;
+	style: string;
+}
+
 /** The KNOWN adjacently-tagged values — narrow with `switch (v.type)`. */
 export type KnownProperty =
 	| { type: "UDim2"; value: UDim2 }
@@ -57,6 +68,7 @@ export type KnownProperty =
 	| { type: "Vector2"; value: Vector2 }
 	| { type: "Color3"; value: Color3 }
 	| { type: "ColorSequence"; value: ColorSequenceValue }
+	| { type: "Font"; value: FontValue }
 	| { type: "EnumItem"; value: EnumItemValue }
 	| { type: "number"; value: number }
 	| { type: "int"; value: number } // JS number, always whole-valued
@@ -79,6 +91,7 @@ const KNOWN_TAGS = new Set<string>([
 	"Vector2",
 	"Color3",
 	"ColorSequence",
+	"Font",
 	"EnumItem",
 	"number",
 	"int",
@@ -207,6 +220,11 @@ export function asColorSequence(
 		? ((p as KnownProperty).value as ColorSequenceValue)
 		: undefined;
 }
+export function asFont(p: PropertyValue | undefined): FontValue | undefined {
+	return p?.type === "Font"
+		? ((p as KnownProperty).value as FontValue)
+		: undefined;
+}
 export function asNumber(p: PropertyValue | undefined): number | undefined {
 	if (p?.type === "number") return (p as KnownProperty).value as number;
 	// `int` is truncated at parse time in Rust (de_i64); mirror that here so the two
@@ -274,9 +292,12 @@ export const getTextXAlignment = (n: SceneNode): string =>
 	asEnum(props(n).TextXAlignment)?.name ?? "Center";
 export const getTextYAlignment = (n: SceneNode): string =>
 	asEnum(props(n).TextYAlignment)?.name ?? "Center";
-/** Font enum item name, e.g. "GothamBold"; undefined when unset. */
+/** Legacy `Font` enum item name, e.g. "GothamBold"; undefined when unset. */
 export const getFontName = (n: SceneNode): string | undefined =>
 	asEnum(props(n).Font)?.name;
+/** `FontFace` (the modern `Font` datatype); undefined when unset. */
+export const getFontFace = (n: SceneNode): FontValue | undefined =>
+	asFont(props(n).FontFace);
 
 /** First child of the given Roblox class (e.g. a `UICorner`/`UIStroke` modifier). */
 export const findModifier = (
@@ -323,6 +344,7 @@ export const prop = {
 		type: "ColorSequence",
 		value: v,
 	}),
+	font: (v: FontValue): PropertyValue => ({ type: "Font", value: v }),
 	enum: (v: EnumItemValue): PropertyValue => ({ type: "EnumItem", value: v }),
 	number: (v: number): PropertyValue => ({ type: "number", value: v }),
 	int: (v: number): PropertyValue => ({ type: "int", value: Math.trunc(v) }),
