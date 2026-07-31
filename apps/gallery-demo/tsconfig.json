@@ -8,7 +8,13 @@
 		"paths": {
 			"@rbxts/react": ["./node_modules/@types/react"],
 			"@rbxts/react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"],
-			"@rbxts/react-roblox": ["../../packages/preview/src/client.ts"]
+			"@rbxts/react-roblox": ["../../packages/preview/src/client.ts"],
+			"@rbxts/services": ["../../packages/preview/src/services.ts"],
+			"@rbxts/ui-labs": ["../../packages/preview/src/compat/ui-labs.ts"],
+			"@rbxts/ripple": ["../../packages/preview/src/compat/ripple.ts"],
+			"@rbxts/react-ripple": [
+				"../../packages/preview/src/compat/react-ripple.ts"
+			]
 		}
 	},
 	"include": ["src"]

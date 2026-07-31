@@ -10,6 +10,8 @@
 	},
 	"dependencies": {
 		"@loom-dev/preview": "workspace:*",
+		"@rbxts/react-ripple": "^3.0.1",
+		"@rbxts/ripple": "^0.10.2",
 		"react": "catalog:"
 	},
 	"devDependencies": {
