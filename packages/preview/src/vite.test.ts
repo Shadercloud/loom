@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { type Alias, resolveConfig, type ViteDevServer } from "vite";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+	GLOBALS_PATH,
 	REACT_RIPPLE_COMPAT_PATH,
 	RIPPLE_COMPAT_PATH,
 	SERVICES_PATH,
@@ -485,6 +486,196 @@ export const inputListener = Environment.InputListener;
 		});
 		expect(code).toContain("user shim");
 		expect(code).not.toContain("__hotreload_env_global_injection__");
+	});
+});
+
+/**
+ * The reported regression, end to end: `HttpService` and `Color3.fromHex`.
+ *
+ * Two failures from the same external project, neither of which a runtime unit
+ * test can catch — both happened while the browser loaded the module graph:
+ *
+ *     SyntaxError: The requested module "@rbxts/services" does not provide an
+ *     export named "HttpService"
+ *     TypeError: Color3.fromHex is not a function
+ *
+ * The first is a *linking* error (the alias module exports an explicit list, and
+ * the service was missing from it), and the second only appears once the globals
+ * module has installed the runtime's datatypes. So this fixture goes through the
+ * real Vite pipeline in both modes: the dev server transforms and evaluates the
+ * reported code, and `vite build` bundles a gallery target that uses it —
+ * the path where a missing export is a silent `undefined` rather than a throw.
+ */
+describe("HttpService and Color3.fromHex compatibility", () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "loom-http-color-")));
+	afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+	const write = (rel: string, code: string): void => {
+		const parts = rel.split("/");
+		if (parts.length > 1)
+			mkdirSync(join(root, ...parts.slice(0, -1)), { recursive: true });
+		writeFileSync(join(root, ...parts), code);
+	};
+
+	/** RFC 9562 v4, unbraced — what `GenerateGUID(false)` must return. */
+	const UUID_V4 =
+		/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+	const SCENE_MARKER = "http-color-scene-marker";
+
+	// Verbatim from the report: the service through `@rbxts/services`, the theme
+	// through the `Color3` global.
+	write(
+		"src/theme.ts",
+		`import { HttpService } from "@rbxts/services";
+
+export const id = HttpService.GenerateGUID(false);
+export const color = Color3.fromHex("#6366F1");
+`,
+	);
+	// The entry a page gets: globals first (that is what `installGlobals` is
+	// prepended for), then the app module. The identity probes reach `game`
+	// through the service's own parent, so the fixture needs no loom import of
+	// its own — exactly what an external project has available.
+	write(
+		"src/entry.ts",
+		`import ${JSON.stringify(GLOBALS_PATH)};
+import { HttpService } from "@rbxts/services";
+
+export { color, id } from "./theme.ts";
+export const service = HttpService;
+export const fullName = HttpService.GetFullName();
+export const className = HttpService.ClassName;
+export const isGameSingleton =
+	HttpService.Parent.GetService("HttpService") === HttpService;
+export const braced = HttpService.GenerateGUID(true);
+export const defaulted = HttpService.GenerateGUID();
+`,
+	);
+	// The same code as a gallery target, so the static build follows it eagerly.
+	write(
+		"src/targets/HttpColorScene.loom.tsx",
+		`import { HttpService } from "@rbxts/services";
+
+const ACCENT = Color3.fromHex("#6366F1");
+const ID = HttpService.GenerateGUID(false);
+
+export const preview = {
+	title: "${SCENE_MARKER}",
+	render: () => (
+		<frame
+			Name={\`Card-\${ID}\`}
+			Size={UDim2.fromOffset(240, 100)}
+			BackgroundColor3={ACCENT}
+		>
+			<textlabel
+				Size={UDim2.fromScale(1, 1)}
+				BackgroundTransparency={1}
+				Text={ID}
+				TextColor3={Color3.fromHex("FFFFFF")}
+			/>
+		</frame>
+	),
+} as const;
+`,
+	);
+
+	it("transforms and evaluates the reported code (dev)", async () => {
+		const { createServer } = await import("vite");
+		const server = await createServer({
+			root,
+			configFile: false,
+			logLevel: "silent",
+			server: { middlewareMode: true },
+			// Everything below is transform + SSR evaluation, neither of which
+			// touches a pre-bundled dependency. Skipping discovery keeps a cold
+			// esbuild scan of react and the reconciler out of a test that would
+			// never read the result.
+			optimizeDeps: { noDiscovery: true, include: [] },
+			plugins: [loomPreview({ html: false, targets: "src/targets" })],
+		});
+		try {
+			// 1. Vite's development transformation succeeds — for the plain module
+			//    and for the gallery target that uses the same two APIs.
+			expect(
+				(await server.transformRequest("/src/theme.ts"))?.code,
+			).toBeTruthy();
+			expect(
+				(await server.transformRequest("/src/targets/HttpColorScene.loom.tsx"))
+					?.code,
+			).toBeTruthy();
+
+			const mod = await server.ssrLoadModule("/src/entry.ts");
+
+			// 2. A real GUID, in both brace forms.
+			expect(mod.id).toMatch(UUID_V4);
+			expect(mod.braced).toMatch(/^\{.+\}$/);
+			expect((mod.braced as string).slice(1, -1)).toMatch(UUID_V4);
+			expect(mod.defaulted).toMatch(/^\{.+\}$/);
+			// A fresh value per call, not one cached at module scope.
+			const service = mod.service as { GenerateGUID(b: boolean): string };
+			expect(service.GenerateGUID(false)).not.toBe(service.GenerateGUID(false));
+
+			// 3. The color converted through the runtime's own channel math.
+			const color = mod.color as { R: number; G: number; B: number };
+			expect(color.R).toBeCloseTo(99 / 255, 10);
+			expect(color.G).toBeCloseTo(102 / 255, 10);
+			expect(color.B).toBeCloseTo(241 / 255, 10);
+
+			// 4. The export *is* the `game.GetService` singleton, and a real
+			//    instance rather than a plain object.
+			expect(mod.isGameSingleton).toBe(true);
+			expect(mod.className).toBe("HttpService");
+			expect(mod.fullName).toBe("HttpService");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("builds the static gallery with no missing export and no bare import", async () => {
+		const { build } = await import("vite");
+		const logs: string[] = [];
+		const result = await build({
+			root,
+			configFile: false,
+			logLevel: "silent",
+			plugins: [loomPreview({ targets: "src/targets" })],
+			build: {
+				outDir: "dist-gallery",
+				emptyOutDir: true,
+				minify: false,
+				rollupOptions: {
+					// A missing named export is a *warning* in Rollup, not an error:
+					// the import silently becomes `undefined` and the page dies at
+					// runtime. Capturing the log is what turns that back into a
+					// failing test.
+					onLog(_level: string, log: { message?: string }) {
+						logs.push(log.message ?? "");
+					},
+				},
+			},
+		});
+
+		// 5. `vite build` succeeded at all.
+		expect(Array.isArray(result) || typeof result === "object").toBe(true);
+		// 6. Rollup reported nothing about a missing `HttpService` export.
+		expect(
+			logs.filter((message) => /HttpService|MISSING_EXPORT/i.test(message)),
+		).toEqual([]);
+
+		const assets = join(root, "dist-gallery/assets");
+		const bundles = readdirSync(assets)
+			.filter((name) => name.endsWith(".js"))
+			.map((name) => readFileSync(join(assets, name), "utf8"));
+		expect(bundles.length).toBeGreaterThan(0);
+		const all = bundles.join("\n");
+
+		// 7. Nothing was left as an unresolved bare import.
+		expect(all).not.toMatch(/from\s*["']@rbxts\/services["']/);
+		// 8. The target shipped, reaching the service through loom's registry and
+		//    the color through the runtime's own `fromHex`.
+		expect(all).toContain(SCENE_MARKER);
+		expect(all).toContain('getService("HttpService")');
+		expect(all).toMatch(/fromHex/);
 	});
 });
 
