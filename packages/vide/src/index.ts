@@ -12,7 +12,7 @@
  * number keys are children (vide's array-part).
  */
 import { computeLayout, initLayout } from "@loom-dev/layout";
-import { fontFamily, fontWeight, renderScene } from "@loom-dev/renderer";
+import { fontShorthand, instanceFont, renderScene } from "@loom-dev/renderer";
 import { EnumItem, toPropertyValue } from "@loom-dev/runtime";
 import { type PropertyValue, prop, type SceneNode } from "@loom-dev/scene";
 import { effect, root } from "./reactive";
@@ -171,9 +171,13 @@ function measureTextBounds(live: LiveNode): PropertyValue | undefined {
 
 	const rawSize = live.props.get("TextSize");
 	const size = typeof rawSize === "number" ? rawSize : 14;
-	const font = live.props.get("Font");
-	const fontName = font instanceof EnumItem ? font.Name : undefined;
-	ctx.font = `${fontWeight(fontName)} ${size}px ${fontFamily(fontName)}`;
+	ctx.font = fontShorthand(
+		instanceFont({
+			Font: live.props.get("Font"),
+			FontFace: live.props.get("FontFace"),
+		}),
+		size,
+	);
 	const lines = text.split("\n");
 	let width = 0;
 	for (const line of lines)
