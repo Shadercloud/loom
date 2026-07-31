@@ -15,7 +15,7 @@
  * `--targets` switches to gallery mode: every `**\/*.loom.tsx` under the dir
  * (or the given glob/directory) is listed in a sidebar shell with lazy mounts
  * and per-target error containment. A minimal `<dir>/loom.config.ts` exporting
- * `{ targets?: string | string[], port?: number }` is honored when the flags
+ * `{ targets?, port?, shims? }` is honored when the flags
  * are absent.
  *
  * `build` bundles that same gallery into a static, client-only site under
@@ -97,7 +97,12 @@ async function preview(
 		);
 		process.exit(1);
 	}
-	const plugins = [loomPreview({ targets: decision.patterns })];
+	const plugins = [
+		loomPreview({
+			targets: decision.patterns,
+			...(decision.shims ? { shims: decision.shims } : {}),
+		}),
+	];
 
 	// esbuild.jsx + optimizeDeps + the @rbxts aliases come from loomPreview().
 	// fs.allow includes the loom repo itself: the gallery shell (and, for

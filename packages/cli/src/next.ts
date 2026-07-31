@@ -100,6 +100,12 @@ export interface LoomNextOptions {
 	 * --targets <glob> --out public/loom-preview --base /loom-preview/`).
 	 */
 	staticBuild?: boolean;
+	/**
+	 * Package redirects for roblox-ts packages loom can't run — see
+	 * `GalleryEmbedOptions.shims`. Paths are relative to {@link root}, not to the
+	 * Next app, so `next dev` and the `next build` static gallery agree.
+	 */
+	shims?: Record<string, string>;
 }
 
 /**
@@ -295,6 +301,7 @@ async function buildStaticGalleryOnce(
 			targets: options.targets ?? true,
 			outDir,
 			base,
+			...(options.shims ? { shims: options.shims } : {}),
 		});
 		console.log(`loom: static gallery → ${outDir}`);
 	}
@@ -344,6 +351,7 @@ export function withLoomGallery<C extends object>(
 			...(resolvedOptions.hmrPort !== undefined
 				? { hmrPort: resolvedOptions.hmrPort }
 				: {}),
+			...(resolvedOptions.shims ? { shims: resolvedOptions.shims } : {}),
 		}).catch((err) => {
 			// Only memoize a successful boot, so a transient failure (a pinned
 			// port still busy, a half-written config) is retried next time Next

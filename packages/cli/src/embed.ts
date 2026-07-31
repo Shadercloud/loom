@@ -64,6 +64,12 @@ export interface GalleryEmbedOptions {
 	 * pin one, or `false` to run without HMR (edits then need a frame reload).
 	 */
 	hmrPort?: number | false;
+	/**
+	 * Package redirects for roblox-ts packages loom can't run in the browser
+	 * (declaration-only Luau packages). Paths are relative to {@link root}. See
+	 * `LoomPreviewOptions.shims`.
+	 */
+	shims?: Record<string, string>;
 }
 
 export interface GalleryServer {
@@ -172,7 +178,12 @@ export async function createGalleryServer(
 		configFile: false, // loom owns the config; ignore any project vite.config
 		// The host owns `/` — never let Vite's html/SPA fallback answer for it.
 		appType: "custom",
-		plugins: [loomPreview({ targets: patterns })],
+		plugins: [
+			loomPreview({
+				targets: patterns,
+				...(options.shims ? { shims: options.shims } : {}),
+			}),
+		],
 		server: { middlewareMode: true, fs: { allow: fsAllow }, hmr },
 	});
 
@@ -217,5 +228,6 @@ export async function buildGallery(
 		targets: options.targets ?? true,
 		out: options.outDir,
 		base: options.base ?? "./",
+		...(options.shims ? { shims: options.shims } : {}),
 	});
 }

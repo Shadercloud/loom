@@ -27,21 +27,43 @@ export const DEFAULT_PORT = 5173;
 export interface LoomFileConfig {
 	targets?: string | string[];
 	port?: number;
+	/**
+	 * Package redirects for packages loom can't run in the browser — see
+	 * `LoomPreviewOptions.shims`. Paths are relative to the project dir (the one
+	 * holding this `loom.config.ts`).
+	 */
+	shims?: Record<string, string>;
 }
 
 export interface GalleryDecision {
 	/** Discovery globs (relative to the project dir); undefined = no gallery mode. */
 	patterns?: string[];
 	port: number;
+	/** The config's `shims`, when it declared a usable one. */
+	shims?: Record<string, string>;
 	/** Console hint to print (e.g. a legacy config was found and skipped). */
 	hint?: string;
 }
 
+/** A `shims` field is usable only if it is a flat record of non-empty strings. */
+function validShims(value: unknown): Record<string, string> | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value))
+		return undefined;
+	const entries = Object.entries(value);
+	if (entries.length === 0) return undefined;
+	if (!entries.every(([k, v]) => typeof v === "string" && k !== "" && v !== ""))
+		return undefined;
+	return value as Record<string, string>;
+}
+
 /**
  * Decide gallery mode from CLI flags + an optional loom.config.ts default
- * export. CLI flags win; the config's `targets`/`port` fill in when flags are
- * absent; a config without a `targets` field (e.g. the legacy lattice shape)
- * is skipped entirely, with a hint.
+ * export. CLI flags win; the config's `targets`/`port`/`shims` fill in when
+ * flags are absent; a config with none of those fields (e.g. the legacy lattice
+ * shape) is skipped entirely, with a hint.
+ *
+ * `shims` alone counts as a usable config: a project can preview a single
+ * client entry — no gallery at all — and still need a package redirect.
  */
 export function resolveGalleryOptions(input: {
 	cliTargets?: string | true;
@@ -61,6 +83,8 @@ export function resolveGalleryOptions(input: {
 			cfgTargets.every((t) => typeof t === "string"))
 			? (cfgTargets as string | string[])
 			: undefined;
+	const cfgShims = validShims(cfg?.shims);
+	const usableConfig = validCfgTargets !== undefined || cfgShims !== undefined;
 
 	let patterns: string[] | undefined;
 	let hint: string | undefined;
@@ -68,22 +92,20 @@ export function resolveGalleryOptions(input: {
 		patterns = normalizeTargetsPatterns(input.cliTargets);
 	} else if (validCfgTargets !== undefined) {
 		patterns = normalizeTargetsPatterns(validCfgTargets);
-	} else if (input.configPresent) {
+	} else if (input.configPresent && !usableConfig) {
 		hint =
-			"loom: loom.config.ts found, but its default export has no `targets` field — " +
-			"skipping it (legacy config?). Use `--targets [glob]` or export " +
-			"`{ targets: string | string[], port?: number }` to enable gallery mode.";
+			"loom: loom.config.ts found, but its default export has no `targets` or " +
+			"`shims` field — skipping it (legacy config?). Use `--targets [glob]` or " +
+			"export `{ targets?: string | string[], port?: number, shims?: Record<string, string> }`.";
 	}
 
-	// Config port only applies when the config itself is a usable new-style
-	// config (it has valid targets) — a skipped legacy config is skipped whole.
+	// Config port/shims only apply when the config itself is a usable new-style
+	// config — a skipped legacy config is skipped whole.
 	const cfgPort =
-		validCfgTargets !== undefined && typeof cfg?.port === "number"
-			? cfg.port
-			: undefined;
+		usableConfig && typeof cfg?.port === "number" ? cfg.port : undefined;
 	const port = input.cliPort ?? cfgPort ?? DEFAULT_PORT;
 
-	return { patterns, port, hint };
+	return { patterns, port, hint, ...(cfgShims ? { shims: cfgShims } : {}) };
 }
 
 /**

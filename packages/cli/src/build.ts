@@ -36,6 +36,8 @@ export interface BuildOptions {
 	out: string;
 	/** `--base` public path; `./` (default) keeps assets relative for any host. */
 	base?: string;
+	/** Package redirects for packages loom can't run — see `LoomPreviewOptions.shims`. */
+	shims?: Record<string, string>;
 }
 
 /**
@@ -61,7 +63,12 @@ export async function runBuild(options: BuildOptions): Promise<string> {
 		base,
 		configFile: false, // loom owns the config; ignore any project vite.config
 		logLevel: "warn",
-		plugins: [loomPreview({ targets: patterns })],
+		plugins: [
+			loomPreview({
+				targets: patterns,
+				...(options.shims ? { shims: options.shims } : {}),
+			}),
+		],
 		build: {
 			outDir,
 			emptyOutDir: true, // outDir is usually outside root; opt in to clearing it

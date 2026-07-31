@@ -2,9 +2,10 @@
  * `@loom-dev/preview/vite` — the Vite plugin that makes a roblox-ts source tree
  * run in the browser: it aliases the `@rbxts/react` / `@rbxts/react-roblox` /
  * `@rbxts/services` (and `@rbxts/vide`) packages to the matching loom adapter,
- * rewrites roblox-ts `import X = require(...)` statements to ESM, retries
- * `.luau` package mains at their TypeScript source, and injects the Roblox
- * globals before the app entry. esbuild already transpiles the TSX, so no
+ * plus the built-in compatibility adapters for packages that ship no browser
+ * code at all (`./compat/aliases.ts`), rewrites roblox-ts
+ * `import X = require(...)` statements to ESM, retries `.luau` package mains at
+ * their TypeScript source, and injects the Roblox globals before the app entry. esbuild already transpiles the TSX, so no
  * separate roblox-ts compiler is needed for preview.
  *
  * The plugin is the whole product: dropped into a `vite.config.ts` it needs no
@@ -22,8 +23,12 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve, sep } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import { type Plugin, searchForWorkspaceRoot } from "vite";
+import {
+	builtInCompatibilityAliases,
+	exactSpecifierPattern,
+} from "./compat/aliases.ts";
 import { normalizeTargetsPatterns, type TargetsInput } from "./gallery.ts";
 import { loomGallery } from "./gallery-plugin.ts";
 import { loomIndexHtml } from "./html.ts";
@@ -35,7 +40,9 @@ import {
 	SERVICES_PATH,
 } from "./paths.ts";
 import {
+	describeLuauOnlyPackage,
 	isLuauId,
+	luauOnlyPackageError,
 	type ResolverFs,
 	resolveLuauFallback,
 	resolvePackageSource,
@@ -210,6 +217,19 @@ function loomFsAllow(): string[] {
 }
 const LOOM_FS_ALLOW = loomFsAllow();
 
+/**
+ * Whether a `resolveId` call comes from the dep-optimizer scan.
+ *
+ * The scanner crawls the whole graph before the server is up and treats
+ * anything it can't resolve as external — a good default, and the reason loom's
+ * Luau-only diagnostic stays out of its way: throwing there would trade one
+ * broken import for a dev server that refuses to start. The same import fails
+ * with the diagnostic a moment later, when the module is actually transformed.
+ */
+function isScan(options: unknown): boolean {
+	return (options as { scan?: boolean } | undefined)?.scan === true;
+}
+
 /** Bare npm specifiers only: not relative/absolute/virtual/builtin/url ids. */
 function isBareSpecifier(source: string): boolean {
 	if (source.startsWith(".") || source.startsWith("/")) return false;
@@ -218,6 +238,44 @@ function isBareSpecifier(source: string): boolean {
 	// subpaths never contain `:`.
 	if (source.includes(":")) return false;
 	return true;
+}
+
+/**
+ * A shim target as written in `shims`, turned into something Vite can resolve
+ * from anywhere in the module graph.
+ *
+ * Relative targets are the interesting case: an alias `replacement` is
+ * substituted verbatim into whatever module happened to import the specifier,
+ * so a bare `./loom-shims/x.ts` would be resolved against *that* importer's
+ * directory — a different one for every importer. Anchoring it to the project
+ * root (the directory the shim path is written relative to, in the config file
+ * that declares it) makes the redirect mean one fixed file.
+ *
+ * Anything else is left untouched, so a target may also be a package id
+ * (`my-compat/ui-labs`) that Vite resolves normally.
+ */
+export function resolveShimTarget(target: string, projectRoot: string): string {
+	if (isAbsolute(target)) return target;
+	// `./x`, `../x` — and their Windows `.\x` spellings.
+	if (/^\.\.?[/\\]/.test(target)) return resolve(projectRoot, target);
+	return target;
+}
+
+/**
+ * `shims` → `resolve.alias` entries, one per specifier, matching the package
+ * *exactly*: `@rbxts/ui-labs` must not swallow `@rbxts/ui-labs/controls` (a
+ * subpath the shim was never written to answer) or `@rbxts/ui-labs-extra` (an
+ * unrelated package). A shim that wants to cover subpaths says so by listing
+ * them.
+ */
+export function shimAliases(
+	shims: Record<string, string>,
+	projectRoot: string,
+): Array<{ find: RegExp; replacement: string }> {
+	return Object.entries(shims).map(([specifier, target]) => ({
+		find: exactSpecifierPattern(specifier),
+		replacement: resolveShimTarget(target, projectRoot),
+	}));
 }
 
 // Entry detection is part of the plugin's contract — re-exported so a caller
@@ -242,6 +300,31 @@ export interface LoomPreviewOptions {
 	targets?: TargetsInput;
 	/** `<title>` of the generated page. */
 	title?: string;
+	/**
+	 * Extra package redirects: `{ "<bare specifier>": "<module>" }`.
+	 *
+	 * The escape hatch for roblox-ts packages loom cannot run. A package whose
+	 * `"main"` is Luau normally recovers through its own TypeScript source (see
+	 * `./resolver.ts`), but a *declaration-only* package — Luau runtime plus a
+	 * `.d.ts`, no `src/index.ts` — has nothing to fall back to, and the import
+	 * fails. Point the specifier at a browser module that models whatever slice
+	 * of the package the previewed code actually uses:
+	 *
+	 * ```ts
+	 * loomPreview({ shims: { "@rbxts/example": "./loom-shims/example.ts" } })
+	 * ```
+	 *
+	 * Not needed for the packages loom already adapts itself (`@rbxts/ui-labs` —
+	 * see `./compat/aliases.ts`); those import with no configuration. Declaring
+	 * one anyway *replaces* loom's adapter, which is the supported way to
+	 * override it.
+	 *
+	 * Targets are absolute paths, paths relative to the project root, or bare
+	 * package ids. Matching is exact — `@rbxts/ui-labs` leaves
+	 * `@rbxts/ui-labs/controls` alone — and these entries are applied *before*
+	 * every one of loom's own, built-in compatibility included.
+	 */
+	shims?: Record<string, string>;
 	/**
 	 * Set `false` to keep the plugin out of the HTML business entirely: no
 	 * generated page, no entry detection, no Rollup input. Only the module
@@ -307,18 +390,31 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 			}
 
 			// Otherwise resolve normally. `this.resolve` can throw when a package's
-			// `"main"` points at a missing file; treat that as unresolved so Vite
-			// reports it rather than crashing the plugin.
+			// `"main"` points at a missing file — the usual shape of a
+			// declaration-only Luau package, whose `"main": "src/init.lua"` doesn't
+			// even exist (what ships is `init.luau`). The error is kept as the
+			// `cause` of loom's own diagnostic below.
 			let resolved: Awaited<ReturnType<typeof this.resolve>> = null;
+			let failure: unknown;
 			try {
 				resolved = await this.resolve(source, importer, {
 					...options,
 					skipSelf: true,
 				});
-			} catch {
+			} catch (error) {
+				failure = error;
 				resolved = null;
 			}
-			if (!resolved || resolved.external) return resolved ?? undefined;
+			if (!resolved || resolved.external) {
+				// Unresolvable *and* Luau-only: name that, instead of leaving Vite to
+				// report a missing entry file without saying why a browser can't have
+				// it. Every other failure keeps its own error.
+				if (!resolved && !isScan(options)) {
+					const luauOnly = describeLuauOnlyPackage(source, importer, nodeFs);
+					if (luauOnly) throw luauOnlyPackageError(luauOnly, importer, failure);
+				}
+				return resolved ?? undefined;
+			}
 			if (isLuauId(resolved.id)) {
 				// A resolved `.luau` main (compiled roblox-ts package): retry source.
 				const fallback = resolveLuauFallback(resolved.id, nodeFs);
@@ -326,6 +422,13 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 					luauVerdicts.set(source, fallback);
 					return fallback;
 				}
+				// None to retry. Handing the id back would put Luau in front of
+				// Rollup's JavaScript parser.
+				if (!isScan(options))
+					throw luauOnlyPackageError(
+						{ name: source, main: resolved.id },
+						importer,
+					);
 			}
 			luauVerdicts.set(source, false);
 			return resolved;
@@ -366,6 +469,16 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 					// re-anchor react at the *project* root, which may hoist a
 					// different major.
 					alias: [
+						// User shims first: first match wins in Vite's alias plugin, so
+						// this is what lets a project redirect a package loom cannot run
+						// — and, deliberately, override any of loom's own entries below,
+						// built-in compatibility included.
+						...shimAliases(options.shims ?? {}, projectRoot),
+						// Then loom's built-in adapters for known browser-hostile
+						// packages (`@rbxts/ui-labs` → the non-story UI Labs
+						// `Environment`), so those import with no configuration at all.
+						// See `./compat/aliases.ts`.
+						...builtInCompatibilityAliases(),
 						// More specific first: react-roblox (+ any subpath) -> client
 						// shim. Absolute paths so the previewed project's node_modules
 						// doesn't need @loom-dev packages.

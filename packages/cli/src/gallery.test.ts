@@ -59,14 +59,53 @@ describe("resolveGalleryOptions", () => {
 			config: { projectName: "legacy", server: { port: 4175 } },
 		});
 		expect(decision.patterns).toBeUndefined();
-		expect(decision.hint).toContain("no `targets` field");
+		expect(decision.hint).toContain("no `targets` or `shims` field");
 		// The skipped config is skipped whole — even a top-level port.
 		const withPort = resolveGalleryOptions({
 			configPresent: true,
 			config: { port: 4175 },
 		});
 		expect(withPort.port).toBe(DEFAULT_PORT);
-		expect(withPort.hint).toContain("no `targets` field");
+		expect(withPort.hint).toContain("no `targets` or `shims` field");
+	});
+
+	it("carries config shims through", () => {
+		const shims = { "@rbxts/ui-labs": "./loom-shims/ui-labs.ts" };
+		const decision = resolveGalleryOptions({
+			configPresent: true,
+			config: { targets: "src/targets", shims },
+		});
+		expect(decision.shims).toEqual(shims);
+	});
+
+	it("treats a shims-only config as usable (no gallery, no hint)", () => {
+		// Plain preview mode — one client entry, no targets — still needs a way to
+		// redirect a package loom can't run.
+		const decision = resolveGalleryOptions({
+			configPresent: true,
+			config: { shims: { "@rbxts/ui-labs": "./shim.ts" }, port: 4175 },
+		});
+		expect(decision.patterns).toBeUndefined();
+		expect(decision.hint).toBeUndefined();
+		expect(decision.shims).toEqual({ "@rbxts/ui-labs": "./shim.ts" });
+		expect(decision.port).toBe(4175);
+	});
+
+	it("ignores a malformed shims field", () => {
+		for (const shims of [
+			"@rbxts/ui-labs",
+			["@rbxts/ui-labs"],
+			{ "@rbxts/ui-labs": 1 },
+			{ "@rbxts/ui-labs": "" },
+			{},
+			null,
+		]) {
+			const decision = resolveGalleryOptions({
+				configPresent: true,
+				config: { targets: "src/targets", shims },
+			});
+			expect(decision.shims).toBeUndefined();
+		}
 	});
 
 	it("still honors the CLI flag when the config is legacy", () => {
