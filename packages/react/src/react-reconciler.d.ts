@@ -34,6 +34,12 @@ declare module "react-reconciler" {
 			implementation: unknown,
 			key?: string | null,
 		): unknown;
+		/**
+		 * Run every pending passive effect (`useEffect` and its cleanups) now.
+		 * React would otherwise schedule them onto a later task; a preview mount
+		 * is meant to be complete when it returns. Returns whether any ran.
+		 */
+		flushPassiveEffects(): boolean;
 	}
 
 	export default function ReactReconciler(

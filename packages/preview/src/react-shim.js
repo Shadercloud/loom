@@ -9,8 +9,23 @@
  * surface named exports across Vite's CJS interop, and patching the interop
  * views at runtime does not propagate (esbuild's `__toESM` snapshots keys).
  */
-import { CHANGE_PROP_PREFIX, EVENT_PROP_PREFIX } from "@loom-dev/react";
+import {
+	CHANGE_PROP_PREFIX,
+	createBinding,
+	EVENT_PROP_PREFIX,
+	joinBindings,
+	useBinding,
+} from "@loom-dev/react";
 import React from "react";
+
+/**
+ * Bindings live in `@loom-dev/react` (the renderer resolves them when applying
+ * props), and are re-exported here because roblox-ts code reaches them through
+ * `@rbxts/react`. Importing rather than reimplementing keeps one identity, so a
+ * binding minted by `React.useBinding` and one minted by loom's Ripple shim are
+ * the same kind of object.
+ */
+export { createBinding, joinBindings, useBinding };
 
 function keyedNamespace(prefix) {
 	return new Proxy(
@@ -66,5 +81,11 @@ export const {
 } = React;
 
 /** Default export mirrors the named surface so `React.Event` works everywhere. */
-const merged = Object.assign({}, React, { Event, Change });
+const merged = Object.assign({}, React, {
+	Event,
+	Change,
+	createBinding,
+	joinBindings,
+	useBinding,
+});
 export default merged;

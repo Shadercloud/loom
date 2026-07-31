@@ -62,6 +62,23 @@ import {
 import type { Key, ReactElement, ReactNode, ReactPortal, Ref } from "react";
 import Reconciler from "react-reconciler";
 import { DefaultEventPriority } from "react-reconciler/constants.js";
+import { type Bindable, isBinding } from "./binding.ts";
+
+/**
+ * Bindings: values that change outside React (animation, motion code) and are
+ * written straight onto the instance instead of re-rendering. Re-exported so
+ * `@rbxts/react`'s `useBinding` / `createBinding` and loom's own compatibility
+ * shims all reach the same implementation — one `isBinding`, one identity.
+ */
+export {
+	BINDING,
+	type Bindable,
+	type Binding,
+	createBinding,
+	isBinding,
+	joinBindings,
+	useBinding,
+} from "./binding.ts";
 
 type Props = Record<string, unknown>;
 
@@ -196,10 +213,79 @@ function syncHandlers(
 
 /** Disconnect every adapter-made connection (instance leaves the tree). */
 function disposeInstance(inst: LoomInstance): void {
+	unbindProps(inst);
 	const connections = CONNECTIONS.get(inst);
 	if (!connections) return;
 	for (const connection of connections.values()) connection.Disconnect();
 	connections.clear();
+}
+
+// --- bound props --------------------------------------------------------------
+
+/** Live binding subscriptions per instance, keyed by the prop they drive. */
+const BOUND = new WeakMap<LoomInstance, Map<string, () => void>>();
+
+/** Drop the subscription (if any) behind one prop. */
+function unbindProp(inst: LoomInstance, key: string): void {
+	const bound = BOUND.get(inst);
+	const unsubscribe = bound?.get(key);
+	if (!unsubscribe) return;
+	unsubscribe();
+	bound?.delete(key);
+}
+
+/** Drop every binding subscription on an instance (it left the tree). */
+function unbindProps(inst: LoomInstance): void {
+	const bound = BOUND.get(inst);
+	if (!bound) return;
+	for (const unsubscribe of bound.values()) unsubscribe();
+	bound.clear();
+}
+
+/**
+ * Unbind a whole removed subtree, right now.
+ *
+ * `detachDeletedInstance` is React's own "this instance is gone" hook, but it
+ * runs *after* the commit that removed the node — a spring driving a prop would
+ * keep writing to a detached instance until then. `removeChild` is synchronous
+ * with the deletion, so bindings are severed there instead; React only reports
+ * the top of a deleted subtree, hence the walk.
+ */
+function unbindSubtree(inst: LoomInstance): void {
+	unbindProps(inst);
+	for (const child of inst.GetChildren()) unbindSubtree(child);
+}
+
+/**
+ * Write one prop, resolving a binding to its current value and subscribing so
+ * later values land on the instance directly. A bound write marks the instance
+ * dirty and flushes on the next scheduler frame — no React commit per frame,
+ * which is what makes 60fps motion affordable.
+ *
+ * `write` exists because `Name` is not a plain property assignment (it falls
+ * back to the class name); everything else writes through the proxy.
+ */
+function applyProp(
+	inst: LoomInstance,
+	key: string,
+	value: unknown,
+	write: (resolved: unknown) => void = (resolved) => {
+		inst[key] = resolved;
+	},
+): void {
+	unbindProp(inst, key);
+	if (!isBinding(value)) {
+		write(value);
+		return;
+	}
+	write(value.getValue());
+	const unsubscribe = value.subscribe(write);
+	let bound = BOUND.get(inst);
+	if (!bound) {
+		bound = new Map();
+		BOUND.set(inst, bound);
+	}
+	bound.set(key, unsubscribe);
 }
 
 /** Merge a handler table with keyed-prop handlers (keyed props win). */
@@ -215,14 +301,17 @@ function mergeHandlerSources(
 function applyProps(inst: LoomInstance, prev: Props, next: Props): void {
 	for (const key of Object.keys(prev)) {
 		if (RESERVED.has(key) || isKeyedHandlerProp(key) || key in next) continue;
+		unbindProp(inst, key);
 		inst[key] = undefined; // dropped prop reverts to the class default
 	}
 	for (const [key, value] of Object.entries(next)) {
 		if (RESERVED.has(key) || isKeyedHandlerProp(key)) continue;
-		if (prev[key] !== value) inst[key] = value;
+		if (prev[key] !== value) applyProp(inst, key, value);
 	}
 	if (prev.Name !== next.Name) {
-		inst.Name = typeof next.Name === "string" ? next.Name : inst.ClassName;
+		applyProp(inst, "Name", next.Name, (resolved) => {
+			inst.Name = typeof resolved === "string" ? resolved : inst.ClassName;
+		});
 	}
 	const prevKeyed = extractKeyedHandlers(prev);
 	const nextKeyed = extractKeyedHandlers(next);
@@ -754,10 +843,12 @@ const hostConfig = {
 	},
 	removeChild(_parent: LoomInstance, child: HostNode): void {
 		if (!isLoomInstance(child)) return;
+		unbindSubtree(child);
 		child.Parent = undefined;
 	},
 	removeChildFromContainer(_container: HostContainer, child: HostNode): void {
 		if (!isLoomInstance(child)) return;
+		unbindSubtree(child);
 		child.Parent = undefined;
 	},
 	clearContainer(container: HostContainer): void {
@@ -919,10 +1010,19 @@ export function mountSync(
 		null,
 	);
 	reconciler.updateContainer(element, root, null, null);
+	// React defers passive effects (`useEffect`) to a later task. A preview mount
+	// is meant to be finished when this returns — motion code that starts a
+	// spring in an effect should be running before the first frame, not one task
+	// after it — so they are flushed here.
+	reconciler.flushPassiveEffects();
 	return {
 		world,
 		unmount() {
 			reconciler.updateContainer(null, root, null, null);
+			// Effect *cleanups* are passive too: run them while the world is still
+			// alive, so an unmounting component tears down against a live tree
+			// rather than a disposed one.
+			reconciler.flushPassiveEffects();
 			world.dispose();
 		},
 	};
@@ -951,21 +1051,25 @@ export type EventHandlers = Record<
 /** `Change={{ Text: (rbx) => … }}` per-property changed handler bag. */
 export type ChangeHandlers = Record<string, (rbx: LoomInstance) => void>;
 
-/** Common GuiObject props. Enum props take the matching runtime `EnumItem`. */
+/**
+ * Common GuiObject props. Enum props take the matching runtime `EnumItem`, and
+ * every property accepts a {@link Bindable} — a plain value or a `Binding` of
+ * one, so `Size={offset.map(…)}` animates without re-rendering.
+ */
 export interface GuiProps {
-	Name?: string;
-	Size?: UDim2;
-	Position?: UDim2;
-	AnchorPoint?: Vector2;
-	BackgroundColor3?: Color3;
-	BackgroundTransparency?: number;
-	Visible?: boolean;
-	ZIndex?: number;
-	LayoutOrder?: number;
+	Name?: Bindable<string>;
+	Size?: Bindable<UDim2>;
+	Position?: Bindable<UDim2>;
+	AnchorPoint?: Bindable<Vector2>;
+	BackgroundColor3?: Bindable<Color3>;
+	BackgroundTransparency?: Bindable<number>;
+	Visible?: Bindable<boolean>;
+	ZIndex?: Bindable<number>;
+	LayoutOrder?: Bindable<number>;
 	/** Degrees, clockwise, around the element center (pure visual transform). */
-	Rotation?: number;
-	AutomaticSize?: EnumItem<"AutomaticSize">;
-	ClipsDescendants?: boolean;
+	Rotation?: Bindable<number>;
+	AutomaticSize?: Bindable<EnumItem<"AutomaticSize">>;
+	ClipsDescendants?: Bindable<boolean>;
 	Event?: EventHandlers;
 	Change?: ChangeHandlers;
 	ref?: Ref<LoomInstance>;
@@ -980,145 +1084,145 @@ export interface GuiProps {
  * accepted so lattice-style layer code runs unchanged.
  */
 export interface ScreenGuiProps extends GuiProps {
-	DisplayOrder?: number;
-	IgnoreGuiInset?: boolean;
-	ResetOnSpawn?: boolean;
-	Enabled?: boolean;
-	ZIndexBehavior?: EnumItem<"ZIndexBehavior">;
-	ScreenInsets?: EnumItem<"ScreenInsets">;
+	DisplayOrder?: Bindable<number>;
+	IgnoreGuiInset?: Bindable<boolean>;
+	ResetOnSpawn?: Bindable<boolean>;
+	Enabled?: Bindable<boolean>;
+	ZIndexBehavior?: Bindable<EnumItem<"ZIndexBehavior">>;
+	ScreenInsets?: Bindable<EnumItem<"ScreenInsets">>;
 }
 
 /** Text classes (TextLabel/TextButton/TextBox) add the `Text*` props. */
 export interface TextGuiProps extends GuiProps {
-	Text?: string;
-	TextColor3?: Color3;
-	TextSize?: number;
-	TextTransparency?: number;
-	TextWrapped?: boolean;
-	TextScaled?: boolean;
-	TextXAlignment?: EnumItem<"TextXAlignment">;
-	TextYAlignment?: EnumItem<"TextYAlignment">;
+	Text?: Bindable<string>;
+	TextColor3?: Bindable<Color3>;
+	TextSize?: Bindable<number>;
+	TextTransparency?: Bindable<number>;
+	TextWrapped?: Bindable<boolean>;
+	TextScaled?: Bindable<boolean>;
+	TextXAlignment?: Bindable<EnumItem<"TextXAlignment">>;
+	TextYAlignment?: Bindable<EnumItem<"TextYAlignment">>;
 	/** The legacy font enum. `FontFace` wins when both are set, as in Roblox. */
-	Font?: EnumItem<"Font">;
-	FontFace?: Font;
+	Font?: Bindable<EnumItem<"Font">>;
+	FontFace?: Bindable<Font>;
 }
 
 /** `TextBox` adds the editable-text props the DOM input maps. */
 export interface TextBoxProps extends TextGuiProps {
-	PlaceholderText?: string;
-	PlaceholderColor3?: Color3;
+	PlaceholderText?: Bindable<string>;
+	PlaceholderColor3?: Bindable<Color3>;
 	/** Roblox default is `true`: focusing clears the text. */
-	ClearTextOnFocus?: boolean;
-	TextEditable?: boolean;
-	MultiLine?: boolean;
+	ClearTextOnFocus?: Bindable<boolean>;
+	TextEditable?: Bindable<boolean>;
+	MultiLine?: Bindable<boolean>;
 }
 
 /** `ScrollingFrame` adds a scroll canvas. */
 export interface ScrollingFrameProps extends GuiProps {
-	CanvasSize?: UDim2;
-	CanvasPosition?: Vector2;
-	AutomaticCanvasSize?: EnumItem<"AutomaticSize">;
-	ScrollingDirection?: EnumItem<"ScrollingDirection">;
-	ScrollingEnabled?: boolean;
+	CanvasSize?: Bindable<UDim2>;
+	CanvasPosition?: Bindable<Vector2>;
+	AutomaticCanvasSize?: Bindable<EnumItem<"AutomaticSize">>;
+	ScrollingDirection?: Bindable<EnumItem<"ScrollingDirection">>;
+	ScrollingEnabled?: Bindable<boolean>;
 	/** Accepted but unrendered: lattice paints its own scrollbar thumb. */
-	ScrollBarThickness?: number;
-	ScrollBarImageTransparency?: number;
+	ScrollBarThickness?: Bindable<number>;
+	ScrollBarImageTransparency?: Bindable<number>;
 }
 
 /** `CanvasGroup` composites its subtree; `GroupTransparency` fades it as one. */
 export interface CanvasGroupProps extends GuiProps {
-	GroupTransparency?: number;
+	GroupTransparency?: Bindable<number>;
 }
 
 /** `UIListLayout` props. */
 export interface UIListLayoutProps {
-	FillDirection?: EnumItem<"FillDirection">;
-	HorizontalAlignment?: EnumItem<"HorizontalAlignment">;
-	VerticalAlignment?: EnumItem<"VerticalAlignment">;
+	FillDirection?: Bindable<EnumItem<"FillDirection">>;
+	HorizontalAlignment?: Bindable<EnumItem<"HorizontalAlignment">>;
+	VerticalAlignment?: Bindable<EnumItem<"VerticalAlignment">>;
 	/**
 	 * Flex distribution, per axis. The one matching `FillDirection` spreads the
 	 * leftover space along it; the other only means anything as `Fill`, which
 	 * stretches children across the cross axis.
 	 */
-	HorizontalFlex?: EnumItem<"UIFlexAlignment">;
-	VerticalFlex?: EnumItem<"UIFlexAlignment">;
-	SortOrder?: EnumItem<"SortOrder">;
-	Padding?: UDim;
+	HorizontalFlex?: Bindable<EnumItem<"UIFlexAlignment">>;
+	VerticalFlex?: Bindable<EnumItem<"UIFlexAlignment">>;
+	SortOrder?: Bindable<EnumItem<"SortOrder">>;
+	Padding?: Bindable<UDim>;
 	key?: Key;
 }
 
 /** `UIGridLayout` props. */
 export interface UIGridLayoutProps {
-	CellSize?: UDim2;
-	CellPadding?: UDim2;
-	FillDirection?: EnumItem<"FillDirection">;
-	FillDirectionMaxCells?: number;
-	StartCorner?: EnumItem<"StartCorner">;
-	HorizontalAlignment?: EnumItem<"HorizontalAlignment">;
-	VerticalAlignment?: EnumItem<"VerticalAlignment">;
-	SortOrder?: EnumItem<"SortOrder">;
+	CellSize?: Bindable<UDim2>;
+	CellPadding?: Bindable<UDim2>;
+	FillDirection?: Bindable<EnumItem<"FillDirection">>;
+	FillDirectionMaxCells?: Bindable<number>;
+	StartCorner?: Bindable<EnumItem<"StartCorner">>;
+	HorizontalAlignment?: Bindable<EnumItem<"HorizontalAlignment">>;
+	VerticalAlignment?: Bindable<EnumItem<"VerticalAlignment">>;
+	SortOrder?: Bindable<EnumItem<"SortOrder">>;
 	key?: Key;
 }
 
 /** `UIPadding` props (each side a `UDim`). */
 export interface UIPaddingProps {
-	PaddingLeft?: UDim;
-	PaddingRight?: UDim;
-	PaddingTop?: UDim;
-	PaddingBottom?: UDim;
+	PaddingLeft?: Bindable<UDim>;
+	PaddingRight?: Bindable<UDim>;
+	PaddingTop?: Bindable<UDim>;
+	PaddingBottom?: Bindable<UDim>;
 	key?: Key;
 }
 
 /** `UIAspectRatioConstraint` props. */
 export interface UIAspectRatioConstraintProps {
-	AspectRatio?: number;
-	AspectType?: EnumItem<"AspectType">;
-	DominantAxis?: EnumItem<"DominantAxis">;
+	AspectRatio?: Bindable<number>;
+	AspectType?: Bindable<EnumItem<"AspectType">>;
+	DominantAxis?: Bindable<EnumItem<"DominantAxis">>;
 	key?: Key;
 }
 
 /** `UISizeConstraint` props. */
 export interface UISizeConstraintProps {
-	MinSize?: Vector2;
-	MaxSize?: Vector2;
+	MinSize?: Bindable<Vector2>;
+	MaxSize?: Bindable<Vector2>;
 	key?: Key;
 }
 
 /** `UICorner` props. */
 export interface UICornerProps {
-	CornerRadius?: UDim;
+	CornerRadius?: Bindable<UDim>;
 	key?: Key;
 }
 
 /** `UIStroke` props. */
 export interface UIStrokeProps {
-	Color?: Color3;
-	Thickness?: number;
-	Transparency?: number;
-	ApplyStrokeMode?: EnumItem<"ApplyStrokeMode">;
+	Color?: Bindable<Color3>;
+	Thickness?: Bindable<number>;
+	Transparency?: Bindable<number>;
+	ApplyStrokeMode?: Bindable<EnumItem<"ApplyStrokeMode">>;
 	key?: Key;
 }
 
 /** `UIScale` props. */
 export interface UIScaleProps {
-	Scale?: number;
+	Scale?: Bindable<number>;
 	key?: Key;
 }
 
 /** `UIFlexItem` — one child's share of its list's leftover main-axis space. */
 export interface UIFlexItemProps {
-	FlexMode?: EnumItem<"UIFlexMode">;
+	FlexMode?: Bindable<EnumItem<"UIFlexMode">>;
 	/** Only read for `FlexMode.Custom`; the weight this item grows by. */
-	GrowRatio?: number;
-	ShrinkRatio?: number;
+	GrowRatio?: Bindable<number>;
+	ShrinkRatio?: Bindable<number>;
 	key?: Key;
 }
 /** `UIGradient` props (Transparency NumberSequence is deferred). */
 export interface UIGradientProps {
-	Color?: ColorSequence;
-	Rotation?: number;
-	Offset?: Vector2;
-	Enabled?: boolean;
+	Color?: Bindable<ColorSequence>;
+	Rotation?: Bindable<number>;
+	Offset?: Bindable<Vector2>;
+	Enabled?: Bindable<boolean>;
 	key?: Key;
 }
 
