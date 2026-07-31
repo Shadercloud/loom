@@ -16,6 +16,19 @@ export const ContextActionService: LoomInstance = getService(
 	"ContextActionService",
 );
 export const GuiService: LoomInstance = getService("GuiService");
+/**
+ * Typed beyond `LoomInstance` because the index signature that carries arbitrary
+ * Roblox properties types every method as `unknown`, and app code calls this one
+ * directly (`HttpService.GenerateGUID(false)`) rather than reading a property.
+ * The declared surface is exactly what the runtime implements — the network
+ * methods are absent here on purpose, and throw if reached anyway.
+ */
+export interface LoomHttpService extends LoomInstance {
+	GenerateGUID(wrapInCurlyBraces?: boolean): string;
+	JSONEncode(value: unknown): string;
+	JSONDecode(value: string): unknown;
+}
+export const HttpService = getService("HttpService") as LoomHttpService;
 export const Players: LoomInstance = getService("Players");
 export const RunService: LoomInstance = getService("RunService");
 export const TweenService: LoomInstance = getService("TweenService");
