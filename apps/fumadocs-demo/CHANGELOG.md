@@ -1,5 +1,12 @@
 # @loom-dev/fumadocs-demo
 
+## 0.0.14
+
+### Patch Changes
+
+- Updated dependencies [[`ba578d4`](https://github.com/astra-void/loom/commit/ba578d4556322f8739630fe5bc46d03652dcb61e), [`34d9f40`](https://github.com/astra-void/loom/commit/34d9f400d8e85298057c518ccd330dd8266e0eb4)]:
+  - loom-dev@0.5.2
+
 ## 0.0.13
 
 ### Patch Changes

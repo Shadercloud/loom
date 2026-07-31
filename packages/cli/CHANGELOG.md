@@ -1,5 +1,71 @@
 # loom-dev
 
+## 0.5.2
+
+### Patch Changes
+
+- [`ba578d4`](https://github.com/astra-void/loom/commit/ba578d4556322f8739630fe5bc46d03652dcb61e) Thanks [@astra-void](https://github.com/astra-void)! - Replace the hand-written `@rbxts/react` shim with an audited browser
+  compatibility facade, so a roblox-ts React project imports into Loom unchanged.
+
+  `import React, { Component, ReactComponent } from "@rbxts/react"` previously
+  failed the production build with `RollupError: "ReactComponent" is not exported
+by …/react-shim.js`. The shim listed the names Loom's own demos used; the
+  replacement (`@loom-dev/preview/src/compat/react.ts`) forwards the complete
+  runtime surface of the supported `@rbxts/react` (17.3.7-ts.2):
+
+  - **Standard React by identity.** `Component`, `createElement`, every hook and
+    the rest come from the one pinned React the reconciler renders with —
+    `Component === (await import("react")).Component` — so there is still exactly
+    one React, one hook dispatcher, and no wrappers.
+  - **`ReactComponent` / `ReactPureComponent`** as identity decorators, preserving
+    constructor identity, statics, `displayName` and the prototype chain, under
+    both `experimentalDecorators` and TC39 decorators.
+  - **`Event`, `Change` and `Tag`** as runtime values as well as props. `Tag` now
+    writes to a real `CollectionService` in `@loom-dev/runtime` (`AddTag`,
+    `HasTag`, `GetTagged`, the added/removed signals) and is retracted on unmount.
+  - **`None`** is importable and throws a Loom-specific error when used, rather
+    than silently settling into class state that browser React cannot delete from.
+  - **`@rbxts/react-roblox`** covers everything upstream declares —
+    `createBlockingRoot`, `createLegacyRoot`, `act` and `version` alongside
+    `createRoot` and `createPortal` — and its alias is now exact, so an unadapted
+    subpath of either package raises a named Loom diagnostic listing the supported
+    entrypoints instead of resolving to the wrong module or dying inside Rollup.
+
+  A contract test derives the expected surface from upstream's own `index.d.ts`
+  via the TypeScript compiler API, and real Vite/Rollup builds (plus a packed
+  tarball install into an external Next.js app) cover the export-analysis failure
+  the unit tests could not see.
+
+- [`34d9f40`](https://github.com/astra-void/loom/commit/34d9f400d8e85298057c518ccd330dd8266e0eb4) Thanks [@astra-void](https://github.com/astra-void)! - Make the Next.js gallery integration automatically respect the resolved Next
+  `basePath`, including GitHub Pages and other static exports hosted below a
+  subpath, while keeping the gallery output under its existing `public/` mount.
+
+  `withLoomGallery()` used one normalized `base` as three different things: the
+  Next rewrite route, the `public/` output directory, and the Vite base baked
+  into the generated gallery. Under a `basePath` those diverge — a site exported
+  to `https://…/rbxts-react-clean-ui/` served its gallery at
+  `/rbxts-react-clean-ui/loom-preview/` while every script, stylesheet, scene
+  chunk and runtime URL inside it still pointed at `/loom-preview/…` and 404'd.
+
+  The wrapper now derives two bases from the _resolved_ config (after wrappers
+  like Fumadocs' `createMDX` have run):
+
+  - `mountBase` — the mount relative to the Next app (`/loom-preview/`). Rewrite
+    rules keep using it, because Next prefixes `basePath` onto rewrite sources
+    itself, and the static gallery still goes to `public/loom-preview`.
+  - `publicBase` — `basePath` + `mountBase`, used as the gallery's Vite base, so
+    the generated HTML, chunks, dynamic imports and runtime URLs resolve where
+    the browser actually loads them. The cross-process build marker keys on it,
+    so builds with different effective bases can't share a stale marker.
+
+  The `base` option is unchanged and still means the mount relative to the app —
+  do not repeat the deployment prefix in it (loom now warns when it looks like
+  you did). A literal `<iframe src="/loom-preview/…">` in MDX is still yours to
+  prefix: it never passes through Next's router.
+
+- Updated dependencies [[`ba578d4`](https://github.com/astra-void/loom/commit/ba578d4556322f8739630fe5bc46d03652dcb61e)]:
+  - @loom-dev/preview@0.5.2
+
 ## 0.5.1
 
 ### Patch Changes

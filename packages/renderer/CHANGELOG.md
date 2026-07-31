@@ -1,5 +1,13 @@
 # @loom-dev/renderer
 
+## 0.5.2
+
+### Patch Changes
+
+- Updated dependencies [[`ba578d4`](https://github.com/astra-void/loom/commit/ba578d4556322f8739630fe5bc46d03652dcb61e)]:
+  - @loom-dev/runtime@0.5.2
+  - @loom-dev/scene@0.5.2
+
 ## 0.5.1
 
 ### Patch Changes
