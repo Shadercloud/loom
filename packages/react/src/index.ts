@@ -18,12 +18,13 @@ import {
 import {
 	createDomSession,
 	type DomSession,
-	fontFamily,
-	fontWeight,
+	fontShorthand,
+	instanceFont,
 } from "@loom-dev/renderer";
 import type {
 	Color3,
 	ColorSequence,
+	Font,
 	LoomConnection,
 	LoomInstance,
 	UDim,
@@ -270,9 +271,7 @@ function measureTextBounds(inst: LoomInstance): PropertyValue | undefined {
 	if (!ctx) return undefined;
 
 	const size = typeof inst.TextSize === "number" ? inst.TextSize : 14;
-	const font = inst.Font;
-	const fontName = font instanceof EnumItem ? font.Name : undefined;
-	ctx.font = `${fontWeight(fontName)} ${size}px ${fontFamily(fontName)}`;
+	ctx.font = fontShorthand(instanceFont(inst), size);
 	const lines = text.split("\n");
 	let width = 0;
 	for (const line of lines) {
@@ -999,7 +998,9 @@ export interface TextGuiProps extends GuiProps {
 	TextScaled?: boolean;
 	TextXAlignment?: EnumItem<"TextXAlignment">;
 	TextYAlignment?: EnumItem<"TextYAlignment">;
+	/** The legacy font enum. `FontFace` wins when both are set, as in Roblox. */
 	Font?: EnumItem<"Font">;
+	FontFace?: Font;
 }
 
 /** `TextBox` adds the editable-text props the DOM input maps. */
@@ -1034,6 +1035,13 @@ export interface UIListLayoutProps {
 	FillDirection?: EnumItem<"FillDirection">;
 	HorizontalAlignment?: EnumItem<"HorizontalAlignment">;
 	VerticalAlignment?: EnumItem<"VerticalAlignment">;
+	/**
+	 * Flex distribution, per axis. The one matching `FillDirection` spreads the
+	 * leftover space along it; the other only means anything as `Fill`, which
+	 * stretches children across the cross axis.
+	 */
+	HorizontalFlex?: EnumItem<"UIFlexAlignment">;
+	VerticalFlex?: EnumItem<"UIFlexAlignment">;
 	SortOrder?: EnumItem<"SortOrder">;
 	Padding?: UDim;
 	key?: Key;
@@ -1097,8 +1105,12 @@ export interface UIScaleProps {
 	key?: Key;
 }
 
-/** Modifier stubs whose props land with their feature milestone. */
+/** `UIFlexItem` — one child's share of its list's leftover main-axis space. */
 export interface UIFlexItemProps {
+	FlexMode?: EnumItem<"UIFlexMode">;
+	/** Only read for `FlexMode.Custom`; the weight this item grows by. */
+	GrowRatio?: number;
+	ShrinkRatio?: number;
 	key?: Key;
 }
 /** `UIGradient` props (Transparency NumberSequence is deferred). */
