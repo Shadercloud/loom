@@ -19,7 +19,10 @@ const config: NextConfig = {
 // returns the phase-aware function config Next needs. It reads `basePath` off
 // the *resolved* config, so the gallery's assets are generated for
 // `<basePath>/loom-preview/` while still being written to `public/loom-preview`.
+// The gallery source. Overridable so the demo can be pointed at a real
+// third-party roblox-ts project without editing this file:
+// `LOOM_DEMO_ROOT=../../../clean-ui LOOM_DEMO_TARGETS=Scenes pnpm … dev`.
 export default withLoomGallery(withMDX(config), {
-  root: '../gallery-demo',
-  targets: 'src/targets',
+  root: process.env.LOOM_DEMO_ROOT ?? '../gallery-demo',
+  targets: process.env.LOOM_DEMO_TARGETS ?? 'src/targets',
 });
