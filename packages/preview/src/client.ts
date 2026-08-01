@@ -5,16 +5,17 @@
  */
 
 import type { LoomRoot } from "@loom-dev/react";
-import { render as loomRender } from "@loom-dev/react";
+import { createPortal, render as loomRender } from "@loom-dev/react";
 import { getService } from "@loom-dev/runtime";
 import React, { type ReactElement } from "react";
+import { scaleMountToViewport } from "./viewport.ts";
 
 /**
  * Stand-in for `ReactRoblox.createPortal`. Renders children into a LoomInstance
  * container (typically `Players.LocalPlayer.PlayerGui`), matching the Roblox
  * signature component libraries call.
  */
-export { createPortal } from "@loom-dev/react";
+export { createPortal };
 
 /** The preview theme name mirrored onto `PlayerGui.LoomTheme`. */
 export type PreviewTheme = "light" | "dark";
@@ -42,8 +43,13 @@ function resolveHost(): HTMLElement {
 	const el = document.createElement("div");
 	el.id = HOST_ID;
 	el.style.position = "relative";
-	el.style.width = "100vw";
+	el.style.width = "100%";
 	el.style.height = "100vh";
+	// `100dvh` where supported: on mobile browsers `100vh` is the *largest*
+	// viewport (toolbars retracted), so a `100vh` stage is taller than the
+	// screen and the bottom of the scene sits under the URL bar. The assignment
+	// is simply ignored by engines that don't know the unit, leaving `100vh`.
+	el.style.height = "100dvh";
 	el.style.overflow = "hidden";
 	document.body.appendChild(el);
 	return el;
@@ -70,6 +76,11 @@ export interface RootOptions {
  * but each root gets its own container under `#loom-root`, so independent roots
  * (portals, multiple mounts) don't clobber each other — the renderer
  * `replaceChildren()`es its own mount on every commit.
+ *
+ * The container is also what carries the mobile viewport adaptation (see
+ * `./viewport.ts`): on a screen narrower than the base width it keeps a
+ * desktop-sized logical viewport and is scaled down to fit, so a scene written
+ * for a desktop screen shrinks instead of overflowing.
  */
 export function createRoot(
 	_target?: unknown,
@@ -78,7 +89,9 @@ export function createRoot(
 	const mount = document.createElement("div");
 	mount.style.position = "absolute";
 	mount.style.inset = "0";
-	resolveHost().appendChild(mount);
+	const host = resolveHost();
+	host.appendChild(mount);
+	const stopScaling = scaleMountToViewport(host, mount);
 
 	let root: Promise<LoomRoot> | undefined;
 	const dispose = (): void => {
@@ -97,6 +110,7 @@ export function createRoot(
 		},
 		unmount(): void {
 			dispose();
+			stopScaling();
 			mount.remove();
 		},
 	};
@@ -132,3 +146,24 @@ export const act: typeof React.act = React.act;
  * React-Lua version string. A preview reports what it is.
  */
 export const version: string = React.version;
+
+/**
+ * `import ReactRoblox from "@rbxts/react-roblox"` — the namespace form, holding
+ * the same values as the named exports.
+ *
+ * Upstream's typings are `export = ReactRoblox`, so under roblox-ts the default
+ * import *is* the package, and `ReactRoblox.createRoot(...)` is how nearly all
+ * roblox-ts code mounts. Without this the aliased module is named-exports-only
+ * and the preview dies at load with "does not provide an export named
+ * 'default'" — before any of it runs. `@rbxts/react` carries the same shape for
+ * the same reason (see `./compat/react.ts`).
+ */
+export default {
+	act,
+	createBlockingRoot,
+	createLegacyRoot,
+	createPortal,
+	createRoot,
+	setPreviewTheme,
+	version,
+};

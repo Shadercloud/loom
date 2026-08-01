@@ -127,7 +127,19 @@ write(
 	useRef,
 	useState,
 } from "@rbxts/react";
+import ReactRoblox, { createPortal, createRoot } from "@rbxts/react-roblox";
 import * as ReactNamespace from "react";
+
+/**
+ * The namespace form, which is how roblox-ts code actually mounts
+ * (\`ReactRoblox.createRoot(...)\`) — upstream's typings are \`export =\`.
+ */
+export const roblox = {
+	namespace: ReactRoblox,
+	defaultMatchesNamed:
+		ReactRoblox.createRoot === createRoot &&
+		ReactRoblox.createPortal === createPortal,
+};
 
 /** Every named import, proven present at run time rather than merely imported. */
 export const named = {
@@ -407,6 +419,10 @@ describe("the production build", () => {
 				defaultMatchesNamed: boolean;
 				namedMatchesBrowserReact: boolean;
 			};
+			roblox: {
+				namespace: Record<string, unknown> | undefined;
+				defaultMatchesNamed: boolean;
+			};
 		};
 		// Every named import survived CJS interop with a real value.
 		const undefinedNames = Object.entries(mod.named)
@@ -415,6 +431,12 @@ describe("the production build", () => {
 		expect(undefinedNames).toEqual([]);
 		expect(mod.identity.defaultMatchesNamed).toBe(true);
 		expect(mod.identity.namedMatchesBrowserReact).toBe(true);
+		// `import ReactRoblox from "@rbxts/react-roblox"` — a named-exports-only
+		// stand-in leaves this undefined (and, under the dev server's pre-bundled
+		// dep, fails the module at load: "does not provide an export named
+		// 'default'").
+		expect(mod.roblox.namespace).toBeTypeOf("object");
+		expect(mod.roblox.defaultMatchesNamed).toBe(true);
 	});
 
 	it("mounts the built class-component scene", async () => {
