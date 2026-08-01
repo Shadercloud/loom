@@ -181,6 +181,7 @@ export const DEFAULTS = {
 	textColor3: { r: 27 / 255, g: 42 / 255, b: 53 / 255 } as Color3,
 	textSize: 14,
 	textTransparency: 0,
+	lineHeight: 1,
 	imageTransparency: 0,
 	/** White: `ImageColor3` multiplies the image, so white is "no tint". */
 	imageColor3: { r: 1, g: 1, b: 1 } as Color3,
@@ -309,6 +310,17 @@ export const getTextWrapped = (n: SceneNode): boolean =>
 	asBool(props(n).TextWrapped) ?? asBool(props(n).TextWrap) ?? false;
 export const getTextScaled = (n: SceneNode): boolean =>
 	asBool(props(n).TextScaled) ?? false;
+/**
+ * The multiplier on the gap *between* lines — Studio clamps it to 1…3, and 1
+ * (the default) is single spacing. It leaves a one-line label alone: the engine
+ * spends the extra room between baselines, not above the first line or below the
+ * last, so `n` lines measure `TextSize + (n - 1) * TextSize * LineHeight`.
+ */
+export const getLineHeight = (n: SceneNode): number => {
+	const value = asNumber(props(n).LineHeight);
+	if (value === undefined) return DEFAULTS.lineHeight;
+	return Math.min(3, Math.max(1, value));
+};
 /** Enum item name, e.g. "Center"; default "Center" (Roblox TextLabel default). */
 export const getTextXAlignment = (n: SceneNode): string =>
 	asEnum(props(n).TextXAlignment)?.name ?? "Center";

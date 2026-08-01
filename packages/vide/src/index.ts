@@ -195,7 +195,17 @@ function measureTextBounds(live: LiveNode): PropertyValue | undefined {
 	let width = 0;
 	for (const line of lines)
 		width = Math.max(width, ctx.measureText(line).width);
-	return prop.vector2({ x: Math.ceil(width), y: lines.length * size });
+	// `LineHeight` stretches the gap between lines, so it starts paying from the
+	// second one — same rule as `@loom-dev/scene`'s `getLineHeight`.
+	const rawLineHeight = live.props.get("LineHeight");
+	const lineHeight =
+		typeof rawLineHeight === "number"
+			? Math.min(3, Math.max(1, rawLineHeight))
+			: 1;
+	return prop.vector2({
+		x: Math.ceil(width),
+		y: size + (lines.length - 1) * size * lineHeight,
+	});
 }
 
 /** Snapshot the live tree as Scene IR (called fresh on every paint). */

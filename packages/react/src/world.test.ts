@@ -6,7 +6,7 @@
  * Roblox `(rbx, ...args)` calling convention from delegated pointer input.
  */
 import type { InputObject, LoomInstance } from "@loom-dev/runtime";
-import { Color3, Enum, flushDirtyNow, UDim2 } from "@loom-dev/runtime";
+import { Color3, Enum, flushDirtyNow, UDim, UDim2 } from "@loom-dev/runtime";
 import type { LayoutResult, SceneNode, Viewport } from "@loom-dev/scene";
 import { createElement, type ReactElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -617,5 +617,122 @@ describe("mountSync world", () => {
 		// Wrapped: never wider than the 100px parent, and several lines tall.
 		expect(last?.x).toBeLessThanOrEqual(100);
 		expect(last?.y).toBeGreaterThan(10);
+	});
+
+	it("wraps at the nearest ancestor that has a width, past auto-sized ones", () => {
+		// The library idiom nests auto-sized containers — a padded body inside a
+		// card — and the body's own width comes *from* this label, so wrapping
+		// against it is the same circle as wrapping against the label itself and
+		// the text never wraps. The card is the one node with room to run out of.
+		const measured: Array<{ x: number; y: number }> = [];
+		const computeLayout: ComputeLayout = (node) => {
+			const rects: LayoutResult["rects"] = {};
+			const walk = (n: SceneNode): void => {
+				if (n.className === "TextLabel") {
+					const bounds = n.properties?.TextBounds;
+					if (bounds && bounds.type === "Vector2") {
+						measured.push(bounds.value as { x: number; y: number });
+					}
+				}
+				// The card has a width of its own; everything inside it hugged the
+				// unwrapped text and came out far wider.
+				rects[n.id ?? "?"] = {
+					rect: {
+						x: 0,
+						y: 0,
+						width: n.name === "Card" ? 100 : 500,
+						height: 100,
+					},
+				};
+				for (const child of n.children ?? []) walk(child);
+			};
+			walk(node);
+			return { rects };
+		};
+		roots.push(
+			mountSync(
+				createElement(
+					"screengui",
+					null,
+					createElement(
+						"frame",
+						{ Name: "Card" },
+						createElement(
+							"frame",
+							{ Name: "Body", AutomaticSize: Enum.AutomaticSize.XY },
+							createElement("uipadding", {
+								PaddingLeft: new UDim(0, 10),
+								PaddingRight: new UDim(0, 10),
+							}),
+							createElement("textlabel", {
+								Name: "Wrapped",
+								Text: "aaaa bbbb cccc dddd",
+								TextWrapped: true,
+								AutomaticSize: Enum.AutomaticSize.XY,
+								TextSize: 10,
+							}),
+						),
+					),
+				),
+				mount,
+				{ computeLayout },
+			),
+		);
+		flushDirtyNow();
+		flushDirtyNow();
+		const last = measured.at(-1);
+		expect(last).toBeDefined();
+		// The card's 100, less the body's 10 + 10 of padding — not the body's own
+		// 500, and not the 133 the string measures on one line.
+		expect(last?.x).toBeLessThanOrEqual(80);
+		expect(last?.y).toBeGreaterThan(10);
+	});
+
+	it("measures LineHeight into the gaps between lines only", () => {
+		/** The `TextBounds` height the adapter emitted for `Text` at this spacing. */
+		const measure = (text: string, lineHeight?: number): number => {
+			let height = 0;
+			const computeLayout: ComputeLayout = (node) => {
+				const rects: LayoutResult["rects"] = {};
+				const walk = (n: SceneNode): void => {
+					const bounds = n.properties?.TextBounds;
+					if (bounds && bounds.type === "Vector2") {
+						height = (bounds.value as { y: number }).y;
+					}
+					rects[n.id ?? "?"] = {
+						rect: { x: 0, y: 0, width: 100, height: 100 },
+					};
+					for (const child of n.children ?? []) walk(child);
+				};
+				walk(node);
+				return { rects };
+			};
+			roots.push(
+				mountSync(
+					createElement(
+						"screengui",
+						null,
+						createElement("textlabel", {
+							Text: text,
+							LineHeight: lineHeight,
+							AutomaticSize: Enum.AutomaticSize.XY,
+							TextSize: 10,
+						}),
+					),
+					mount,
+					{ computeLayout },
+				),
+			);
+			flushDirtyNow();
+			return height;
+		};
+
+		// Two lines at 10px: 20 single-spaced, and 10 + 10 * 2 at double.
+		expect(measure("aaaa\nbbbb")).toBe(20);
+		expect(measure("aaaa\nbbbb", 2)).toBe(30);
+		// One line pays nothing for the spacing — there is no gap to stretch.
+		expect(measure("aaaa", 2)).toBe(10);
+		// Clamped to the 1…3 Studio allows, so a half-height line is not a thing.
+		expect(measure("aaaa\nbbbb", 0.5)).toBe(20);
 	});
 });

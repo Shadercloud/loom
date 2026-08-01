@@ -115,6 +115,147 @@ describe("UIShadow", () => {
 	});
 });
 
+describe("LineHeight", () => {
+	function textLayer(properties: SceneNode["properties"]): HTMLElement {
+		const mount = document.createElement("div");
+		renderScene(
+			{
+				className: "Frame",
+				name: "Root",
+				id: "root",
+				children: [
+					{
+						className: "TextLabel",
+						name: "Label",
+						id: "card",
+						properties: {
+							Text: prop.string("one\ntwo"),
+							TextSize: prop.number(20),
+							...properties,
+						},
+					},
+				],
+			},
+			LAYOUT,
+			mount,
+		);
+		const label = mount.querySelector<HTMLElement>('[data-loom-name="Label"]');
+		const layer = label?.querySelector<HTMLElement>("div");
+		if (!layer) throw new Error("text layer not rendered");
+		return layer;
+	}
+
+	it("is single-spaced by default", () => {
+		const layer = textLayer({});
+		expect(layer.style.lineHeight).toBe("1");
+		expect(layer.querySelector<HTMLElement>("div")?.style.marginTop).toBe("");
+	});
+
+	it("spends the extra room between lines, not around the block", () => {
+		// CSS gives every line box the full line-height, half of it above the text
+		// and half below; Roblox only stretches the gaps. Cropping the leading off
+		// both outer edges (20 * 0.5 / 2 = 5px) leaves the block the height the
+		// engine measures — and a one-line label exactly `TextSize` tall.
+		const layer = textLayer({ LineHeight: prop.number(1.5) });
+		expect(layer.style.lineHeight).toBe("1.5");
+		const inner = layer.querySelector<HTMLElement>("div");
+		expect(inner?.style.marginTop).toBe("-5px");
+		expect(inner?.style.marginBottom).toBe("-5px");
+	});
+
+	it("clamps to the 1…3 Studio allows", () => {
+		expect(textLayer({ LineHeight: prop.number(0.2) }).style.lineHeight).toBe(
+			"1",
+		);
+		expect(textLayer({ LineHeight: prop.number(9) }).style.lineHeight).toBe(
+			"3",
+		);
+	});
+});
+
+describe("UICorner", () => {
+	const corner = (properties: SceneNode["properties"]): SceneNode => ({
+		className: "UICorner",
+		name: "UICorner",
+		properties,
+	});
+
+	it("rounds every corner from CornerRadius, scale against the shorter side", () => {
+		// The card is 200x100, so a 0.1 scale is 10px — not 20.
+		expect(
+			cardStyle([corner({ CornerRadius: prop.udim(udim(0.1, 2)) })])
+				.borderRadius,
+		).toBe("12px");
+	});
+
+	it("takes each corner's own radius over CornerRadius", () => {
+		// How a card rounds only its top while its footer rounds only its bottom:
+		// the two sides that are set win, the two that are not fall back.
+		const style = cardStyle([
+			corner({
+				CornerRadius: prop.udim(udim(0, 4)),
+				TopLeftRadius: prop.udim(udim(0, 8)),
+				TopRightRadius: prop.udim(udim(0, 8)),
+			}),
+		]);
+		expect(style.borderRadius).toBe("8px 8px 4px 4px");
+	});
+
+	it("squares the box off again when every corner is zero", () => {
+		expect(
+			cardStyle([corner({ CornerRadius: prop.udim(udim(0, 0)) })]).borderRadius,
+		).toBe("");
+	});
+});
+
+describe("UIStroke", () => {
+	const stroke = (properties: SceneNode["properties"]): SceneNode => ({
+		className: "UIStroke",
+		name: "UIStroke",
+		properties: {
+			Color: prop.color3(color3FromRGB(0, 0, 255)),
+			Thickness: prop.number(2),
+			...properties,
+		},
+	});
+	const position = (name: string): SceneNode["properties"] => ({
+		BorderStrokePosition: prop.enum({
+			enumType: "BorderStrokePosition",
+			name,
+			value: 0,
+		}),
+	});
+
+	it("spreads outward by default", () => {
+		expect(cardStyle([stroke({})]).boxShadow).toBe(
+			"0 0 0 2px rgba(0, 0, 255, 1)",
+		);
+	});
+
+	it("insets an Inner stroke so it eats into the object", () => {
+		// A bordered header inside a card has to stay flush with it rather than
+		// overhang it by the thickness.
+		expect(cardStyle([stroke(position("Inner"))]).boxShadow).toBe(
+			"inset 0 0 0 2px rgba(0, 0, 255, 1)",
+		);
+	});
+
+	it("straddles the edge with half the thickness each way for Center", () => {
+		expect(cardStyle([stroke(position("Center"))]).boxShadow).toBe(
+			"0 0 0 1px rgba(0, 0, 255, 1), inset 0 0 0 1px rgba(0, 0, 255, 1)",
+		);
+	});
+
+	it("is omitted when disabled or fully transparent", () => {
+		expect(cardStyle([stroke({ Enabled: prop.bool(false) })]).boxShadow).toBe(
+			"",
+		);
+		expect(
+			cardStyle([stroke({ Transparency: prop.number(1) })]).boxShadow,
+		).toBe("");
+	});
+});
+
 describe("ImageColor3", () => {
 	function imageStyle(properties: SceneNode["properties"]): {
 		filter: string;

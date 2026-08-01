@@ -445,6 +445,16 @@ function liveTextSize(textSize: unknown, fontSize: unknown): number {
 }
 
 /**
+ * Live-tree counterpart of `@loom-dev/scene`'s `getLineHeight`, clamped to the
+ * 1…3 Studio allows.
+ */
+function liveLineHeight(inst: LoomInstance): number {
+	const value = inst.LineHeight;
+	if (typeof value !== "number") return 1;
+	return Math.min(3, Math.max(1, value));
+}
+
+/**
  * Measure an auto-sizing text node's pixel bounds with the same font the renderer
  * paints, and emit them as a `TextBounds` Vector2 the layout engine reads for
  * AutomaticSize (font metrics live browser-side, not in the WASM engine).
@@ -476,7 +486,37 @@ function measureTextBounds(inst: LoomInstance): PropertyValue | undefined {
 			: [{ kind: "text", text: raw, style: {} }];
 	const wrapAt = wrapWidth(inst, autoName);
 	MEASURED_WRAP.set(inst, wrapAt ?? 0);
-	return prop.vector2(measureSegments(ctx, segments, base, size, wrapAt));
+	return prop.vector2(
+		measureSegments(ctx, segments, base, size, wrapAt, liveLineHeight(inst)),
+	);
+}
+
+/**
+ * The wrap width each auto-sizing wrapped text node was last measured against,
+ * so the flush can tell when a fresh layout has invalidated that measurement.
+ */
+const MEASURED_WRAP = new WeakMap<LoomInstance, number>();
+
+/** Is `AutomaticSize` covering the X axis, so the width is content-derived? */
+function autoOnX(inst: LoomInstance): boolean {
+	const auto = inst.AutomaticSize;
+	const name = auto instanceof EnumItem ? auto.Name : undefined;
+	return name === "X" || name === "XY";
+}
+
+/**
+ * Horizontal `UIPadding` on `inst`, in pixels — the room it takes away from
+ * whatever it holds. Offsets only, which is what the layout engine resolves a
+ * scale inset to on an automatic axis.
+ */
+function horizontalPadding(inst: LoomInstance): number {
+	const pad = inst.FindFirstChildOfClass("UIPadding");
+	if (!pad) return 0;
+	const side = (name: string): number => {
+		const udim = pad[name] as { Offset?: unknown } | undefined;
+		return typeof udim?.Offset === "number" ? udim.Offset : 0;
+	};
+	return side("PaddingLeft") + side("PaddingRight");
 }
 
 /**
@@ -486,13 +526,14 @@ function measureTextBounds(inst: LoomInstance): PropertyValue | undefined {
  * Which width depends on whether the X axis is automatic:
  * - **Not automatic** — the object's own width. It is fixed, so it is the
  *   constraint, and Y grows to however many lines result.
- * - **Automatic** — the *parent's* width. The object's own width cannot be the
- *   constraint here, because it is the thing being computed: a label written
+ * - **Automatic** — the width of the nearest ancestor that has one of its own,
+ *   less the padding in between. The object's own width cannot be the constraint
+ *   here, because it is the thing being computed: a label written
  *   `Size={UDim2.fromScale(0, 0)} AutomaticSize={XY} TextWrapped` would settle
  *   at one word per line, since wrapping at its current 0 width yields a
  *   widest-word measurement that then becomes the next constraint. Constraining
- *   by the parent instead leaves a short label hugging its text (it never
- *   reaches the parent's edge) and wraps a long one where the container ends,
+ *   by the container instead leaves a short label hugging its text (it never
+ *   reaches the container's edge) and wraps a long one where the container ends,
  *   which is what such a label does in Studio.
  *
  * Widths come from the previous frame's `AbsoluteSize` — the same
@@ -500,17 +541,28 @@ function measureTextBounds(inst: LoomInstance): PropertyValue | undefined {
  * measures unwrapped, the resulting layout supplies a width, and the next pass
  * settles.
  */
-/**
- * The wrap width each auto-sizing wrapped text node was last measured against,
- * so the flush can tell when a fresh layout has invalidated that measurement.
- */
-const MEASURED_WRAP = new WeakMap<LoomInstance, number>();
-
 function wrapWidth(inst: LoomInstance, autoName: string): number | undefined {
 	if ((inst.TextWrapped ?? inst.TextWrap) !== true) return undefined;
-	const autoX = autoName === "X" || autoName === "XY";
-	const source = autoX ? inst.Parent : inst;
-	const width = (source?.AbsoluteSize as { X?: number } | undefined)?.X ?? 0;
+	if (autoName !== "X" && autoName !== "XY") {
+		const own = (inst.AbsoluteSize as { X?: number } | undefined)?.X ?? 0;
+		return own > 0 ? own : undefined;
+	}
+	// The immediate parent is not enough on its own: a parent that is itself
+	// `AutomaticSize` was sized *by this label*, so wrapping against it is the
+	// same circle as wrapping against the label's own width, and the text never
+	// wraps at all. The library idiom stacks two or three such containers (a
+	// padded body inside a flex item inside a card), and the card — the one node
+	// with a real width — is where the room actually runs out.
+	let available = 0;
+	let inset = 0;
+	for (let node = inst.Parent; node; node = node.Parent) {
+		inset += horizontalPadding(node);
+		if (!autoOnX(node)) {
+			available = (node.AbsoluteSize as { X?: number } | undefined)?.X ?? 0;
+			break;
+		}
+	}
+	const width = available - inset;
 	return width > 0 ? width : undefined;
 }
 
@@ -554,14 +606,19 @@ function measureSegments(
 	base: ResolvedFont,
 	baseSize: number,
 	wrapAt?: number,
+	lineSpacing = 1,
 ): { x: number; y: number } {
 	let width = 0;
 	let height = 0;
 	let lineWidth = 0;
 	let lineHeight = baseSize;
+	let lines = 0;
 	const endLine = (): void => {
 		width = Math.max(width, lineWidth);
-		height += lineHeight;
+		// `LineHeight` stretches the gap between lines, so it starts paying from
+		// the second one — a single line is its own height whatever the multiplier.
+		height += lines === 0 ? lineHeight : lineHeight * lineSpacing;
+		lines += 1;
 		lineWidth = 0;
 		lineHeight = baseSize;
 	};
@@ -1410,6 +1467,13 @@ export interface TextGuiProps extends GuiProps {
 	TextSize?: Bindable<number>;
 	TextTransparency?: Bindable<number>;
 	TextWrapped?: Bindable<boolean>;
+	/**
+	 * The engine's own deprecated alias for `TextWrapped`, read as the same
+	 * property. `TextWrapped` wins when both are set.
+	 */
+	TextWrap?: Bindable<boolean>;
+	/** Multiplier on the gap between lines, 1…3. Single lines are unaffected. */
+	LineHeight?: Bindable<number>;
 	TextScaled?: Bindable<boolean>;
 	TextXAlignment?: Bindable<EnumItem<"TextXAlignment">>;
 	TextYAlignment?: Bindable<EnumItem<"TextYAlignment">>;
@@ -1521,6 +1585,11 @@ export interface UISizeConstraintProps {
 /** `UICorner` props. */
 export interface UICornerProps {
 	CornerRadius?: Bindable<UDim>;
+	/** Per-corner radii. Each one overrides `CornerRadius` for its own corner. */
+	TopLeftRadius?: Bindable<UDim>;
+	TopRightRadius?: Bindable<UDim>;
+	BottomLeftRadius?: Bindable<UDim>;
+	BottomRightRadius?: Bindable<UDim>;
 	key?: Key;
 }
 
@@ -1529,7 +1598,10 @@ export interface UIStrokeProps {
 	Color?: Bindable<Color3>;
 	Thickness?: Bindable<number>;
 	Transparency?: Bindable<number>;
+	Enabled?: Bindable<boolean>;
 	ApplyStrokeMode?: Bindable<EnumItem<"ApplyStrokeMode">>;
+	/** Which side of the edge the thickness sits on. Default `Outer`. */
+	BorderStrokePosition?: Bindable<EnumItem<"BorderStrokePosition">>;
 	key?: Key;
 }
 

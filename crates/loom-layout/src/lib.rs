@@ -191,7 +191,7 @@ fn measure_content(node: &SceneNode, content_w: f64, content_h: f64) -> (f64, f6
     let children = layout_children(node);
 
     let (mut w, mut h) = if let Some(list) = find_modifier(node, "UIListLayout") {
-        let m = list_metrics(content, list, &children);
+        let m = list_metrics(content, list, &children, automatic_axes(node));
         if m.vertical {
             (m.cross_max, m.total_main)
         } else {
@@ -309,7 +309,12 @@ struct ListMetrics {
     lines: Vec<ListLine>,
 }
 
-fn list_metrics(content: Rect, list: &SceneNode, children: &[(usize, &SceneNode)]) -> ListMetrics {
+fn list_metrics(
+    content: Rect,
+    list: &SceneNode,
+    children: &[(usize, &SceneNode)],
+    auto_axes: (bool, bool),
+) -> ListMetrics {
     let vertical = enum_name(list, "FillDirection") != Some("Horizontal");
     let (main_content, _cross_content) = if vertical {
         (content.height, content.width)
@@ -319,11 +324,22 @@ fn list_metrics(content: Rect, list: &SceneNode, children: &[(usize, &SceneNode)
     let gap = udim_prop(list, "Padding").map_or(0.0, |u| resolve_axis(u, main_content));
     // `Wraps` breaks the flow onto a new line once an item no longer fits along
     // the fill direction — CSS `flex-wrap: wrap`, and Roblox's own flex model.
-    let wraps = list
-        .properties
-        .get("Wraps")
-        .and_then(PropertyValue::as_bool)
-        .unwrap_or(false);
+    //
+    // Except when the fill direction is the axis being measured: `AutomaticSize`
+    // on it means there is no width yet to wrap against (the box is 0, or an
+    // explicit `Size` that is only a minimum), so the items measure as one run —
+    // CSS `max-content`, and the same "unconstrained fill axis" rule
+    // `grid_metrics` already applies. Wrapping against the 0-wide measurement box
+    // instead put every item on its own line, so an auto-sized row of buttons
+    // measured a line per button while the paint — which runs against the real
+    // width — still laid them side by side.
+    let auto_main = if vertical { auto_axes.1 } else { auto_axes.0 };
+    let wraps = !auto_main
+        && list
+            .properties
+            .get("Wraps")
+            .and_then(PropertyValue::as_bool)
+            .unwrap_or(false);
 
     let mut lines: Vec<ListLine> = Vec::new();
     let mut line = ListLine {
@@ -447,7 +463,9 @@ fn place_with_list(
     out: &mut BTreeMap<String, LayoutNode>,
 ) -> Result<(), LayoutError> {
     let order = flow_order(children, list);
-    let m = list_metrics(content, list, &order);
+    // Placement runs against the node's final rect, so both axes are definite by
+    // now — whatever `AutomaticSize` asked for has already been resolved into it.
+    let m = list_metrics(content, list, &order, (false, false));
     let vertical = m.vertical;
     let main_content = if vertical {
         content.height
@@ -1061,6 +1079,25 @@ mod tests {
         let r = compute_layout(&screen(vec![container]), VP).unwrap();
         assert_eq!(r.rects["0/0"].rect.width, 800.0);
         assert_eq!(r.rects["0/0"].rect.height, 90.0);
+    }
+
+    #[test]
+    fn automatic_main_axis_measures_one_line() {
+        // The fill axis is itself automatic, so there is nothing to wrap against:
+        // the items measure as one run and the container hugs it. Wrapping every
+        // item onto its own line (against a 0-wide box) made a row of buttons
+        // measure one line per button, so an auto-sized footer came out a whole
+        // row too tall while the paint still put them side by side.
+        let mut container = wrapping_row(2, 100.0, 10.0);
+        container
+            .properties
+            .insert("AutomaticSize".into(), enum_item("AutomaticSize", "XY"));
+        container
+            .properties
+            .insert("Size".into(), udim2(0.0, 0.0, 0.0, 0.0));
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(r.rects["0/0"].rect.width, 210.0);
+        assert_eq!(r.rects["0/0"].rect.height, 40.0);
     }
 
     #[test]

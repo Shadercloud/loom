@@ -56,6 +56,7 @@ import {
 	asBool,
 	asColor3,
 	asColorSequence,
+	asEnum,
 	asNumber,
 	asString,
 	asUDim,
@@ -71,6 +72,7 @@ import {
 	getImage,
 	getImageColor3,
 	getImageTransparency,
+	getLineHeight,
 	getRichText,
 	getScaleType,
 	getText,
@@ -225,7 +227,15 @@ const xAlignText = (a: string): string =>
 
 // --- visual modifiers --------------------------------------------------------
 
-/** `UICorner` -> border-radius (CornerRadius scale is relative to the shorter side). */
+/**
+ * `UICorner` -> border-radius (a scale is relative to the shorter side).
+ *
+ * `CornerRadius` rounds all four corners; the per-corner `TopLeftRadius` …
+ * `BottomRightRadius` override it one corner at a time, which is how a card
+ * rounds only its top while its footer rounds only its bottom. Whatever comes
+ * out here also shapes everything drawn from the same box — the `UIStroke` ring
+ * and the `UIShadow` are box-shadows, so they follow the radius for free.
+ */
 function applyCorner(
 	s: CSSStyleDeclaration,
 	node: SceneNode,
@@ -233,24 +243,61 @@ function applyCorner(
 ): void {
 	const corner = findModifier(node, "UICorner");
 	if (!corner) return;
-	const cr = asUDim(corner.properties?.CornerRadius) ?? { scale: 0, offset: 0 };
-	const radius = cr.scale * Math.min(rect.width, rect.height) + cr.offset;
-	if (radius > 0) s.borderRadius = `${radius}px`;
+	const shorter = Math.min(rect.width, rect.height);
+	const all = asUDim(corner.properties?.CornerRadius);
+	const radius = (name: string): number => {
+		const udim = asUDim(corner.properties?.[name]) ?? all;
+		if (!udim) return 0;
+		return Math.max(0, udim.scale * shorter + udim.offset);
+	};
+	const tl = radius("TopLeftRadius");
+	const tr = radius("TopRightRadius");
+	const br = radius("BottomRightRadius");
+	const bl = radius("BottomLeftRadius");
+	if (tl === 0 && tr === 0 && br === 0 && bl === 0) {
+		// Cleared rather than left alone: a radius that animates back to zero has
+		// to square the box off again, not keep the last rounding it had.
+		s.borderRadius = "";
+		return;
+	}
+	s.borderRadius =
+		tl === tr && tr === br && br === bl
+			? `${tl}px`
+			: `${tl}px ${tr}px ${br}px ${bl}px`;
 }
 
 /** A `UDim` resolved against a pixel basis, the Roblox way. */
 const resolveUDim = (u: UDim | undefined, basis: number): number =>
 	(u?.scale ?? 0) * basis + (u?.offset ?? 0);
 
-/** `UIStroke` -> an outset box-shadow ring (follows the corner radius). */
+/**
+ * `UIStroke` -> a box-shadow ring `Thickness` pixels wide, following the corner
+ * radius. `BorderStrokePosition` decides which side of the edge those pixels sit
+ * on: `Outer` (the default, and what Roblox drew before the property existed)
+ * spreads outward, `Inner` insets so the stroke eats into the object instead of
+ * inflating it — a bordered header stays flush with the card around it rather
+ * than overhanging it — and `Center` straddles the edge, half of the thickness
+ * each way.
+ */
 function strokeShadow(node: SceneNode): string | undefined {
 	const stroke = findModifier(node, "UIStroke");
 	if (!stroke) return undefined;
+	if (asBool(stroke.properties?.Enabled) === false) return undefined;
 	const color = asColor3(stroke.properties?.Color) ?? { r: 0, g: 0, b: 0 };
 	const thickness = asNumber(stroke.properties?.Thickness) ?? 1;
 	const transparency = asNumber(stroke.properties?.Transparency) ?? 0;
-	if (thickness <= 0) return undefined;
-	return `0 0 0 ${thickness}px ${cssColor(color, transparency)}`;
+	if (thickness <= 0 || transparency >= 1) return undefined;
+	const paint = cssColor(color, transparency);
+	switch (asEnum(stroke.properties?.BorderStrokePosition)?.name) {
+		case "Inner":
+			return `inset 0 0 0 ${thickness}px ${paint}`;
+		case "Center": {
+			const half = thickness / 2;
+			return `0 0 0 ${half}px ${paint}, inset 0 0 0 ${half}px ${paint}`;
+		}
+		default:
+			return `0 0 0 ${thickness}px ${paint}`;
+	}
 }
 
 /**
@@ -300,7 +347,9 @@ function applyShadows(
 	const layers = [strokeShadow(node), dropShadow(node, rect)].filter(
 		(layer): layer is string => layer !== undefined,
 	);
-	if (layers.length > 0) s.boxShadow = layers.join(", ");
+	// Assigned either way: a session patches the same element every frame, so a
+	// stroke that is switched off has to take its ring with it.
+	s.boxShadow = layers.join(", ");
 }
 
 /**
@@ -480,13 +529,24 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	s.fontFamily = font.family;
 	s.fontWeight = font.weight;
 	if (font.italic) s.fontStyle = "italic";
-	s.lineHeight = "1"; // Roblox default LineHeight is 1.0
+	const lineHeight = getLineHeight(node);
+	s.lineHeight = String(lineHeight);
 	s.overflow = "hidden";
 	s.pointerEvents = "none";
 	s.zIndex = String(getZIndex(node)); // share the unified ZIndex space with children
 
 	const inner = document.createElement("div");
 	inner.style.width = "100%";
+	// CSS gives *every* line box the full `line-height`, half of the extra above
+	// the text and half below; Roblox spends it only between lines. Cropping the
+	// leading off the two outer edges leaves the gaps intact and the block the
+	// height the engine measures — a one-line label stays exactly `TextSize` tall
+	// however high its `LineHeight` is.
+	if (lineHeight !== 1) {
+		const leading = ((lineHeight - 1) * getTextSize(node)) / 2;
+		inner.style.marginTop = `${-leading}px`;
+		inner.style.marginBottom = `${-leading}px`;
+	}
 	inner.style.textAlign = xAlignText(getTextXAlignment(node));
 	inner.style.whiteSpace = getTextWrapped(node) ? "normal" : "nowrap";
 	if (getRichText(node)) {
