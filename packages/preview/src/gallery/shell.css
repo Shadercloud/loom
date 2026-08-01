@@ -6,6 +6,19 @@ html,
 body {
 	height: 100%;
 	margin: 0;
+	overscroll-behavior: none;
+}
+
+/*
+ * On mobile `100%`/`100vh` resolve against the toolbars-retracted viewport, so
+ * a full-height stage hangs below the visible screen and the page scrolls
+ * instead of the scene fitting. `dvh` is the height that actually shows.
+ */
+@supports (height: 100dvh) {
+	html,
+	body {
+		height: 100dvh;
+	}
 }
 
 body {
@@ -63,6 +76,23 @@ html.loom-theme-light body {
 .loom-gallery-count {
 	font-weight: 400;
 	color: #6d7382;
+}
+
+/*
+ * The narrow-screen target-list toggle. Hidden on a wide screen, where the
+ * sidebar list is always open; see the mobile media query at the bottom.
+ */
+.loom-gallery-toggle {
+	display: none;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	border: 1px solid #333944;
+	border-radius: 6px;
+	background: #232833;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
 }
 
 .loom-gallery-list {
@@ -161,4 +191,55 @@ body.loom-chromeless #loom-gallery-stage {
 	font-size: 11px;
 	white-space: pre-wrap;
 	word-break: break-word;
+}
+
+/*
+ * Phone-sized chrome. A 248px fixed sidebar beside the stage leaves nothing to
+ * render into on a ~390px screen, so below this width the shell stacks: the
+ * sidebar becomes a collapsed top bar (the target list opens on tap and closes
+ * again on selection, see `gallery-shell.ts`) and the stage takes the rest of
+ * the screen. The scene inside the stage adapts on its own — the preview mount
+ * keeps a desktop-width logical viewport and scales down (`../viewport.ts`).
+ *
+ * `?chrome=none` is unaffected: it has no sidebar to collapse on any screen.
+ */
+@media (max-width: 640px) {
+	body {
+		flex-direction: column;
+	}
+
+	#loom-gallery-sidebar {
+		width: auto;
+		max-height: 60%;
+		border-right: none;
+		border-bottom: 1px solid #272b33;
+	}
+
+	.loom-gallery-header {
+		align-items: center;
+		gap: 8px;
+	}
+
+	.loom-gallery-toggle {
+		display: inline-flex;
+	}
+
+	/* Collapsed by default; `.loom-gallery-open` is toggled on <body>. */
+	.loom-gallery-list {
+		display: none;
+	}
+
+	body.loom-gallery-open .loom-gallery-list {
+		display: block;
+	}
+
+	/* Touch targets: 6px of padding is a mouse-sized row. */
+	.loom-gallery-item {
+		padding: 10px 8px;
+	}
+
+	#loom-gallery-stage {
+		flex: 1;
+		min-height: 0;
+	}
 }

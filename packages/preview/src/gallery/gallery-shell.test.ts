@@ -52,6 +52,16 @@ describe("gallery target diagnostics", () => {
 		expect(client.render).not.toHaveBeenCalled();
 	});
 
+	it("keeps the sidebar out of chromeless mode entirely", () => {
+		startGallery({
+			[TARGET]: async () => ({
+				preview: { render: () => React.createElement("frame") } as const,
+			}),
+		});
+		expect(document.getElementById("loom-gallery-sidebar")?.hidden).toBe(true);
+		expect(document.querySelector(".loom-gallery-toggle")).toBeNull();
+	});
+
 	it("mounts a valid preview export without showing an error", async () => {
 		const render = () => React.createElement("frame");
 		startGallery({
@@ -68,5 +78,45 @@ describe("gallery target diagnostics", () => {
 		expect(
 			document.querySelector(".loom-gallery-error")?.hasAttribute("hidden"),
 		).toBe(true);
+	});
+});
+
+/**
+ * The narrow-screen chrome: the CSS media query stacks the sidebar over the
+ * stage and hides the list unless `body.loom-gallery-open` is set — this is the
+ * state side of that contract.
+ */
+describe("gallery chrome on a narrow screen", () => {
+	beforeEach(() => {
+		client.render.mockClear();
+		document.body.className = "";
+		document.body.innerHTML = `
+			<aside id="loom-gallery-sidebar"></aside>
+			<main id="loom-gallery-stage"><div id="loom-root"></div></main>
+		`;
+		window.history.replaceState({}, "", "/loom-preview/");
+	});
+
+	it("opens the target list from the toggle and closes it on selection", () => {
+		startGallery({
+			[TARGET]: async () => ({
+				preview: { render: () => React.createElement("frame") } as const,
+			}),
+		});
+
+		const toggle = document.querySelector(
+			".loom-gallery-toggle",
+		) as HTMLButtonElement;
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+		toggle.click();
+		expect(document.body.classList.contains("loom-gallery-open")).toBe(true);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+		// Picking a target hands the screen back to the stage.
+		(document.querySelector(".loom-gallery-item") as HTMLElement).click();
+		expect(document.body.classList.contains("loom-gallery-open")).toBe(false);
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(location.hash).toBe(`#/${TARGET}`);
 	});
 });

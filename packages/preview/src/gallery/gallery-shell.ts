@@ -121,6 +121,17 @@ export function startGallery(targets: TargetMap): void {
 	// Chrome DOM (skipped entirely in chromeless mode).
 	// -------------------------------------------------------------------------
 
+	// On a phone-sized screen the sidebar collapses to a top bar and the target
+	// list opens on demand (the CSS media query owns the layout; this owns the
+	// state). Selecting a target closes it again so the stage isn't left buried
+	// under the list — harmless on a wide screen, where the list ignores the
+	// class and stays open.
+	const OPEN_CLASS = "loom-gallery-open";
+	const setListOpen = (open: boolean, toggle?: HTMLButtonElement): void => {
+		document.body.classList.toggle(OPEN_CLASS, open);
+		toggle?.setAttribute("aria-expanded", String(open));
+	};
+
 	if (chromeless) {
 		sidebar.hidden = true;
 	} else {
@@ -131,7 +142,15 @@ export function startGallery(targets: TargetMap): void {
 		const headerCount = document.createElement("span");
 		headerCount.className = "loom-gallery-count";
 		headerCount.textContent = String(keys.length);
-		header.append(headerName, headerCount);
+		const toggle = document.createElement("button");
+		toggle.type = "button";
+		toggle.className = "loom-gallery-toggle";
+		toggle.textContent = "targets";
+		toggle.setAttribute("aria-expanded", "false");
+		toggle.addEventListener("click", () => {
+			setListOpen(!document.body.classList.contains(OPEN_CLASS), toggle);
+		});
+		header.append(headerName, headerCount, toggle);
 
 		const list = document.createElement("ul");
 		list.className = "loom-gallery-list";
@@ -141,6 +160,7 @@ export function startGallery(targets: TargetMap): void {
 			item.textContent = key;
 			item.title = key;
 			item.addEventListener("click", () => {
+				setListOpen(false, toggle);
 				location.hash = `#/${key}`;
 			});
 			items.set(key, item);

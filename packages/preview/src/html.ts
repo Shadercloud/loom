@@ -62,11 +62,13 @@ export function generateIndexHtml(entryUrl: string, title: string): string {
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<title>${title}</title>
 		<style>
-			html, body { margin: 0; height: 100%; background: #14161a; }
-			#loom-root { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+			html, body { margin: 0; height: 100%; background: #14161a; overscroll-behavior: none; }
+			/* dvh where supported: on mobile 100vh is the toolbars-retracted height,
+			   so a 100vh stage hangs below the visible screen. */
+			#loom-root { position: relative; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; }
 		</style>
 	</head>
 	<body>
@@ -83,10 +85,10 @@ export function generateGalleryHtml(entryUrl: string, title: string): string {
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<title>${title}</title>
 		<style>
-			html, body { margin: 0; height: 100%; background: #14161a; }
+			html, body { margin: 0; height: 100%; background: #14161a; overscroll-behavior: none; }
 		</style>
 	</head>
 	<body>

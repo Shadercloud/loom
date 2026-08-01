@@ -605,6 +605,139 @@ describe("createDomSession", () => {
 		session.dispose();
 	});
 
+	// --- scaled mount (mobile viewport) + touch ---------------------------------
+
+	/**
+	 * Pretend the mount is `rendered` px wide on screen while laying out at
+	 * `layoutWidth` — what `@loom-dev/preview`'s viewport adaptation does on a
+	 * phone (CSS-transform the whole stage down, keep the desktop viewport).
+	 * happy-dom lays nothing out, so both measurements are stubbed.
+	 */
+	function scaleMount(rendered: number, layoutWidth: number): number {
+		Object.defineProperty(mount, "offsetWidth", {
+			value: layoutWidth,
+			configurable: true,
+		});
+		mount.getBoundingClientRect = () =>
+			({
+				x: 0,
+				y: 0,
+				left: 0,
+				top: 0,
+				right: rendered,
+				bottom: rendered,
+				width: rendered,
+				height: rendered,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		return rendered / layoutWidth;
+	}
+
+	it("maps pointer coordinates back through a scaled mount", () => {
+		const button = createInstance("TextButton", "Button");
+		const buttonId = getInternalId(button);
+		const session = makeSession(new Map([[buttonId, button]]));
+		session.patch(
+			{ className: "TextButton", name: "Button", id: buttonId },
+			layoutOf({ [buttonId]: { x: 0, y: 0, width: 100, height: 40 } }),
+		);
+		const el = mount.querySelector(`[data-loom-id="${buttonId}"]`) as Element;
+		const scale = scaleMount(390, 1280);
+
+		const inputs: InputObject[] = [];
+		getEventSignal(button, "InputBegan").Connect((input) =>
+			inputs.push(input as InputObject),
+		);
+		// On-screen pixels in, layout pixels (the space rects live in) out.
+		firePointer(el, "pointerdown", { clientX: 39, clientY: 12 });
+
+		expect(inputs[0]?.Position.X).toBeCloseTo(39 / scale);
+		expect(inputs[0]?.Position.Y).toBeCloseTo(12 / scale);
+		session.dispose();
+	});
+
+	/** A ScrollingFrame with a button inside it, both live instances. */
+	function mountTouchScroll() {
+		const frame = createInstance("ScrollingFrame", "Scroll");
+		const button = createInstance("TextButton", "Item");
+		const frameId = getInternalId(frame);
+		const buttonId = getInternalId(button);
+		const session = makeSession(
+			new Map([
+				[frameId, frame],
+				[buttonId, button],
+			]),
+		);
+		session.patch(
+			{
+				className: "ScrollingFrame",
+				name: "Scroll",
+				id: frameId,
+				children: [{ className: "TextButton", name: "Item", id: buttonId }],
+			},
+			layoutOf({
+				[frameId]: { x: 0, y: 0, width: 100, height: 100 },
+				[buttonId]: { x: 0, y: 0, width: 100, height: 40 },
+			}),
+		);
+		// World feedback normally sets these; simulate it.
+		frame.AbsoluteWindowSize = Vector2.new(100, 100);
+		frame.AbsoluteCanvasSize = Vector2.new(100, 300);
+		let activated = 0;
+		getEventSignal(button, "Activated").Connect(() => {
+			activated += 1;
+		});
+		return {
+			session,
+			frame,
+			el: mount.querySelector(`[data-loom-id="${buttonId}"]`) as Element,
+			canvasY: () => (frame.CanvasPosition as Vector2).Y,
+			activated: () => activated,
+		};
+	}
+
+	it("scrolls a ScrollingFrame from a touch drag instead of tapping through", () => {
+		const { session, el, canvasY, activated } = mountTouchScroll();
+		const touch = { pointerType: "touch", pointerId: 1 };
+
+		firePointer(el, "pointerdown", { ...touch, clientX: 10, clientY: 100 });
+		// Finger up the screen → content follows → canvas moves down.
+		firePointer(el, "pointermove", { ...touch, clientX: 10, clientY: 60 });
+		expect(canvasY()).toBe(40);
+		firePointer(el, "pointermove", { ...touch, clientX: 10, clientY: 40 });
+		expect(canvasY()).toBe(60);
+
+		// The finger left the control: the drag must not also press the button.
+		firePointer(el, "pointerup", { ...touch, clientX: 10, clientY: 40 });
+		expect(activated()).toBe(0);
+		session.dispose();
+	});
+
+	it("still activates on a touch tap that never left the slop radius", () => {
+		const { session, el, canvasY, activated } = mountTouchScroll();
+		const touch = { pointerType: "touch", pointerId: 1 };
+
+		firePointer(el, "pointerdown", { ...touch, clientX: 10, clientY: 100 });
+		firePointer(el, "pointermove", { ...touch, clientX: 11, clientY: 98 });
+		firePointer(el, "pointerup", { ...touch, clientX: 11, clientY: 98 });
+
+		expect(activated()).toBe(1);
+		expect(canvasY()).toBe(2); // the jitter still moved the canvas, as Roblox does
+		session.dispose();
+	});
+
+	it("leaves a mouse drag over a ScrollingFrame alone", () => {
+		const { session, el, canvasY, activated } = mountTouchScroll();
+
+		firePointer(el, "pointerdown", { clientX: 10, clientY: 100 });
+		firePointer(el, "pointermove", { clientX: 10, clientY: 40 });
+		firePointer(el, "pointerup", { clientX: 10, clientY: 40 });
+
+		expect(canvasY()).toBe(0); // mouse scrolling is the wheel's job
+		expect(activated()).toBe(1);
+		session.dispose();
+	});
+
 	it("wheel input skips frames with ScrollingEnabled=false", () => {
 		const frame = createInstance("ScrollingFrame", "Scroll");
 		const frameId = getInternalId(frame);
