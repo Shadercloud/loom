@@ -1,0 +1,78 @@
+# The pre-merge gate. publish.yaml re-runs lint/typecheck/test before it ships,
+# so this workflow exists to surface the same failures on the pull request
+# instead of on main after the fact.
+name: CI
+
+on:
+  # `labeled` is here so adding `ci:full` to an open PR re-triggers the run and
+  # brings the integration job in with it (see the job's `if` below).
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One run per branch or PR: a push that supersedes an in-flight run cancels it.
+# main is exempt — its runs are the ones publish.yaml's gate mirrors, so let
+# them finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions: {}
+
+jobs:
+  # Deliberately one job, not one per check. Every check here runs in seconds;
+  # what costs minutes is the setup they share (rustup, wasm-pack, the frozen
+  # install and the wasm build it triggers). Splitting lint out into its own job
+  # would pay that setup twice to parallelise a one-second command.
+  check:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs Rust + wasm-pack + pnpm and runs the frozen install, whose
+      # `prepare` script builds the wasm layout engine into packages/layout/pkg.
+      # Everything below therefore runs against a real built wasm binary.
+      - uses: ./.github/actions/setup
+
+      - run: pnpm lint
+
+      # Not part of `pnpm lint` (biome does not touch Rust), and ~free. Clippy is
+      # deliberately absent: the workspace does not pass `-D warnings` yet, and a
+      # gate that has to be ignored is not a gate.
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+
+      - run: pnpm typecheck
+
+      # cargo test + vitest — both sides of the wasm boundary.
+      - run: pnpm test
+
+  # The slow half, kept off the default PR path: it installs Next.js from the
+  # network and runs four real `next build`s. It gates main rather than every
+  # push to a branch — and any PR that touches packaging or the gallery emit can
+  # opt in early by carrying the `ci:full` label.
+  integration:
+    name: Packaged-install regression tests
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      # Both scripts cover failures that only exist in *installed* or *exported*
+      # output: tarball resolution and React duplication (packed), and
+      # basePath-prefixed asset URLs in a static export (base-path).
+      - run: pnpm test:packed
+      - run: pnpm test:base-path
