@@ -1,5 +1,34 @@
 # @loom-dev/layout
 
+## 0.6.0
+
+### Minor Changes
+
+- [#8](https://github.com/astra-void/loom/pull/8) [`68701b7`](https://github.com/astra-void/loom/commit/68701b77ce4bd0a31168687e83c4e08d683efd53) Thanks [@Shadercloud](https://github.com/Shadercloud)! - Add the legacy `FontSize` property, the Luau string methods and `assert`, and
+  treat `Size` as a floor under `AutomaticSize`.
+
+  - `Enum.FontSize` and the `FontSize` prop are supported end to end. The pixel
+    size is read out of the enum name, so `FontSize={Enum.FontSize.Size24}` paints
+    and measures at 24px. `TextSize` still wins when both are set, matching how
+    Roblox keeps the two properties linked.
+  - `String.prototype` gains the Luau string methods roblox-ts calls off a string
+    receiver — `.lower()`, `.upper()`, `.sub()`, `.rep()`, `.find()`, `.gsub()`
+    and `.format()` — each delegating to the existing `string` library, so the
+    1-based indices and tuple returns carry over. `.sub()` deliberately replaces
+    the Annex B HTML wrapper JS ships under that name; `.split()` is deliberately
+    left native, since Luau's `string.split` is implemented with it.
+  - `assert` joins the installed Luau globals. It returns its argument when
+    truthy, the way Luau does, so `const cfg = assert(maybeCfg, "no cfg")` works.
+  - `AutomaticSize` no longer shrinks an element below its own `Size`. Roblox
+    treats `Size` as the minimum and only grows past it for larger content; loom
+    was overwriting the size with the content size outright, so a fixed-width
+    container with a small child collapsed to the child.
+
+### Patch Changes
+
+- Updated dependencies [[`68701b7`](https://github.com/astra-void/loom/commit/68701b77ce4bd0a31168687e83c4e08d683efd53), [`06b8636`](https://github.com/astra-void/loom/commit/06b8636e0b3a55001cc81f0db73b183195c75c93)]:
+  - @loom-dev/scene@0.6.0
+
 ## 0.5.3
 
 ### Patch Changes
