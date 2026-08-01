@@ -305,6 +305,7 @@ pub fn class_meta(class_name: &str) -> ClassMeta {
         | "UIListLayout"
         | "UIGridLayout"
         | "UIStroke"
+        | "UIShadow"
         | "UIScale"
         | "UIGradient"
         | "UIPageLayout"
@@ -447,5 +448,10 @@ mod tests {
         assert!(!is_layer_collector("Frame"));
         assert!(participates_in_layout("Frame"));
         assert!(!participates_in_layout("UIListLayout"));
+        // Purely decorative, and it must agree with the TypeScript NON_LAYOUT
+        // set: the two sides number layout-participating children to build node
+        // ids, so one counting a modifier the other skips desynchronises every
+        // id after it.
+        assert!(!participates_in_layout("UIShadow"));
     }
 }

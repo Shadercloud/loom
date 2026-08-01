@@ -32,6 +32,8 @@ const CLASS_PARENTS: Record<string, string> = {
 	PlayerGui: "BasePlayerGui",
 	// Non-GUI tree participants.
 	Folder: "Instance",
+	// App-owned signals: `Event` / `Fire` are answered in `./instance.ts`.
+	BindableEvent: "Instance",
 	Camera: "Instance",
 	Player: "Instance",
 	ServiceProvider: "Instance",
@@ -42,6 +44,7 @@ const CLASS_PARENTS: Record<string, string> = {
 	UICorner: "UIComponent",
 	UIPadding: "UIComponent",
 	UIStroke: "UIComponent",
+	UIShadow: "UIComponent",
 	UIGradient: "UIComponent",
 	UIScale: "UIComponent",
 	UIFlexItem: "UIComponent",

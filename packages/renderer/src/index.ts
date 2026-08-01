@@ -19,10 +19,14 @@
  *   are transparent containers — never background-painted.
  * - Children are positioned relative to their parent's rect.
  * - `Visible:false` hides via CSS (the node still occupies its computed rect).
- * - Text classes paint their `Text` in an aligned overlay layer; `UICorner` and
- *   `UIStroke` modifier children become border-radius / box-shadow.
- * - Image classes paint their `Image` in an `<img>` layer beneath the text.
+ * - Text classes paint their `Text` in an aligned overlay layer; `UICorner`,
+ *   `UIStroke` and `UIShadow` modifier children become border-radius and
+ *   box-shadow layers.
+ * - Image classes paint their `Image` in an `<img>` layer beneath the text, and
+ *   `ImageColor3` tints it through an SVG multiply filter.
  *   `rbxassetid://` values need a host-installed {@link setImageResolver}.
+ * - `RichText` markup is parsed into styled spans (see `./richtext.ts`); with
+ *   the flag off the same string stays literal.
  */
 
 import type { EnumItem, InputObject, LoomInstance } from "@loom-dev/runtime";
@@ -31,6 +35,7 @@ import {
 	getEventSignal,
 	getFocusedTextBox,
 	getService,
+	hasAnyEventConnection,
 	makeInputObject,
 	registerTextBoxAdapter,
 	setFocusedTextBox,
@@ -45,6 +50,7 @@ import type {
 	LayoutResult,
 	Rect,
 	SceneNode,
+	UDim,
 } from "@loom-dev/scene";
 import {
 	asBool,
@@ -53,6 +59,7 @@ import {
 	asNumber,
 	asString,
 	asUDim,
+	asUDim2,
 	asVector2,
 	childrenOf,
 	findModifier,
@@ -62,7 +69,9 @@ import {
 	getFontFace,
 	getFontName,
 	getImage,
+	getImageColor3,
 	getImageTransparency,
+	getRichText,
 	getScaleType,
 	getText,
 	getTextColor3,
@@ -76,6 +85,17 @@ import {
 	isLayerCollector,
 	participatesInLayout,
 } from "@loom-dev/scene";
+import { parseRichText } from "./richtext.ts";
+
+// The rich-text parser is part of the public surface: the react adapter has to
+// measure the *shown* text, not the markup, for AutomaticSize.
+export {
+	decodeEntities,
+	parseRichText,
+	type RichSegment,
+	type RichStyle,
+	richTextToPlain,
+} from "./richtext.ts";
 
 const ZERO_RECT: Rect = { x: 0, y: 0, width: 0, height: 0 };
 const TEXT_CLASSES = new Set(["TextLabel", "TextButton", "TextBox"]);
@@ -218,16 +238,69 @@ function applyCorner(
 	if (radius > 0) s.borderRadius = `${radius}px`;
 }
 
+/** A `UDim` resolved against a pixel basis, the Roblox way. */
+const resolveUDim = (u: UDim | undefined, basis: number): number =>
+	(u?.scale ?? 0) * basis + (u?.offset ?? 0);
+
 /** `UIStroke` -> an outset box-shadow ring (follows the corner radius). */
-function applyStroke(s: CSSStyleDeclaration, node: SceneNode): void {
+function strokeShadow(node: SceneNode): string | undefined {
 	const stroke = findModifier(node, "UIStroke");
-	if (!stroke) return;
+	if (!stroke) return undefined;
 	const color = asColor3(stroke.properties?.Color) ?? { r: 0, g: 0, b: 0 };
 	const thickness = asNumber(stroke.properties?.Thickness) ?? 1;
 	const transparency = asNumber(stroke.properties?.Transparency) ?? 0;
-	if (thickness > 0) {
-		s.boxShadow = `0 0 0 ${thickness}px ${cssColor(color, transparency)}`;
-	}
+	if (thickness <= 0) return undefined;
+	return `0 0 0 ${thickness}px ${cssColor(color, transparency)}`;
+}
+
+/**
+ * `UIShadow` -> a CSS drop shadow. Same compositing model in both engines: the
+ * shadow paints outside the parent's box, behind its background, and follows
+ * the corner radius — which is exactly what a non-inset `box-shadow` does.
+ *
+ * Two places the mapping approximates:
+ * - Roblox `Spread` is a `UDim2` (independent x and y), CSS spread is one
+ *   length. The two resolved axes are averaged; equal spread — what a shadow
+ *   normally has — is therefore exact.
+ * - `ZIndex` orders sibling `UIShadow`s against each other. Only the first
+ *   shadow child is read (`findModifier`), so there are no siblings to order.
+ */
+function dropShadow(node: SceneNode, rect: Rect): string | undefined {
+	const shadow = findModifier(node, "UIShadow");
+	if (!shadow) return undefined;
+	if (asBool(shadow.properties?.Enabled) === false) return undefined;
+	const p = shadow.properties;
+	const offset = asUDim2(p?.Offset);
+	const spread = asUDim2(p?.Spread);
+	const x = resolveUDim(offset?.x, rect.width);
+	const y = resolveUDim(offset?.y, rect.height);
+	const blur = resolveUDim(
+		asUDim(p?.BlurRadius),
+		Math.min(rect.width, rect.height),
+	);
+	const grow =
+		(resolveUDim(spread?.x, rect.width) + resolveUDim(spread?.y, rect.height)) /
+		2;
+	const color = asColor3(p?.Color) ?? { r: 0, g: 0, b: 0 };
+	const transparency = asNumber(p?.Transparency) ?? 0;
+	if (transparency >= 1) return undefined;
+	return `${x}px ${y}px ${Math.max(0, blur)}px ${grow}px ${cssColor(color, transparency)}`;
+}
+
+/**
+ * The stroke ring and the drop shadow share one CSS property, so they are
+ * emitted together. Ring first: CSS paints earlier shadows on top, and the
+ * stroke hugs the border box while the shadow spreads out behind it.
+ */
+function applyShadows(
+	s: CSSStyleDeclaration,
+	node: SceneNode,
+	rect: Rect,
+): void {
+	const layers = [strokeShadow(node), dropShadow(node, rect)].filter(
+		(layer): layer is string => layer !== undefined,
+	);
+	if (layers.length > 0) s.boxShadow = layers.join(", ");
 }
 
 /**
@@ -247,6 +320,25 @@ function applyGradient(s: CSSStyleDeclaration, node: SceneNode): void {
 		.join(", ");
 	s.backgroundImage = `linear-gradient(${90 + rotation}deg, ${stops})`;
 }
+
+/**
+ * The input events a GuiObject can hear from the pointer. A node with a live
+ * listener on any of them is hit-testable, `Active` or not — see the patch in
+ * `patchNode`.
+ */
+const POINTER_EVENT_NAMES: readonly string[] = [
+	"InputBegan",
+	"InputChanged",
+	"InputEnded",
+	"MouseEnter",
+	"MouseLeave",
+	"MouseMoved",
+	"MouseButton1Click",
+	"MouseButton1Down",
+	"MouseButton1Up",
+	"MouseButton2Click",
+	"Activated",
+];
 
 /** Roblox classes that always sink pointer input regardless of `Active`. */
 const POINTER_SINK_CLASSES = new Set([
@@ -308,6 +400,12 @@ function applyBoxStyle(
 	if (node.className === "ScrollingFrame" || getClipsDescendants(node)) {
 		s.overflow = "hidden";
 	}
+	if (node.className === "ScrollingFrame") {
+		// The session scrolls this frame from the touch gesture itself (there is
+		// no wheel on a phone); the browser must not consume the drag as a page
+		// pan first. Scoped to the frame so panning works everywhere else.
+		s.touchAction = "none";
+	}
 	if (!isRoot && !isLayerCollector(node.className)) {
 		s.background = cssColor(
 			getBackgroundColor3(node),
@@ -315,7 +413,7 @@ function applyBoxStyle(
 		);
 		applyGradient(s, node);
 		applyCorner(s, node, rect);
-		applyStroke(s, node);
+		applyShadows(s, node, rect);
 		// CanvasGroup.GroupTransparency fades the whole subtree as one — CSS
 		// opacity on the container div is exactly that compositing model.
 		const groupTransparency = asNumber(node.properties?.GroupTransparency);
@@ -391,9 +489,100 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	inner.style.width = "100%";
 	inner.style.textAlign = xAlignText(getTextXAlignment(node));
 	inner.style.whiteSpace = getTextWrapped(node) ? "normal" : "nowrap";
-	inner.textContent = text;
+	if (getRichText(node)) {
+		paintRichText(inner, text, node);
+	} else {
+		// `RichText = false` means the markup is not markup: `<b>` is two angle
+		// brackets and a letter, and `textContent` is what shows it as such.
+		inner.textContent = text;
+	}
 	layer.appendChild(inner);
 	return layer;
+}
+
+/**
+ * Paint `RichText` markup into `inner` as one `<span>` per styled run.
+ *
+ * Every run inherits the layer's own font and color and overrides only what its
+ * tags named, so `<font size="20">` inside a 14px label changes the size and
+ * nothing else — the same compositing the engine does.
+ */
+function paintRichText(
+	inner: HTMLElement,
+	text: string,
+	node: SceneNode,
+): void {
+	const baseColor = getTextColor3(node);
+	const baseTransparency = getTextTransparency(node);
+	for (const segment of parseRichText(text)) {
+		if (segment.kind === "break") {
+			inner.appendChild(document.createElement("br"));
+			continue;
+		}
+		const { style } = segment;
+		const span = document.createElement("span");
+		const s = span.style;
+		if (style.bold) s.fontWeight = "bold";
+		if (style.weight !== undefined) s.fontWeight = style.weight;
+		if (style.italic) s.fontStyle = "italic";
+		// One `text-decoration`, so an underlined strikethrough keeps both.
+		const lines = [
+			style.underline ? "underline" : "",
+			style.strike ? "line-through" : "",
+		]
+			.filter(Boolean)
+			.join(" ");
+		if (lines !== "") s.textDecoration = lines;
+		if (style.uppercase) s.textTransform = "uppercase";
+		if (style.smallcaps) s.fontVariant = "small-caps";
+		if (style.size !== undefined) s.fontSize = `${style.size}px`;
+		// `family` (a font asset URI) wins over the legacy `face` name, matching
+		// how `FontFace` wins over `Font` on the instance itself.
+		if (style.family !== undefined) {
+			s.fontFamily = fontFamily(familyName(style.family));
+		} else if (style.face !== undefined) {
+			s.fontFamily = fontFamily(style.face);
+			if (style.weight === undefined && !style.bold) {
+				s.fontWeight = fontWeight(style.face);
+			}
+		}
+		// A run's own transparency replaces the label's, as in Roblox; a run that
+		// only names a color keeps whatever transparency the label had.
+		if (style.color !== undefined || style.transparency !== undefined) {
+			const transparency = style.transparency ?? baseTransparency;
+			s.color =
+				style.color !== undefined
+					? withAlpha(style.color, 1 - transparency)
+					: cssColor(baseColor, transparency);
+		}
+		span.appendChild(document.createTextNode(segment.text));
+		inner.appendChild(span);
+	}
+}
+
+/**
+ * A CSS color plus an alpha. `color-mix` would be the tidy way, but `opacity`
+ * on the span would fade its background too — this only ever touches the text.
+ */
+function withAlpha(color: string, alpha: number): string {
+	if (alpha >= 1) return color;
+	const hex = /^#([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(color);
+	if (hex) {
+		const digits = hex[1] ?? "";
+		const full =
+			digits.length === 3
+				? digits
+						.split("")
+						.map((d) => d + d)
+						.join("")
+				: digits;
+		const r = Number.parseInt(full.slice(0, 2), 16);
+		const g = Number.parseInt(full.slice(2, 4), 16);
+		const b = Number.parseInt(full.slice(4, 6), 16);
+		return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+	}
+	const rgb = /^rgb\((.+)\)$/i.exec(color);
+	return rgb ? `rgba(${rgb[1]}, ${alpha})` : color;
 }
 
 /**
@@ -413,6 +602,7 @@ function textLayerKey(node: SceneNode): string {
 		getTextSize(node),
 		cssColor(getTextColor3(node), getTextTransparency(node)),
 		getTextWrapped(node) ? 1 : 0,
+		getRichText(node) ? 1 : 0,
 		getTextXAlignment(node),
 		getTextYAlignment(node),
 		getZIndex(node),
@@ -487,6 +677,72 @@ function resolveImage(image: string): Promise<string | undefined> {
 	return run;
 }
 
+// --- ImageColor3 tinting -----------------------------------------------------
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * Filter ids by tint, keyed on the 8-bit hex so a palette of a dozen icon
+ * colors mints a dozen filters no matter how many elements use them. Filters
+ * are never removed: they are three attributes each, shared document-wide, and
+ * a scene that used a color once is likely to use it again.
+ */
+const tintFilterIds = new Map<string, string>();
+let tintDefs: SVGSVGElement | undefined;
+
+const hex2 = (channel: number): string =>
+	Math.round(Math.min(1, Math.max(0, channel)) * 255)
+		.toString(16)
+		.padStart(2, "0");
+
+/**
+ * The SVG filter that multiplies an image by `color`, minted on first use.
+ *
+ * Roblox `ImageColor3` multiplies the image per channel and leaves alpha alone,
+ * which is exactly one `feColorMatrix` — so this is the real operation, not an
+ * approximation, and it holds for a full-color image as much as for a
+ * monochrome glyph. (A `mask-image` + solid background would only match the
+ * glyph case: it throws the image's own RGB away.)
+ *
+ * `color-interpolation-filters="sRGB"` is load-bearing. SVG filters default to
+ * linearRGB, where the same multiply darkens differently than the engine's —
+ * a mid-grey tint would come out visibly wrong.
+ */
+function tintFilterId(color: Color3): string {
+	const hex = `${hex2(color.r)}${hex2(color.g)}${hex2(color.b)}`;
+	const cached = tintFilterIds.get(hex);
+	if (cached !== undefined) return cached;
+
+	const id = `loom-tint-${hex}`;
+	if (!tintDefs) {
+		tintDefs = document.createElementNS(SVG_NS, "svg");
+		tintDefs.setAttribute("aria-hidden", "true");
+		// Out of flow and zero-sized: this element only carries <filter> defs.
+		tintDefs.style.position = "absolute";
+		tintDefs.style.width = "0";
+		tintDefs.style.height = "0";
+		tintDefs.style.overflow = "hidden";
+		document.body.appendChild(tintDefs);
+	}
+	const filter = document.createElementNS(SVG_NS, "filter");
+	filter.setAttribute("id", id);
+	filter.setAttribute("color-interpolation-filters", "sRGB");
+	const matrix = document.createElementNS(SVG_NS, "feColorMatrix");
+	matrix.setAttribute("type", "matrix");
+	matrix.setAttribute(
+		"values",
+		`${color.r} 0 0 0 0 0 ${color.g} 0 0 0 0 0 ${color.b} 0 0 0 0 0 1 0`,
+	);
+	filter.appendChild(matrix);
+	tintDefs.appendChild(filter);
+	tintFilterIds.set(hex, id);
+	return id;
+}
+
+/** Whether a tint would change anything: white multiplies to the identity. */
+const isTinted = (color: Color3): boolean =>
+	color.r !== 1 || color.g !== 1 || color.b !== 1;
+
 /** `ScaleType` → the `object-fit` that reproduces it. */
 function objectFit(scaleType: string): string {
 	if (scaleType === "Fit") return "contain";
@@ -498,7 +754,7 @@ function objectFit(scaleType: string): string {
 /**
  * Build an image class's `Image` layer, or `undefined` when there is none.
  *
- * Deferred (documented): `Slice`/`Tile` scale types, `ImageColor3` tinting, and
+ * Deferred (documented): `Slice`/`Tile` scale types and
  * `ImageRectOffset`/`ImageRectSize` sprite windows — each needs more than one
  * `<img>` and a fit.
  */
@@ -520,6 +776,8 @@ function createImageLayer(node: SceneNode): HTMLImageElement | undefined {
 	s.zIndex = String(getZIndex(node)); // shares the unified ZIndex space
 	const transparency = getImageTransparency(node);
 	if (transparency > 0) s.opacity = String(Math.max(0, 1 - transparency));
+	const tint = getImageColor3(node);
+	if (isTinted(tint)) s.filter = `url(#${tintFilterId(tint)})`;
 
 	const known = directImageUrl(image) ?? resolvedImages.get(image);
 	if (known !== undefined) {
@@ -542,11 +800,13 @@ function imageLayerKey(node: SceneNode): string {
 	if (!IMAGE_CLASSES.has(node.className)) return "";
 	const image = getImage(node);
 	if (image === undefined || image === "") return "";
+	const tint = getImageColor3(node);
 	return [
 		image,
 		getScaleType(node),
 		getImageTransparency(node),
 		getZIndex(node),
+		`${tint.r},${tint.g},${tint.b}`,
 	].join(" ");
 }
 
@@ -988,6 +1248,23 @@ export function createDomSession(
 			entry.styleKey = styleKey;
 		}
 
+		// Hit-testability, decided against the *live* instance and therefore after
+		// the cached style string. Roblox raises a GuiObject's own input events
+		// whether or not it is `Active` — `Active` governs whether the input is
+		// *sunk*, not whether the object hears it — so a plain Frame that listens
+		// for `InputBegan` (a slider handle, say) must be reachable by the pointer.
+		// Frames with no listeners stay click-through, which is what keeps a
+		// transparent full-screen positioning layer from swallowing the clicks
+		// meant for what is underneath it.
+		const pointerEvents =
+			sinksPointerInput(node) ||
+			hasAnyEventConnection(options.resolveInstance(id), POINTER_EVENT_NAMES)
+				? "auto"
+				: "none";
+		if (el.style.pointerEvents !== pointerEvents) {
+			el.style.pointerEvents = pointerEvents;
+		}
+
 		const imageKey = imageLayerKey(node);
 		if (imageKey !== entry.imageKey) {
 			entry.imageEl?.remove();
@@ -1054,10 +1331,32 @@ export function createDomSession(
 
 	// --- input delegation ------------------------------------------------------
 
+	/**
+	 * On-screen pixels per layout pixel.
+	 *
+	 * The host may scale the whole mount down to fit a small screen (that is how
+	 * the preview keeps a desktop-sized viewport on a phone instead of
+	 * overflowing — see `@loom-dev/preview`'s `viewport.ts`). Rects, and
+	 * therefore everything Roblox reports as a position, live in the mount's
+	 * *untransformed* layout space, while pointer events arrive in on-screen
+	 * pixels. `getBoundingClientRect()` reflects CSS transforms and `offsetWidth`
+	 * does not, so their ratio is exactly the factor between the two — with no
+	 * knowledge of who applied the transform or how.
+	 */
+	function mountScale(renderedWidth: number): number {
+		const layoutWidth = mount.offsetWidth;
+		if (!(layoutWidth > 0) || !(renderedWidth > 0)) return 1;
+		return renderedWidth / layoutWidth;
+	}
+
 	/** Pointer position relative to the mount's top-left (= layout rect space). */
 	function relPoint(e: MouseEvent): { x: number; y: number } {
 		const bounds = mount.getBoundingClientRect();
-		return { x: e.clientX - bounds.left, y: e.clientY - bounds.top };
+		const scale = mountScale(bounds.width);
+		return {
+			x: (e.clientX - bounds.left) / scale,
+			y: (e.clientY - bounds.top) / scale,
+		};
 	}
 
 	/** Instance chain from the event target upward (innermost first). */
@@ -1118,6 +1417,7 @@ export function createDomSession(
 		}
 		getEventSignal(userInputService(), "InputBegan").fire(input, false);
 		pressed = chain[0];
+		beginDragScroll(e, chain);
 	}
 
 	function onPointerUp(e: PointerEvent): void {
@@ -1127,10 +1427,14 @@ export function createDomSession(
 			getEventSignal(inst, "InputEnded").fire(input);
 		}
 		// Only a primary press activates a GuiButton in Roblox; a right-click
-		// raises InputBegan/InputEnded and nothing else.
+		// raises InputBegan/InputEnded and nothing else. A touch that turned into
+		// a scroll gesture is not a press either — the finger left the control.
+		const scrolled = drag?.pointerId === e.pointerId && drag.dragged;
+		if (drag?.pointerId === e.pointerId) drag = undefined;
 		const activates =
-			input.UserInputType === Enum.UserInputType.MouseButton1 ||
-			input.UserInputType === Enum.UserInputType.Touch;
+			!scrolled &&
+			(input.UserInputType === Enum.UserInputType.MouseButton1 ||
+				input.UserInputType === Enum.UserInputType.Touch);
 		if (activates && pressed && chain.includes(pressed)) {
 			// Roblox activates the pressed control even when the press landed on a
 			// decorative child (label, icon): route to the nearest instance in the
@@ -1151,12 +1455,20 @@ export function createDomSession(
 
 	function onPointerMove(e: PointerEvent): void {
 		const { x, y } = relPoint(e);
+		dragScroll(e, x, y);
 		setMouseLocation(Vector2.new(x, y));
+		// `movementX/Y` are on-screen pixels like `clientX/Y`; Delta is reported
+		// in the same space as Position.
+		const scale = mountScale(mount.getBoundingClientRect().width);
 		const input = makeInputObject({
 			UserInputType: Enum.UserInputType.MouseMovement,
 			UserInputState: Enum.UserInputState.Change,
 			Position: Vector3.new(x, y, 0),
-			Delta: Vector3.new(e.movementX || 0, e.movementY || 0, 0),
+			Delta: Vector3.new(
+				(e.movementX || 0) / scale,
+				(e.movementY || 0) / scale,
+				0,
+			),
 		});
 		const chain = chainFromEvent(e);
 		for (const inst of chain) {
@@ -1191,23 +1503,21 @@ export function createDomSession(
 		updateHover([], x, y);
 	}
 
-	// --- wheel → ScrollingFrame.CanvasPosition -----------------------------------
+	// --- wheel / touch drag → ScrollingFrame.CanvasPosition ----------------------
 
 	const clamp = (v: number, min: number, max: number): number =>
 		Math.min(max, Math.max(min, v));
 
 	/**
-	 * Delegated wheel scrolling: the nearest ScrollingFrame ancestor of the
-	 * event target consumes the delta, clamped per axis to `[0, canvas-window]`
-	 * (metrics come from the world's post-layout feedback). The write goes
-	 * through the instance proxy, so `GetPropertyChangedSignal("CanvasPosition")`
-	 * listeners (lattice's thumb/metrics) fire and the next flush moves the
-	 * canvas wrapper. `preventDefault` only when scroll was actually consumed.
+	 * Move `frame`'s canvas by (dx, dy) layout pixels, clamped per axis to
+	 * `[0, canvas-window]` (metrics come from the world's post-layout feedback)
+	 * and restricted to `ScrollingDirection`. The write goes through the instance
+	 * proxy, so `GetPropertyChangedSignal("CanvasPosition")` listeners (lattice's
+	 * thumb/metrics) fire and the next flush moves the canvas wrapper. Returns
+	 * whether anything actually moved.
 	 */
-	function onWheel(e: WheelEvent): void {
-		const chain = chainFromEvent(e);
-		const frame = chain.find((inst) => inst.IsA("ScrollingFrame"));
-		if (!frame || frame.ScrollingEnabled === false) return;
+	function scrollFrameBy(frame: LoomInstance, dx: number, dy: number): boolean {
+		if (frame.ScrollingEnabled === false) return false;
 		const windowSize = frame.AbsoluteWindowSize;
 		const canvasSize = frame.AbsoluteCanvasSize;
 		const current = frame.CanvasPosition;
@@ -1216,7 +1526,7 @@ export function createDomSession(
 			!(canvasSize instanceof Vector2) ||
 			!(current instanceof Vector2)
 		) {
-			return;
+			return false;
 		}
 		// Roblox default ScrollingDirection is XY; X/Y restrict to one axis.
 		const direction =
@@ -1224,22 +1534,86 @@ export function createDomSession(
 		const nextX =
 			direction === "Y"
 				? current.X
-				: clamp(
-						current.X + e.deltaX,
-						0,
-						Math.max(0, canvasSize.X - windowSize.X),
-					);
+				: clamp(current.X + dx, 0, Math.max(0, canvasSize.X - windowSize.X));
 		const nextY =
 			direction === "X"
 				? current.Y
-				: clamp(
-						current.Y + e.deltaY,
-						0,
-						Math.max(0, canvasSize.Y - windowSize.Y),
-					);
-		if (nextX === current.X && nextY === current.Y) return;
+				: clamp(current.Y + dy, 0, Math.max(0, canvasSize.Y - windowSize.Y));
+		if (nextX === current.X && nextY === current.Y) return false;
 		frame.CanvasPosition = Vector2.new(nextX, nextY);
-		e.preventDefault();
+		return true;
+	}
+
+	/**
+	 * Delegated wheel scrolling: the nearest ScrollingFrame ancestor of the event
+	 * target consumes the delta. `preventDefault` only when scroll was actually
+	 * consumed. Wheel deltas are on-screen pixels, canvas positions are layout
+	 * pixels — hence the scale division, same as pointer coordinates.
+	 */
+	function onWheel(e: WheelEvent): void {
+		const frame = chainFromEvent(e).find((inst) => inst.IsA("ScrollingFrame"));
+		if (!frame) return;
+		const scale = mountScale(mount.getBoundingClientRect().width);
+		if (scrollFrameBy(frame, e.deltaX / scale, e.deltaY / scale)) {
+			e.preventDefault();
+		}
+	}
+
+	/**
+	 * Touch drag scrolling — the mobile counterpart of the wheel: there is no
+	 * wheel on a phone, so without this a ScrollingFrame simply cannot be
+	 * scrolled. The frame's element carries `touch-action: none` (see
+	 * {@link applyNodeStyle}), so the browser hands the gesture over instead of
+	 * panning the page with it; everywhere else in the scene native panning is
+	 * left alone, so a preview embedded in a docs page never traps the reader.
+	 *
+	 * The canvas follows the finger (drag up = content up = canvas position
+	 * down), and once the gesture passes {@link DRAG_SLOP} it stops being a tap:
+	 * `dragged` suppresses the `Activated`/`MouseButton1Click` that pointerup
+	 * would otherwise fire on whatever the finger started on.
+	 */
+	const DRAG_SLOP = 8;
+	interface DragScroll {
+		pointerId: number;
+		frame: LoomInstance;
+		/** Where the gesture started — the slop is measured from here, not per move. */
+		startX: number;
+		startY: number;
+		lastX: number;
+		lastY: number;
+		dragged: boolean;
+	}
+	let drag: DragScroll | undefined;
+
+	function beginDragScroll(e: PointerEvent, chain: LoomInstance[]): void {
+		if (e.pointerType !== "touch") return;
+		const frame = chain.find((inst) => inst.IsA("ScrollingFrame"));
+		if (!frame || frame.ScrollingEnabled === false) return;
+		const { x, y } = relPoint(e);
+		drag = {
+			pointerId: e.pointerId,
+			frame,
+			startX: x,
+			startY: y,
+			lastX: x,
+			lastY: y,
+			dragged: false,
+		};
+	}
+
+	function dragScroll(e: PointerEvent, x: number, y: number): void {
+		if (!drag || drag.pointerId !== e.pointerId) return;
+		const dx = drag.lastX - x;
+		const dy = drag.lastY - y;
+		drag.lastX = x;
+		drag.lastY = y;
+		if (
+			!drag.dragged &&
+			Math.hypot(x - drag.startX, y - drag.startY) >= DRAG_SLOP
+		) {
+			drag.dragged = true;
+		}
+		scrollFrameBy(drag.frame, dx, dy);
 	}
 
 	// --- keyboard delegation ---------------------------------------------------
@@ -1305,8 +1679,20 @@ export function createDomSession(
 		e.preventDefault();
 	}
 
+	/** A cancelled gesture (browser took it over, finger left the surface). */
+	function onPointerCancel(e: PointerEvent): void {
+		if (drag?.pointerId === e.pointerId) drag = undefined;
+		if (pressed) pressed = undefined;
+	}
+
+	// Roblox has no double-tap zoom; without this every tap on a phone waits
+	// ~300ms for a second one before the scene sees it. Panning and pinch-zoom
+	// stay native (a preview embedded in a docs page must not trap the reader) —
+	// only ScrollingFrames opt out, so their drag scrolls the canvas instead.
+	mount.style.touchAction = "manipulation";
 	mount.addEventListener("contextmenu", onContextMenu);
 	mount.addEventListener("pointerdown", onPointerDown);
+	mount.addEventListener("pointercancel", onPointerCancel);
 	mount.addEventListener("pointerup", onPointerUp);
 	mount.addEventListener("pointermove", onPointerMove);
 	mount.addEventListener("pointerover", onPointerOver);
@@ -1327,6 +1713,7 @@ export function createDomSession(
 		for (const entry of entries.values()) removeEntry(entry);
 		entries.clear();
 		pressed = undefined;
+		drag = undefined;
 		hoverChain = [];
 	}
 
@@ -1345,6 +1732,7 @@ export function createDomSession(
 		dispose(): void {
 			mount.removeEventListener("contextmenu", onContextMenu);
 			mount.removeEventListener("pointerdown", onPointerDown);
+			mount.removeEventListener("pointercancel", onPointerCancel);
 			mount.removeEventListener("pointerup", onPointerUp);
 			mount.removeEventListener("pointermove", onPointerMove);
 			mount.removeEventListener("pointerover", onPointerOver);

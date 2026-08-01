@@ -7,7 +7,8 @@
  * direct property writes, and portal containers all share the same object.
  * Property writes mark the instance dirty so the scheduler re-flushes the world.
  */
-import { Vector2 } from "./datatypes";
+import { DEFAULTS } from "@loom-dev/scene";
+import { UDim2, Vector2 } from "./datatypes";
 import { classChain, isA } from "./registry";
 import { markDirty } from "./scheduler";
 import { LoomSignal } from "./signal";
@@ -95,25 +96,51 @@ let nextId = 0;
 const IMPLS = new WeakMap<object, InstanceImpl>();
 
 /**
+ * The `GuiObject` properties whose Roblox default is unambiguous and which app
+ * code reads back to reason about the tree — hit tests, traversals, and the
+ * geometry a drag restores. Thunks, so each read hands out its own datatype
+ * instance rather than a shared mutable one.
+ *
+ * The numbers come from `@loom-dev/scene`'s `DEFAULTS`, which the renderer and
+ * the layout engine already paint by: a second copy here could disagree with
+ * what is on screen, which is the one thing a default must never do.
+ */
+const GUI_OBJECT_DEFAULTS: Readonly<Record<string, () => unknown>> = {
+	Visible: () => DEFAULTS.visible,
+	ZIndex: () => DEFAULTS.zIndex,
+	BackgroundTransparency: () => DEFAULTS.backgroundTransparency,
+	Rotation: () => 0,
+	LayoutOrder: () => 0,
+	Active: () => false,
+	ClipsDescendants: () => false,
+	AnchorPoint: () => Vector2.zero,
+	Position: () => new UDim2(),
+	Size: () => new UDim2(),
+};
+
+/**
  * Class-aware read defaults for properties app code reads before ever writing.
  * Roblox reflection always yields a typed value; the props store starts empty,
- * so these keep `inst.Rotation += d` (Spinner motion) and
- * `viewport.CanvasPosition.Y` (lattice ScrollArea metrics) from seeing
+ * so these keep `inst.Rotation += d` (Spinner motion),
+ * `viewport.CanvasPosition.Y` (lattice ScrollArea metrics) and
+ * `descendant.Visible && …` (a drag's droppable hit test) from seeing
  * `undefined`. Only properties with a known read-before-write consumer are
  * listed — everything else stays `undefined` like before.
  */
 function classDefaultProperty(className: string, key: string): unknown {
 	switch (key) {
-		case "Rotation":
-			return isA(className, "GuiObject") ? 0 : undefined;
 		case "GroupTransparency":
 			return isA(className, "CanvasGroup") ? 0 : undefined;
 		case "CanvasPosition":
 		case "AbsoluteWindowSize":
 		case "AbsoluteCanvasSize":
 			return isA(className, "ScrollingFrame") ? Vector2.zero : undefined;
-		default:
-			return undefined;
+		default: {
+			const fallback = GUI_OBJECT_DEFAULTS[key];
+			return fallback !== undefined && isA(className, "GuiObject")
+				? fallback()
+				: undefined;
+		}
 	}
 }
 
@@ -510,6 +537,19 @@ function getTrap(impl: InstanceImpl, key: string | symbol): unknown {
 	if (TEXTBOX_METHOD_NAMES.has(key) && isA(impl.className, "TextBox")) {
 		return makeTextBoxMethod(impl, key);
 	}
+	// `BindableEvent` is the one Roblox class whose whole purpose is a signal an
+	// app owns rather than one the engine raises, and roblox-ts UI code leans on
+	// it for exactly that (a `useRef(new Instance("BindableEvent"))` that a label
+	// fires and an input listens to). Class-scoped, not another `EVENT_NAMES`
+	// entry: `Event` and `Fire` are common enough words that every other class
+	// would start answering for them.
+	if (isA(impl.className, "BindableEvent")) {
+		if (key === "Event") return getOrCreateEventSignal(impl, "Event");
+		if (key === "Fire") {
+			return (...args: unknown[]) =>
+				getOrCreateEventSignal(impl, "Event").fire(...args);
+		}
+	}
 	const classMethod = findClassMethod(impl.className, key);
 	if (classMethod) {
 		return (...args: unknown[]) =>
@@ -584,6 +624,27 @@ export function getInternalId(inst: LoomInstance): string {
 	const impl = IMPLS.get(inst);
 	if (!impl) throw new Error("getInternalId: value is not a LoomInstance");
 	return impl.id;
+}
+
+/**
+ * Whether the instance has a live listener on any of `names`, *without*
+ * creating the signals — the point being to ask cheaply, per node, per frame.
+ *
+ * The renderer uses it to decide hit-testing: Roblox raises a GuiObject's own
+ * input events whether or not it is `Active` (`Active` governs sinking), so an
+ * element the app listens on has to be reachable by the pointer even when it
+ * would otherwise be click-through.
+ */
+export function hasAnyEventConnection(
+	inst: LoomInstance | undefined,
+	names: readonly string[],
+): boolean {
+	const impl = inst === undefined ? undefined : IMPLS.get(inst);
+	if (!impl) return false;
+	for (const name of names) {
+		if (impl.eventSignals.get(name)?.hasConnections) return true;
+	}
+	return false;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Vector2 } from "./datatypes";
+import { UDim2, Vector2 } from "./datatypes";
 import {
 	createInstance,
 	getInternalId,
@@ -270,5 +270,83 @@ describe("class read defaults and feedback writes", () => {
 
 		// Feedback writes never enter the dirty set (no flush loop).
 		expect(getDirtyCount()).toBe(dirtyBefore);
+	});
+});
+
+describe("BindableEvent", () => {
+	// The one Roblox signal an app owns rather than one the engine raises.
+	// roblox-ts UI code keeps one in a ref (`useRef(new Instance("BindableEvent"))`)
+	// so a label can tell an unrelated input it was clicked — without `.Event`
+	// the consumer dies on "Cannot read properties of undefined (reading 'Connect')".
+	it("connects and fires with arguments", () => {
+		const bindable = createInstance("BindableEvent");
+		const seen: unknown[][] = [];
+		const connection = (
+			bindable.Event as unknown as LoomSignal<unknown[]>
+		).Connect((...args: unknown[]) => seen.push(args));
+
+		(bindable.Fire as (...args: unknown[]) => void)("a", 1);
+		expect(seen).toEqual([["a", 1]]);
+
+		connection.Disconnect();
+		(bindable.Fire as (...args: unknown[]) => void)("b");
+		expect(seen).toEqual([["a", 1]]);
+	});
+
+	it("hands the same signal back on every read", () => {
+		const bindable = createInstance("BindableEvent");
+		expect(bindable.Event).toBe(bindable.Event);
+	});
+
+	it("keeps `Event` and `Fire` off unrelated classes", () => {
+		// Both are ordinary enough words that answering for them everywhere would
+		// shadow a real property — a Frame's `Event` is whatever the app stored.
+		const frame = createInstance("Frame");
+		expect(frame.Event).toBeUndefined();
+		expect(frame.Fire).toBeUndefined();
+	});
+});
+
+describe("GuiObject read defaults", () => {
+	// Roblox reflection always yields a typed value. The props store starts
+	// empty, so a property nobody wrote used to read `undefined` — and app code
+	// that branches on it silently took the wrong path. A drag's droppable hit
+	// test filters on `descendant.Visible`, so every candidate was treated as
+	// hidden and nothing was ever droppable.
+	it("reports the Roblox defaults before anything is written", () => {
+		const frame = createInstance("Frame");
+		expect(frame.Visible).toBe(true);
+		expect(frame.ZIndex).toBe(1);
+		expect(frame.BackgroundTransparency).toBe(0);
+		expect(frame.Rotation).toBe(0);
+		expect(frame.LayoutOrder).toBe(0);
+		expect(frame.Active).toBe(false);
+		expect(frame.ClipsDescendants).toBe(false);
+		expect(frame.AnchorPoint).toEqual(new Vector2(0, 0));
+		expect(frame.Position).toEqual(new UDim2());
+		expect(frame.Size).toEqual(new UDim2());
+	});
+
+	it("hands out a fresh datatype per read", () => {
+		// A shared instance would let one caller's mutation leak into every other
+		// node that never set the property.
+		const frame = createInstance("Frame");
+		expect(frame.Position).not.toBe(frame.Position);
+		expect(frame.Position).toEqual(frame.Position);
+	});
+
+	it("is overridden by a written value, and reverts when cleared", () => {
+		const frame = createInstance("Frame");
+		frame.Visible = false;
+		expect(frame.Visible).toBe(false);
+		frame.Visible = undefined;
+		expect(frame.Visible).toBe(true);
+	});
+
+	it("stays off classes that have no such property", () => {
+		// A UIListLayout has no `Visible`; answering for it would invent reflection
+		// the engine does not have.
+		expect(createInstance("UIListLayout").Visible).toBeUndefined();
+		expect(createInstance("Folder").ZIndex).toBeUndefined();
 	});
 });

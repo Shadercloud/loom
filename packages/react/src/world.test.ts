@@ -39,6 +39,22 @@ function makeMount(): HTMLElement {
 	return mount;
 }
 
+/**
+ * happy-dom has no 2D canvas context, and `TextBounds` measurement needs one.
+ * A width proportional to the string keeps the assertions about *which* string
+ * was measured meaningful. Installed at import time: the adapter caches the
+ * context on first use.
+ */
+const measureStub = {
+	font: "",
+	measureText: (text: string) => ({ width: text.length * 7 }),
+};
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+	value: () => measureStub,
+	configurable: true,
+	writable: true,
+});
+
 const PointerEventCtor: typeof MouseEvent =
 	(globalThis as { PointerEvent?: typeof MouseEvent }).PointerEvent ??
 	MouseEvent;
@@ -381,5 +397,225 @@ describe("mountSync world", () => {
 		inst.ZIndex = 4;
 		flushDirtyNow();
 		expect(fires).toBe(1);
+	});
+
+	it("feeds UIListLayout AbsoluteContentSize back after flush", () => {
+		// A dropdown that sizes itself from `Change={{ AbsoluteContentSize }}`
+		// collapses to zero height without this — and everything inside it is
+		// clipped away, click targets included.
+		const rects: Record<
+			string,
+			{ x: number; y: number; width: number; height: number }
+		> = {
+			Gui: { x: 0, y: 0, width: 800, height: 600 },
+			List: { x: 0, y: 0, width: 200, height: 600 },
+			A: { x: 0, y: 0, width: 120, height: 40 },
+			B: { x: 0, y: 50, width: 160, height: 40 },
+			Hidden: { x: 0, y: 500, width: 999, height: 999 },
+		};
+		let layoutInst: LoomInstance | undefined;
+		const seen: Array<{ X: number; Y: number }> = [];
+		const root = mountSync(
+			createElement(
+				"screengui",
+				{ Name: "Gui" },
+				createElement(
+					"frame",
+					{ Name: "List" },
+					createElement("uilistlayout", {
+						Name: "Flow",
+						ref: (inst: LoomInstance | null) => {
+							if (inst) layoutInst = inst;
+						},
+						Change: {
+							AbsoluteContentSize: (inst: LoomInstance) => {
+								seen.push(inst.AbsoluteContentSize as { X: number; Y: number });
+							},
+						},
+					}),
+					createElement("frame", { Name: "A" }),
+					createElement("frame", { Name: "B" }),
+					// Roblox's list ignores hidden siblings, so this must not stretch
+					// the reported content either.
+					createElement("frame", { Name: "Hidden", Visible: false }),
+				),
+			),
+			mount,
+			{ computeLayout: makeNamedLayout(rects) },
+		);
+		roots.push(root);
+		const inst = layoutInst as LoomInstance;
+		expect(inst).toBeDefined();
+
+		// Union of A and B: widest is 160, and they span y 0..90.
+		expect((inst.AbsoluteContentSize as { X: number }).X).toBe(160);
+		expect((inst.AbsoluteContentSize as { Y: number }).Y).toBe(90);
+		expect(seen).toHaveLength(1);
+
+		// Change-gated like the scroll metrics: a re-flush with the same content
+		// must not re-fire.
+		inst.ZIndex = 2;
+		flushDirtyNow();
+		expect(seen).toHaveLength(1);
+
+		rects.B = { x: 0, y: 50, width: 160, height: 90 };
+		inst.ZIndex = 3;
+		flushDirtyNow();
+		expect(seen).toHaveLength(2);
+		expect((inst.AbsoluteContentSize as { Y: number }).Y).toBe(140);
+	});
+
+	it("measures an empty TextBox against its placeholder", () => {
+		// The renderer puts `PlaceholderText` on the real <input>, so it is what
+		// an empty box displays. Measuring "" instead collapsed an
+		// `AutomaticSize.Y` field to zero height: invisible and unclickable.
+		const measured: Array<{ x: number; y: number } | undefined> = [];
+		const computeLayout: ComputeLayout = (node, viewport) => {
+			const rects: LayoutResult["rects"] = {};
+			const walk = (n: SceneNode): void => {
+				if (n.className === "TextBox") {
+					const bounds = n.properties?.TextBounds;
+					measured.push(
+						bounds && bounds.type === "Vector2"
+							? (bounds.value as { x: number; y: number })
+							: undefined,
+					);
+				}
+				rects[n.id ?? "?"] = {
+					rect: { x: 0, y: 0, width: viewport.width, height: viewport.height },
+				};
+				for (const child of n.children ?? []) walk(child);
+			};
+			walk(node);
+			return { rects };
+		};
+		roots.push(
+			mountSync(
+				createElement(
+					"screengui",
+					null,
+					createElement("textbox", {
+						Text: "",
+						PlaceholderText: "John Doe",
+						AutomaticSize: Enum.AutomaticSize.Y,
+						TextSize: 20,
+					}),
+				),
+				mount,
+				{ computeLayout },
+			),
+		);
+		const bounds = measured.at(-1);
+		expect(bounds).toBeDefined();
+		// One line tall, and wide enough for the placeholder rather than zero.
+		expect(bounds?.y).toBe(20);
+		expect(bounds?.x).toBe("John Doe".length * 7);
+	});
+
+	it("makes a listening Frame hit-testable, Active or not", () => {
+		// Roblox raises a GuiObject's own input events whether or not it is
+		// `Active` — `Active` governs whether the input is *sunk*. A slider handle
+		// is a plain Frame with an `InputBegan` handler and no `Active`, so it has
+		// to be reachable by the pointer; a decorative Frame must stay
+		// click-through, or a transparent positioning layer swallows the clicks
+		// meant for what is underneath it.
+		const began: string[] = [];
+		roots.push(
+			mountSync(
+				createElement(
+					"screengui",
+					{ Name: "Gui" },
+					createElement("frame", {
+						Name: "Handle",
+						Event: {
+							InputBegan: (inst: LoomInstance) => {
+								began.push(String(inst.Name));
+							},
+						},
+					}),
+					createElement("frame", { Name: "Decoration" }),
+				),
+				mount,
+				{ computeLayout: makeStubLayout({ width: 100, height: 100 }) },
+			),
+		);
+		const pointerEvents = (name: string): string => {
+			const el = mount.querySelector<HTMLElement>(`[data-loom-name="${name}"]`);
+			if (!el) throw new Error(`${name} not rendered`);
+			return el.style.pointerEvents;
+		};
+		expect(pointerEvents("Handle")).toBe("auto");
+		expect(pointerEvents("Decoration")).toBe("none");
+
+		// And it really does receive the input, not merely the style.
+		const handle = mount.querySelector<HTMLElement>(
+			'[data-loom-name="Handle"]',
+		);
+		handle?.dispatchEvent(
+			new PointerEventCtor("pointerdown", {
+				bubbles: true,
+				clientX: 5,
+				clientY: 5,
+			}),
+		);
+		expect(began).toEqual(["Handle"]);
+	});
+
+	it("wraps TextWrapped text at the parent's width when X is automatic", () => {
+		// The library idiom is `Size={fromScale(0,0)} AutomaticSize={XY}` on every
+		// label, so the wrap constraint cannot be the label's own width: starting
+		// from zero it would settle at one word per line. The parent's width leaves
+		// a short label hugging its text and wraps a long one at the container.
+		const measured: Array<{ x: number; y: number }> = [];
+		// Every node lands in a 100px-wide box, so the label's parent is 100 wide.
+		const computeLayout: ComputeLayout = (node) => {
+			const rects: LayoutResult["rects"] = {};
+			const walk = (n: SceneNode): void => {
+				if (n.className === "TextLabel") {
+					const bounds = n.properties?.TextBounds;
+					if (bounds && bounds.type === "Vector2") {
+						measured.push(bounds.value as { x: number; y: number });
+					}
+				}
+				rects[n.id ?? "?"] = { rect: { x: 0, y: 0, width: 100, height: 100 } };
+				for (const child of n.children ?? []) walk(child);
+			};
+			walk(node);
+			return { rects };
+		};
+		// The stub lays every node out at 100x100, so the parent is 100 wide and
+		// the measure stub gives each character 7px: 5 words of 4 chars wrap to
+		// roughly one word per line at 100px.
+		roots.push(
+			mountSync(
+				createElement(
+					"screengui",
+					null,
+					createElement(
+						"frame",
+						{ Name: "Parent" },
+						createElement("textlabel", {
+							Name: "Wrapped",
+							Text: "aaaa bbbb cccc dddd",
+							// The deprecated alias, which is what the library sets.
+							TextWrap: true,
+							AutomaticSize: Enum.AutomaticSize.XY,
+							TextSize: 10,
+						}),
+					),
+				),
+				mount,
+				{ computeLayout },
+			),
+		);
+		// Wrapped text needs the layout that sizes its container, so the first
+		// measurement is unwrapped and the flush re-marks it; the second settles.
+		flushDirtyNow();
+		flushDirtyNow();
+		const last = measured.at(-1);
+		expect(last).toBeDefined();
+		// Wrapped: never wider than the 100px parent, and several lines tall.
+		expect(last?.x).toBeLessThanOrEqual(100);
+		expect(last?.y).toBeGreaterThan(10);
 	});
 });

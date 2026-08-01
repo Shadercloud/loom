@@ -27,6 +27,8 @@ import {
 	ColorSequence,
 	ColorSequenceKeypoint,
 	Font,
+	NumberSequence,
+	NumberSequenceKeypoint,
 	Rect,
 	TweenInfo,
 	UDim,
@@ -79,6 +81,8 @@ export function installGlobals(
 	target.Color3 = Color3;
 	target.ColorSequence = ColorSequence;
 	target.ColorSequenceKeypoint = ColorSequenceKeypoint;
+	target.NumberSequence = NumberSequence;
+	target.NumberSequenceKeypoint = NumberSequenceKeypoint;
 	target.Rect = Rect;
 	target.CFrame = CFrame;
 	target.TweenInfo = TweenInfo;

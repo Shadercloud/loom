@@ -150,6 +150,7 @@ const NON_LAYOUT = new Set<string>([
 	"UIListLayout",
 	"UIGridLayout",
 	"UIStroke",
+	"UIShadow",
 	"UIScale",
 	"UIGradient",
 	"UIPageLayout",
@@ -181,6 +182,8 @@ export const DEFAULTS = {
 	textSize: 14,
 	textTransparency: 0,
 	imageTransparency: 0,
+	/** White: `ImageColor3` multiplies the image, so white is "no tint". */
+	imageColor3: { r: 1, g: 1, b: 1 } as Color3,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -296,8 +299,14 @@ export const getTextSize = (n: SceneNode): number =>
 	DEFAULTS.textSize;
 export const getTextTransparency = (n: SceneNode): number =>
 	asNumber(props(n).TextTransparency) ?? DEFAULTS.textTransparency;
+/**
+ * `TextWrapped`, or the deprecated `TextWrap` it is an alias for. Roblox's own
+ * docs call `TextWrap` "simply an alias for `TextWrapped`", so a tree that sets
+ * only the old spelling wraps in the engine — and used to run off the edge in a
+ * loom preview, which read the new spelling alone.
+ */
 export const getTextWrapped = (n: SceneNode): boolean =>
-	asBool(props(n).TextWrapped) ?? false;
+	asBool(props(n).TextWrapped) ?? asBool(props(n).TextWrap) ?? false;
 export const getTextScaled = (n: SceneNode): boolean =>
 	asBool(props(n).TextScaled) ?? false;
 /** Enum item name, e.g. "Center"; default "Center" (Roblox TextLabel default). */
@@ -305,6 +314,9 @@ export const getTextXAlignment = (n: SceneNode): string =>
 	asEnum(props(n).TextXAlignment)?.name ?? "Center";
 export const getTextYAlignment = (n: SceneNode): string =>
 	asEnum(props(n).TextYAlignment)?.name ?? "Center";
+/** Whether `Text` is read as rich-text markup; default false (literal). */
+export const getRichText = (n: SceneNode): boolean =>
+	asBool(props(n).RichText) ?? false;
 /** Legacy `Font` enum item name, e.g. "GothamBold"; undefined when unset. */
 export const getFontName = (n: SceneNode): string | undefined =>
 	asEnum(props(n).Font)?.name;
@@ -318,6 +330,9 @@ export const getImage = (n: SceneNode): string | undefined =>
 	asString(props(n).Image);
 export const getImageTransparency = (n: SceneNode): number =>
 	asNumber(props(n).ImageTransparency) ?? DEFAULTS.imageTransparency;
+/** The tint the image is multiplied by; default white (i.e. untinted). */
+export const getImageColor3 = (n: SceneNode): Color3 =>
+	asColor3(props(n).ImageColor3) ?? DEFAULTS.imageColor3;
 /** Enum item name, e.g. "Fit"; default "Stretch" (the Roblox default). */
 export const getScaleType = (n: SceneNode): string =>
 	asEnum(props(n).ScaleType)?.name ?? "Stretch";

@@ -19,6 +19,18 @@ export class UDim {
 	static new(scale = 0, offset = 0): UDim {
 		return new UDim(scale, offset);
 	}
+	/** roblox-ts `+` operator macro. */
+	add(other: UDim): UDim {
+		return new UDim(this.Scale + other.Scale, this.Offset + other.Offset);
+	}
+	/** roblox-ts `-` operator macro. */
+	sub(other: UDim): UDim {
+		return new UDim(this.Scale - other.Scale, this.Offset - other.Offset);
+	}
+	/** Roblox `tostring`: `"0.5, 10"`. */
+	toString(): string {
+		return `${this.Scale}, ${this.Offset}`;
+	}
 }
 
 export class UDim2 {
@@ -63,6 +75,10 @@ export class UDim2 {
 			new UDim(this.Y.Scale - other.Y.Scale, this.Y.Offset - other.Y.Offset),
 		);
 	}
+	/** Roblox `tostring`: `"{0.5, 10}, {0, 20}"`. */
+	toString(): string {
+		return `{${this.X}}, {${this.Y}}`;
+	}
 }
 
 export class Vector2 {
@@ -98,6 +114,10 @@ export class Vector2 {
 			? new Vector2(this.X / other, this.Y / other)
 			: new Vector2(this.X / other.X, this.Y / other.Y);
 	}
+	/** Roblox `tostring`: `"2, 8"`. */
+	toString(): string {
+		return `${this.X}, ${this.Y}`;
+	}
 }
 
 export class Vector3 {
@@ -127,6 +147,10 @@ export class Vector3 {
 		return typeof other === "number"
 			? new Vector3(this.X * other, this.Y * other, this.Z * other)
 			: new Vector3(this.X * other.X, this.Y * other.Y, this.Z * other.Z);
+	}
+	/** Roblox `tostring`: `"1, 2, 3"`. */
+	toString(): string {
+		return `${this.X}, ${this.Y}, ${this.Z}`;
 	}
 }
 
@@ -351,6 +375,10 @@ export class Color3 {
 			this.B + (other.B - this.B) * alpha,
 		);
 	}
+	/** Roblox `tostring`: `"1, 0, 0"` — the 0..1 components, not the hex. */
+	toString(): string {
+		return `${this.R}, ${this.G}, ${this.B}`;
+	}
 }
 
 export class ColorSequenceKeypoint {
@@ -384,6 +412,114 @@ export class ColorSequence {
 	): ColorSequence {
 		return new ColorSequence(a, b);
 	}
+}
+
+export class NumberSequenceKeypoint {
+	constructor(
+		readonly Time: number,
+		readonly Value: number,
+		readonly Envelope: number = 0,
+	) {}
+}
+
+/**
+ * A Roblox `NumberSequence` (a ramp of numbers over 0..1) — `UIGradient`'s
+ * `Transparency`, `Pie`-style masks, particle curves.
+ *
+ * The Scene IR has no slot for one yet, so `toPropertyValue` still drops it and
+ * the renderer paints the un-ramped value. It exists here because the datatype
+ * has to *construct*: roblox-ts code builds these at render time, and a missing
+ * global takes the whole scene down with a `ReferenceError` long before anything
+ * could have consumed the ramp.
+ */
+export class NumberSequence {
+	readonly Keypoints: readonly NumberSequenceKeypoint[];
+	/**
+	 * Every form `NumberSequence.new` takes, since roblox-ts compiles them all to
+	 * `new NumberSequence(...)`: a keypoint list, one number (a flat ramp), or a
+	 * two-number ramp — mirroring {@link ColorSequence}.
+	 */
+	constructor(a: number | readonly NumberSequenceKeypoint[] = 0, b?: number) {
+		this.Keypoints = Array.isArray(a)
+			? (a as readonly NumberSequenceKeypoint[])
+			: [
+					new NumberSequenceKeypoint(0, a as number),
+					new NumberSequenceKeypoint(1, b ?? (a as number)),
+				];
+	}
+	/** `NumberSequence.new(n)`, `.new(n0, n1)`, or `.new(keypoints)`. */
+	static new(
+		a: number | readonly NumberSequenceKeypoint[],
+		b?: number,
+	): NumberSequence {
+		return new NumberSequence(a, b);
+	}
+}
+
+/**
+ * Roblox's `==` for the datatypes, which compare **by value**: in the engine
+ * `UDim2.new(0, 0, 0, 0) == UDim2.new(0, 0, 0, 0)` is true, because they are
+ * userdata with value semantics, not tables.
+ *
+ * That is not a detail — React's prop diff is built on `==`. A component that
+ * rebuilds `Position={UDim2.fromScale(0.5, 0.5)}` every render hands React a
+ * *new* object each time; under Roblox equality the diff sees no change and
+ * leaves the property alone, so a value written outside React (a drag moving a
+ * window, motion code on a ref) survives the next render. Compared by JS
+ * reference instead, every render re-applies the prop and overwrites it — which
+ * is precisely how a dragged window snapped back to where it started.
+ *
+ * Falls back to `Object.is` for everything else, so primitives, functions and
+ * plain objects keep their usual identity semantics.
+ */
+export function robloxEquals(a: unknown, b: unknown): boolean {
+	if (Object.is(a, b)) return true;
+	if (
+		typeof a !== "object" ||
+		typeof b !== "object" ||
+		a === null ||
+		b === null
+	)
+		return false;
+	// Different datatypes are never equal, and a datatype is never equal to a
+	// plain object — `constructor` is the cheapest form of that check.
+	if (a.constructor !== b.constructor) return false;
+	if (a instanceof UDim && b instanceof UDim)
+		return a.Scale === b.Scale && a.Offset === b.Offset;
+	if (a instanceof UDim2 && b instanceof UDim2)
+		return robloxEquals(a.X, b.X) && robloxEquals(a.Y, b.Y);
+	if (a instanceof Vector2 && b instanceof Vector2)
+		return a.X === b.X && a.Y === b.Y;
+	if (a instanceof Vector3 && b instanceof Vector3)
+		return a.X === b.X && a.Y === b.Y && a.Z === b.Z;
+	if (a instanceof Color3 && b instanceof Color3)
+		return a.R === b.R && a.G === b.G && a.B === b.B;
+	if (a instanceof Rect && b instanceof Rect)
+		return robloxEquals(a.Min, b.Min) && robloxEquals(a.Max, b.Max);
+	if (a instanceof Font && b instanceof Font)
+		return (
+			a.Family === b.Family && a.Weight === b.Weight && a.Style === b.Style
+		);
+	if (a instanceof ColorSequenceKeypoint && b instanceof ColorSequenceKeypoint)
+		return a.Time === b.Time && robloxEquals(a.Value, b.Value);
+	if (
+		a instanceof NumberSequenceKeypoint &&
+		b instanceof NumberSequenceKeypoint
+	)
+		return (
+			a.Time === b.Time && a.Value === b.Value && a.Envelope === b.Envelope
+		);
+	if (a instanceof ColorSequence && b instanceof ColorSequence)
+		return keypointsEqual(a.Keypoints, b.Keypoints);
+	if (a instanceof NumberSequence && b instanceof NumberSequence)
+		return keypointsEqual(a.Keypoints, b.Keypoints);
+	// `EnumItem`s are singletons, so `Object.is` above already settled them, and
+	// anything else (a handler table, a Roblox instance) keeps identity.
+	return false;
+}
+
+function keypointsEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+	return a.length === b.length && a.every((kp, i) => robloxEquals(kp, b[i]));
 }
 
 /**

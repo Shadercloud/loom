@@ -20,6 +20,11 @@ import {
 	type DomSession,
 	fontShorthand,
 	instanceFont,
+	parseRichText,
+	type ResolvedFont,
+	type RichSegment,
+	type RichStyle,
+	resolveFont,
 } from "@loom-dev/renderer";
 import type {
 	Color3,
@@ -41,6 +46,7 @@ import {
 	isLoomInstance,
 	markDirty,
 	moveChildBefore,
+	robloxEquals,
 	setFeedbackProperty,
 	setFlusher,
 	setHitTester,
@@ -51,6 +57,7 @@ import {
 } from "@loom-dev/runtime";
 import type { LayoutResult, Viewport } from "@loom-dev/scene";
 import {
+	asBool,
 	asEnum,
 	asUDim2,
 	childrenOf,
@@ -112,6 +119,7 @@ const CLASS_NAMES: Record<string, string> = {
 	uipadding: "UIPadding",
 	uicorner: "UICorner",
 	uistroke: "UIStroke",
+	uishadow: "UIShadow",
 	uigradient: "UIGradient",
 	uiaspectratioconstraint: "UIAspectRatioConstraint",
 	uisizeconstraint: "UISizeConstraint",
@@ -377,7 +385,9 @@ function applyProps(inst: LoomInstance, prev: Props, next: Props): void {
 	}
 	for (const [key, value] of Object.entries(next)) {
 		if (RESERVED.has(key) || isKeyedHandlerProp(key)) continue;
-		if (prev[key] !== value) applyProp(inst, key, value);
+		// Roblox `==`: a datatype rebuilt with the same components is not a
+		// change, so a value written outside React survives the next render.
+		if (!robloxEquals(prev[key], value)) applyProp(inst, key, value);
 	}
 	if (prev.Name !== next.Name) {
 		applyProp(inst, "Name", next.Name, (resolved) => {
@@ -404,6 +414,14 @@ function applyProps(inst: LoomInstance, prev: Props, next: Props): void {
 // --- encode: LoomInstance tree → Scene IR ------------------------------------
 
 const TEXT_CLASSES = new Set(["TextLabel", "TextButton", "TextBox"]);
+
+/** The layout modifiers that flow their siblings, and so report a content size. */
+const FLOW_LAYOUT_CLASSES = new Set([
+	"UIListLayout",
+	"UIGridLayout",
+	"UIPageLayout",
+	"UITableLayout",
+]);
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 function getMeasureCtx(): CanvasRenderingContext2D | null {
 	if (measureCtx === undefined) {
@@ -437,19 +455,157 @@ function measureTextBounds(inst: LoomInstance): PropertyValue | undefined {
 	const autoName = auto instanceof EnumItem ? auto.Name : undefined;
 	if (autoName !== "X" && autoName !== "Y" && autoName !== "XY")
 		return undefined;
+	// An empty TextBox displays its `PlaceholderText` — the renderer sets it on
+	// the real `<input>` — so that is what the box has to be measured against.
+	// Measuring the empty string instead collapses an `AutomaticSize.Y` input to
+	// zero height, which is unclickable as well as invisible.
 	const text = inst.Text;
-	if (typeof text !== "string" || text === "") return undefined;
+	const raw =
+		inst.ClassName === "TextBox" && text === "" ? inst.PlaceholderText : text;
+	if (typeof raw !== "string" || raw === "") return undefined;
 	const ctx = getMeasureCtx();
 	if (!ctx) return undefined;
 
 	const size = liveTextSize(inst.TextSize, inst.FontSize);
-	ctx.font = fontShorthand(instanceFont(inst), size);
-	const lines = text.split("\n");
-	let width = 0;
-	for (const line of lines) {
-		width = Math.max(width, ctx.measureText(line).width);
+	const base = instanceFont(inst);
+	// Rich text is measured as runs; plain text is the one-run case of the same
+	// walk, so both go through `measureSegments`.
+	const segments: RichSegment[] =
+		inst.RichText === true
+			? parseRichText(raw)
+			: [{ kind: "text", text: raw, style: {} }];
+	const wrapAt = wrapWidth(inst, autoName);
+	MEASURED_WRAP.set(inst, wrapAt ?? 0);
+	return prop.vector2(measureSegments(ctx, segments, base, size, wrapAt));
+}
+
+/**
+ * The width `TextWrapped` text wraps at, or `undefined` when it does not wrap.
+ * `TextWrap` is the engine's own deprecated alias for the same property.
+ *
+ * Which width depends on whether the X axis is automatic:
+ * - **Not automatic** — the object's own width. It is fixed, so it is the
+ *   constraint, and Y grows to however many lines result.
+ * - **Automatic** — the *parent's* width. The object's own width cannot be the
+ *   constraint here, because it is the thing being computed: a label written
+ *   `Size={UDim2.fromScale(0, 0)} AutomaticSize={XY} TextWrapped` would settle
+ *   at one word per line, since wrapping at its current 0 width yields a
+ *   widest-word measurement that then becomes the next constraint. Constraining
+ *   by the parent instead leaves a short label hugging its text (it never
+ *   reaches the parent's edge) and wraps a long one where the container ends,
+ *   which is what such a label does in Studio.
+ *
+ * Widths come from the previous frame's `AbsoluteSize` — the same
+ * one-frame-behind feedback the Absolute* signals ride on. The first pass
+ * measures unwrapped, the resulting layout supplies a width, and the next pass
+ * settles.
+ */
+/**
+ * The wrap width each auto-sizing wrapped text node was last measured against,
+ * so the flush can tell when a fresh layout has invalidated that measurement.
+ */
+const MEASURED_WRAP = new WeakMap<LoomInstance, number>();
+
+function wrapWidth(inst: LoomInstance, autoName: string): number | undefined {
+	if ((inst.TextWrapped ?? inst.TextWrap) !== true) return undefined;
+	const autoX = autoName === "X" || autoName === "XY";
+	const source = autoX ? inst.Parent : inst;
+	const width = (source?.AbsoluteSize as { X?: number } | undefined)?.X ?? 0;
+	return width > 0 ? width : undefined;
+}
+
+/** One rich-text run's font, its tags applied over the label's own. */
+function runFont(style: RichStyle, base: ResolvedFont): ResolvedFont {
+	const italic = style.italic === true || base.italic;
+	const weight = style.weight ?? (style.bold === true ? "700" : undefined);
+	if (style.family !== undefined) {
+		// A `family` URI carries its own metrics; `resolveFont` reads it the same
+		// way `FontFace` on the instance is read.
+		const face = resolveFont(undefined, {
+			family: style.family,
+			weight: Number(weight ?? base.weight),
+			style: italic ? "Italic" : "Normal",
+		});
+		return face;
 	}
-	return prop.vector2({ x: Math.ceil(width), y: lines.length * size });
+	const named =
+		style.face !== undefined ? resolveFont(style.face, undefined) : base;
+	return {
+		family: named.family,
+		weight: weight ?? named.weight,
+		italic,
+	};
+}
+
+/**
+ * `TextBounds` for a text node: every run measured in the font its own tags ask
+ * for, so a `<b>` or `<font size="24">` widens the line the way the engine's
+ * shaper would. Measuring the whole string in the base font instead would
+ * under-measure and clip the label.
+ *
+ * With `wrapAt` set the runs are laid into lines greedily at word boundaries,
+ * which is what `TextWrapped` asks for; without it each `<br/>` or newline is
+ * the only line break. Line height follows the tallest run on each line,
+ * matching how Roblox grows a line to its largest glyph.
+ */
+function measureSegments(
+	ctx: CanvasRenderingContext2D,
+	segments: readonly RichSegment[],
+	base: ResolvedFont,
+	baseSize: number,
+	wrapAt?: number,
+): { x: number; y: number } {
+	let width = 0;
+	let height = 0;
+	let lineWidth = 0;
+	let lineHeight = baseSize;
+	const endLine = (): void => {
+		width = Math.max(width, lineWidth);
+		height += lineHeight;
+		lineWidth = 0;
+		lineHeight = baseSize;
+	};
+	/** Add one unbreakable piece, wrapping first if it no longer fits. */
+	const push = (piece: string, size: number): void => {
+		if (piece === "") return;
+		const pieceWidth = ctx.measureText(piece).width;
+		if (
+			wrapAt !== undefined &&
+			lineWidth > 0 &&
+			lineWidth + pieceWidth > wrapAt
+		) {
+			// A run of spaces that would overflow is dropped rather than carried to
+			// the start of the next line, as every text shaper does.
+			endLine();
+			if (piece.trim() === "") return;
+		}
+		lineWidth += pieceWidth;
+		lineHeight = Math.max(lineHeight, size);
+	};
+
+	for (const segment of segments) {
+		if (segment.kind === "break") {
+			endLine();
+			continue;
+		}
+		const size = segment.style.size ?? baseSize;
+		ctx.font = fontShorthand(runFont(segment.style, base), size);
+		// A literal newline inside a run breaks the line just like `<br/>`.
+		const parts = segment.text.split("\n");
+		for (let i = 0; i < parts.length; i++) {
+			if (i > 0) endLine();
+			const part = parts[i] ?? "";
+			if (wrapAt === undefined) {
+				push(part, size);
+				continue;
+			}
+			// Split *keeping* the whitespace, so the gaps between words are measured
+			// rather than assumed.
+			for (const piece of part.split(/(\s+)/)) push(piece, size);
+		}
+	}
+	endLine();
+	return { x: Math.ceil(width), y: height };
 }
 
 function encodeInstance(
@@ -743,6 +899,7 @@ class WorldImpl implements World {
 			// ScrollingFrame metrics feedback (AbsoluteWindowSize /
 			// AbsoluteCanvasSize) — change-gated writes, no dirty re-mark.
 			this.applyScrollMetrics(scene, layout);
+			this.remeasureWrappedText();
 		} catch (err) {
 			// A malformed scene or DOM error must never escape the commit phase;
 			// degrade to a logged, contained failure.
@@ -768,6 +925,7 @@ class WorldImpl implements World {
 	 */
 	private applyScrollMetrics(node: SceneNode, layout: LayoutResult): void {
 		const rect = node.id ? layout.rects[node.id]?.rect : undefined;
+		this.applyContentSize(node, layout);
 		if (node.className === "ScrollingFrame" && node.id && rect) {
 			const inst = this.byId.get(node.id);
 			if (inst) {
@@ -815,6 +973,74 @@ class WorldImpl implements World {
 		for (const child of childrenOf(node)) {
 			this.applyScrollMetrics(child, layout);
 		}
+	}
+
+	/**
+	 * Wrapped text is measured against a width the layout has not produced yet —
+	 * the container it wraps inside is only sized once this pass has run. So the
+	 * first measurement of a node is unwrapped, and this re-marks it dirty once
+	 * the width is known.
+	 *
+	 * It converges rather than looping: the second measurement wraps at the width
+	 * the layout just reported, and unless that width itself changes the recorded
+	 * value now matches and nothing is marked again. The flush-depth guard above
+	 * bounds it either way.
+	 */
+	private remeasureWrappedText(): void {
+		for (const inst of this.byId.values()) {
+			if (!TEXT_CLASSES.has(inst.ClassName)) continue;
+			const auto = inst.AutomaticSize;
+			const autoName = auto instanceof EnumItem ? auto.Name : undefined;
+			if (autoName === undefined || autoName === "None") continue;
+			const recorded = MEASURED_WRAP.get(inst);
+			if (recorded === undefined) continue;
+			if ((wrapWidth(inst, autoName) ?? 0) !== recorded) markDirty(inst);
+		}
+	}
+
+	/**
+	 * `UIListLayout`/`UIGridLayout`'s `AbsoluteContentSize`: the extent of what
+	 * the layout actually laid out, which is the union bounding box of the
+	 * flowed children — the same quantity the engine measured to place them.
+	 *
+	 * The layout modifier gets no rect of its own (it does not participate in
+	 * layout), so the value is derived from the *parent's* children here rather
+	 * than emitted per node. `Visible = false` children are excluded, matching
+	 * the engine: they take neither a slot nor a gap, so they must not stretch
+	 * the reported content either.
+	 *
+	 * This is a real dependency, not a diagnostic. A dropdown that sizes itself
+	 * from `Change={{ AbsoluteContentSize }}` collapses to zero height without
+	 * it, and everything inside is clipped away — including the click targets.
+	 */
+	private applyContentSize(node: SceneNode, layout: LayoutResult): void {
+		const flow = childrenOf(node).find((child) =>
+			FLOW_LAYOUT_CLASSES.has(child.className),
+		);
+		if (!flow?.id) return;
+		const inst = this.byId.get(flow.id);
+		if (!inst) return;
+
+		let minX = Number.POSITIVE_INFINITY;
+		let minY = Number.POSITIVE_INFINITY;
+		let maxX = Number.NEGATIVE_INFINITY;
+		let maxY = Number.NEGATIVE_INFINITY;
+		for (const child of childrenOf(node)) {
+			if (!participatesInLayout(child.className) || !child.id) continue;
+			if (asBool(child.properties?.Visible) === false) continue;
+			const childRect = layout.rects[child.id]?.rect;
+			if (!childRect) continue;
+			minX = Math.min(minX, childRect.x);
+			minY = Math.min(minY, childRect.y);
+			maxX = Math.max(maxX, childRect.x + childRect.width);
+			maxY = Math.max(maxY, childRect.y + childRect.height);
+		}
+		const empty = minX === Number.POSITIVE_INFINITY;
+		setFeedbackProperty(
+			inst,
+			"AbsoluteContentSize",
+			empty ? Vector2.zero : Vector2.new(maxX - minX, maxY - minY),
+		);
 	}
 
 	dispose(): void {
@@ -1248,6 +1474,8 @@ export interface UIListLayoutProps {
 	 */
 	HorizontalFlex?: Bindable<EnumItem<"UIFlexAlignment">>;
 	VerticalFlex?: Bindable<EnumItem<"UIFlexAlignment">>;
+	/** Break onto a new line when an item no longer fits (CSS `flex-wrap`). */
+	Wraps?: Bindable<boolean>;
 	SortOrder?: Bindable<EnumItem<"SortOrder">>;
 	Padding?: Bindable<UDim>;
 	key?: Key;
@@ -1305,6 +1533,21 @@ export interface UIStrokeProps {
 	key?: Key;
 }
 
+/** `UIShadow` props — the drop shadow Roblox paints under the parent. */
+export interface UIShadowProps {
+	Color?: Bindable<Color3>;
+	/** Blur, as a UDim against the parent's shorter side. */
+	BlurRadius?: Bindable<UDim>;
+	/** Moves the shadow relative to the parent, per axis. */
+	Offset?: Bindable<UDim2>;
+	/** Grows or shrinks the shadow relative to the parent, per axis. */
+	Spread?: Bindable<UDim2>;
+	Transparency?: Bindable<number>;
+	Enabled?: Bindable<boolean>;
+	ZIndex?: Bindable<number>;
+	key?: Key;
+}
+
 /** `UIScale` props. */
 export interface UIScaleProps {
 	Scale?: Bindable<number>;
@@ -1351,6 +1594,7 @@ declare global {
 			uisizeconstraint: UISizeConstraintProps;
 			uicorner: UICornerProps;
 			uistroke: UIStrokeProps;
+			uishadow: UIShadowProps;
 			uiscale: UIScaleProps;
 			uiflexitem: UIFlexItemProps;
 			uigradient: UIGradientProps;

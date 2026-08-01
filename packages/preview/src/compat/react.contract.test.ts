@@ -259,6 +259,24 @@ describe("the @rbxts/react-roblox surface", () => {
 		expect(declared.filter((name) => !(name in client))).toEqual([]);
 	});
 
+	/**
+	 * Upstream is `export = ReactRoblox`, so `import ReactRoblox from
+	 * "@rbxts/react-roblox"` is how roblox-ts code mounts — a named-exports-only
+	 * module fails at load with "does not provide an export named 'default'",
+	 * before a line of the app runs.
+	 */
+	it("answers the default import with the same values as the named exports", async () => {
+		const client = (await import("../client.ts")) as unknown as Record<
+			string,
+			unknown
+		>;
+		const namespace = client.default as Record<string, unknown>;
+		expect(namespace).toBeTypeOf("object");
+		expect(declared.filter((name) => !(name in namespace))).toEqual([]);
+		for (const name of declared)
+			expect(namespace[name], name).toBe(client[name]);
+	});
+
 	it("exposes the three root constructors as callables", async () => {
 		// `createBlockingRoot` / `createLegacyRoot` are React 17 scheduling
 		// flavours loom maps onto the one root it has; they must still be
@@ -290,8 +308,59 @@ describe("React identity", () => {
 		expect(compat.forwardRef).toBe(BrowserReact.forwardRef);
 		expect(compat.memo).toBe(BrowserReact.memo);
 		expect(compat.Fragment).toBe(BrowserReact.Fragment);
-		expect(compat.Children).toBe(BrowserReact.Children);
 		expect(compat.version).toBe(BrowserReact.version);
+		// `Children` is the deliberate exception — see the suite below.
+		expect(compat.Children).not.toBe(BrowserReact.Children);
+	});
+});
+
+describe("Children indices", () => {
+	// React-Lua's `mapChildren` starts its counter at 1 and passes it to the
+	// callback — its own source marks the line a ROBLOX DEVIATION — so roblox-ts
+	// code is written against 1-based indices, and code recovering a 0-based
+	// position writes `index - 1`. Browser React's 0-based index shifts every
+	// such result by one: a `<Select>` keyed on it selects its neighbour.
+	const three = [
+		BrowserReact.createElement("frame", { key: "a" }),
+		BrowserReact.createElement("frame", { key: "b" }),
+		BrowserReact.createElement("frame", { key: "c" }),
+	];
+
+	it("counts from 1 in map, where browser React counts from 0", () => {
+		const seen: number[] = [];
+		compat.Children.map(three, (child, index) => {
+			seen.push(index);
+			return child;
+		});
+		expect(seen).toEqual([1, 2, 3]);
+
+		const browser: number[] = [];
+		BrowserReact.Children.map(three, (child, index) => {
+			browser.push(index);
+			return child;
+		});
+		expect(browser).toEqual([0, 1, 2]);
+	});
+
+	it("counts from 1 in forEach too", () => {
+		const seen: number[] = [];
+		compat.Children.forEach(three, (_child, index) => {
+			seen.push(index);
+		});
+		expect(seen).toEqual([1, 2, 3]);
+	});
+
+	it("still returns what React returned, in order", () => {
+		const mapped = compat.Children.map(three, (child) => child);
+		expect(mapped).toHaveLength(3);
+		expect(compat.Children.count(three)).toBe(3);
+		expect(compat.Children.toArray(three)).toHaveLength(3);
+	});
+
+	it("reaches the namespace form as the same 1-based implementation", () => {
+		// `React.Children.map` and a destructured `Children.map` must not disagree
+		// inside one file.
+		expect(compat.default.Children).toBe(compat.Children);
 	});
 
 	it("agrees between the default export and the named exports", () => {

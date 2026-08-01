@@ -67,7 +67,6 @@ import React, { type ReactElement as ReactElementType } from "react";
  * roblox-ts will reject it when the same file is compiled for Roblox.
  */
 export const {
-	Children,
 	Component,
 	Fragment,
 	Profiler,
@@ -102,6 +101,45 @@ export const {
 	useTransition,
 	version,
 } = React;
+
+/**
+ * `React.Children`, with **1-based** `map`/`forEach` indices.
+ *
+ * The one place this facade wraps a standard React value instead of forwarding
+ * it, because React-Lua deviates here on purpose. `ReactChildren.lua`'s
+ * `mapChildren` starts its counter at `1` and passes it to the callback (its
+ * own comment marks the spot as a ROBLOX DEVIATION), and `forEachChildren`
+ * delegates to it — so roblox-ts code is written against 1-based indices, and
+ * a library that has to recover a 0-based position writes `index - 1`.
+ *
+ * Handing such code browser React's 0-based index shifts every result by one.
+ * The symptom is quiet rather than loud: a `<Select>` mapping its options to
+ * indices selects, and displays, its neighbour.
+ *
+ * Only the index the callback sees is changed. React still walks, flattens and
+ * re-keys the children itself, so keys and ordering are untouched.
+ */
+export const Children: typeof React.Children = {
+	...React.Children,
+	// The generic signatures are React's own; the bodies only shift the index, so
+	// the casts are between the same callback shape with a different arity name.
+	map: ((children: unknown, fn: (child: unknown, index: number) => unknown) =>
+		(React.Children.map as (c: unknown, f: unknown) => unknown)(
+			children,
+			(child: unknown, index: number) => fn(child, index + 1),
+		)) as typeof React.Children.map,
+	forEach: ((
+		children: unknown,
+		fn: (child: unknown, index: number) => void,
+	) => {
+		(React.Children.forEach as (c: unknown, f: unknown) => void)(
+			children,
+			(child: unknown, index: number) => {
+				fn(child, index + 1);
+			},
+		);
+	}) as typeof React.Children.forEach,
+};
 
 // --- 2. Roblox additions ------------------------------------------------------
 
@@ -305,6 +343,10 @@ export { createBinding, joinBindings, useBinding };
  */
 const merged = Object.assign({}, React, {
 	Change,
+	// Spreading React brought in its 0-based `Children`; the namespace form has
+	// to be the same 1-based one the named export is, or `React.Children.map`
+	// and `Children.map` would disagree inside one file.
+	Children,
 	Event,
 	None,
 	ReactComponent,

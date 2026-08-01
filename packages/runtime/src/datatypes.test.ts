@@ -4,12 +4,17 @@ import {
 	ColorSequence,
 	ColorSequenceKeypoint,
 	Font,
+	NumberSequence,
+	NumberSequenceKeypoint,
+	robloxEquals,
 	toPropertyValue,
 	UDim,
 	UDim2,
+	Vector2,
 } from "./datatypes";
 import { Enum } from "./enums";
 import { installGlobals } from "./index";
+import { tostring } from "./luau";
 
 describe("UDim2 constructor", () => {
 	it("accepts the four-number roblox-ts form (xScale, xOffset, yScale, yOffset)", () => {
@@ -226,5 +231,119 @@ describe("Font", () => {
 				style: "Italic",
 			},
 		});
+	});
+});
+
+describe("UDim operator macros", () => {
+	// roblox-ts compiles `a + b` on a UDim to `a.add(b)`; without these a real
+	// project dies at render with "padding.add is not a function".
+	it("adds and subtracts componentwise", () => {
+		const a = new UDim(0.5, 10);
+		const b = new UDim(0.25, 4);
+		expect(a.add(b)).toEqual(new UDim(0.75, 14));
+		expect(a.sub(b)).toEqual(new UDim(0.25, 6));
+	});
+});
+
+describe("NumberSequence constructor", () => {
+	// Same three forms `NumberSequence.new` takes, all compiled to `new`.
+	it("ramps between two numbers", () => {
+		expect(new NumberSequence(0, 1).Keypoints).toEqual([
+			new NumberSequenceKeypoint(0, 0),
+			new NumberSequenceKeypoint(1, 1),
+		]);
+	});
+
+	it("holds one number flat across the ramp", () => {
+		expect(new NumberSequence(0.5).Keypoints).toEqual([
+			new NumberSequenceKeypoint(0, 0.5),
+			new NumberSequenceKeypoint(1, 0.5),
+		]);
+	});
+
+	it("keeps an explicit keypoint list", () => {
+		const keypoints = [
+			new NumberSequenceKeypoint(0, 1),
+			new NumberSequenceKeypoint(0.5, 0, 0.1),
+			new NumberSequenceKeypoint(1, 1),
+		];
+		expect(new NumberSequence(keypoints).Keypoints).toEqual(keypoints);
+		expect(keypoints[1]?.Envelope).toBe(0.1);
+	});
+});
+
+describe("robloxEquals", () => {
+	// Roblox datatypes are userdata with value semantics, so `==` compares
+	// components. React's prop diff is built on that: without it, a component
+	// that rebuilds `Position={UDim2.fromScale(.5,.5)}` every render re-applies
+	// the property and overwrites whatever was written outside React.
+	it("compares datatypes by value, not identity", () => {
+		expect(robloxEquals(new UDim2(0, 4, 0.5, 8), new UDim2(0, 4, 0.5, 8))).toBe(
+			true,
+		);
+		expect(robloxEquals(new UDim(0.5, 2), new UDim(0.5, 2))).toBe(true);
+		expect(robloxEquals(new Vector2(1, 2), new Vector2(1, 2))).toBe(true);
+		expect(robloxEquals(Color3.fromRGB(1, 2, 3), Color3.fromRGB(1, 2, 3))).toBe(
+			true,
+		);
+		expect(
+			robloxEquals(
+				new ColorSequence(Color3.fromRGB(255, 0, 0)),
+				new ColorSequence(Color3.fromRGB(255, 0, 0)),
+			),
+		).toBe(true);
+		expect(
+			robloxEquals(new NumberSequence(0, 1), new NumberSequence(0, 1)),
+		).toBe(true);
+	});
+
+	it("still separates values that differ", () => {
+		expect(robloxEquals(new UDim2(0, 4, 0, 0), new UDim2(0, 5, 0, 0))).toBe(
+			false,
+		);
+		expect(robloxEquals(new Vector2(1, 2), new Vector2(2, 1))).toBe(false);
+		expect(
+			robloxEquals(new NumberSequence(0, 1), new NumberSequence(0, 0.5)),
+		).toBe(false);
+	});
+
+	it("never equates different types", () => {
+		expect(robloxEquals(new UDim(0, 4), new Vector2(0, 4))).toBe(false);
+		expect(robloxEquals(new UDim2(), {})).toBe(false);
+		expect(robloxEquals(new Vector2(1, 2), { X: 1, Y: 2 })).toBe(false);
+	});
+
+	it("falls back to identity for everything else", () => {
+		const fn = () => {};
+		expect(robloxEquals(fn, fn)).toBe(true);
+		expect(robloxEquals("a", "a")).toBe(true);
+		expect(robloxEquals(Number.NaN, Number.NaN)).toBe(true); // Object.is
+		expect(robloxEquals({ a: 1 }, { a: 1 })).toBe(false);
+		expect(robloxEquals(undefined, undefined)).toBe(true);
+		expect(robloxEquals(undefined, null)).toBe(false);
+	});
+
+	it("keeps EnumItem singletons equal to themselves only", () => {
+		expect(robloxEquals(Enum.FontWeight.Bold, Enum.FontWeight.Bold)).toBe(true);
+		expect(robloxEquals(Enum.FontWeight.Bold, Enum.FontWeight.Regular)).toBe(
+			false,
+		);
+	});
+});
+
+describe("tostring", () => {
+	// Roblox datatypes are userdata with a `__tostring`; JS classes have none, so
+	// `${vector}` printed "[object Object]" — visibly, in a label reading
+	// "Range Slider ([object Object])".
+	it("formats the datatypes the way the engine does", () => {
+		expect(`${new Vector2(2, 8)}`).toBe("2, 8");
+		expect(`${new UDim(0.5, 10)}`).toBe("0.5, 10");
+		expect(`${new UDim2(0.5, 10, 0, 20)}`).toBe("{0.5, 10}, {0, 20}");
+		expect(`${Color3.fromRGB(255, 0, 0)}`).toBe("1, 0, 0");
+	});
+
+	it("reaches them through Luau tostring too", () => {
+		expect(tostring(new Vector2(2, 8))).toBe("2, 8");
+		expect(tostring(undefined)).toBe("nil");
 	});
 });
