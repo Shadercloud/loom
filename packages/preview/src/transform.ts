@@ -1,11 +1,11 @@
 /**
- * `transform.ts` — the roblox-ts `import X = require("m")` pre-transform.
+ * `transform.ts` — the roblox-ts source pre-transforms, applied to the previewed
+ * project's own `.ts`/`.tsx` before esbuild sees them. Pure string→string, so
+ * both are unit-testable without a Vite server.
  *
- * roblox-ts sources (e.g. lattice's `core/src/react.ts`) use TypeScript
- * import-equals syntax, which esbuild lowers to a bare `require()` call that
- * breaks in the browser. Rewriting it to a namespace import *before* esbuild
- * runs keeps the module graph fully ESM. Pure string→string so it can be
- * unit-tested without a Vite server.
+ * 1. `import X = require("m")` → an ESM namespace import.
+ * 2. `.size()` / `.isEmpty()` → the symbol-keyed macro methods the runtime
+ *    installs.
  */
 
 // Anchored to (indented) line starts so `const x = require(...)` and
@@ -30,5 +30,42 @@ export function rewriteImportEquals(code: string): string | undefined {
 		IMPORT_EQUALS_RE,
 		(_match, indent: string, ident: string, quote: string, specifier: string) =>
 			`${indent}import * as ${ident} from ${quote}${specifier}${quote};`,
+	);
+}
+
+// `?.size()` keeps its optional link; `.size()` becomes a computed access, so
+// the `?` is captured and re-emitted rather than replaced blind (`x.[k]()` is
+// not valid JavaScript).
+const LUAU_MACRO_RE = /(\?)?\.(size|isEmpty)\(\)/g;
+
+/**
+ * Rewrite the roblox-ts `.size()` / `.isEmpty()` macros to the symbol-keyed
+ * methods `@loom-dev/runtime` installs on `Object.prototype`. Returns
+ * `undefined` when the file calls neither, so callers can skip the rewrite.
+ *
+ * Why a source transform rather than a prototype patch: on `Array` and `String`
+ * the runtime *can* add `size()` outright, because JS defines no such member.
+ * On `Map` and `Set` it cannot — JS already has `size`, as a property, and one
+ * name will not be both. A prototype patch is page-wide, so redefining it would
+ * reach React's maps, Vite's, and loom's own scheduler (whose `dirty.size === 0`
+ * drives the frame loop). Rewriting the *call site* puts roblox-ts semantics
+ * exactly where roblox-ts code is and nowhere else.
+ *
+ * The receiver is never parsed — only the `.size()` suffix is replaced — so no
+ * expression, however nested, can be mis-split. A `.size()` inside a string
+ * literal would be rewritten too; that is the accepted cost of not parsing, and
+ * the emitted call still resolves for any receiver that defines its own
+ * `size()`, so a project's unrelated method keeps working either way.
+ */
+export function rewriteLuauMacros(code: string): string | undefined {
+	// Fast path: most files call neither.
+	if (!code.includes(".size()") && !code.includes(".isEmpty()")) {
+		return undefined;
+	}
+	LUAU_MACRO_RE.lastIndex = 0;
+	return code.replace(
+		LUAU_MACRO_RE,
+		(_match, optional: string | undefined, name: string) =>
+			`${optional ? "?." : ""}[Symbol.for("loom.${name}")]()`,
 	);
 }

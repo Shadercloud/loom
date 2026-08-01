@@ -3,9 +3,9 @@
  * run in the browser: it aliases the `@rbxts/react` / `@rbxts/react-roblox` /
  * `@rbxts/services` (and `@rbxts/vide`) packages to the matching loom adapter,
  * plus the built-in compatibility adapters for packages that ship no browser
- * code at all (`./compat/aliases.ts`), rewrites roblox-ts
- * `import X = require(...)` statements to ESM, retries `.luau` package mains at
- * their TypeScript source, and injects the Roblox globals before the app entry. esbuild already transpiles the TSX, so no
+ * code at all (`./compat/aliases.ts`), rewrites the roblox-ts-only source syntax
+ * (`import X = require(...)`, the `.size()`/`.isEmpty()` macros — see
+ * `./transform.ts`), retries `.luau` package mains at their TypeScript source, and injects the Roblox globals before the app entry. esbuild already transpiles the TSX, so no
  * separate roblox-ts compiler is needed for preview.
  *
  * The plugin is the whole product: dropped into a `vite.config.ts` it needs no
@@ -13,7 +13,7 @@
  * detected client entry (or, with `targets`, the `*.loom.tsx` gallery). See
  * `./html.ts`. The `loom` CLI is the same plugin with `configFile: false`.
  *
- * The resolver, the import-equals transform, and the config-hook aliases apply
+ * The resolver, the source transforms, and the config-hook aliases apply
  * in **both** `serve` and `build`, so the same source tree that runs under the
  * dev server also bundles into a static site. Only the globals-injection
  * mechanism differs: under `serve` it is a `<script src>` pointing at a served
@@ -52,7 +52,7 @@ import {
 	resolveLuauFallback,
 	resolvePackageSource,
 } from "./resolver.ts";
-import { rewriteImportEquals } from "./transform.ts";
+import { rewriteImportEquals, rewriteLuauMacros } from "./transform.ts";
 
 // A virtual module that installs the Roblox globals. Injected as a real <script
 // src> (not an inline bare import) so it resolves whether the index.html is a
@@ -344,21 +344,26 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 	// a `false` verdict just means "not Luau — let normal resolution handle it".
 	const luauVerdicts = new Map<string, string | false>();
 
-	// Rewrites `import X = require("m")` before vite:esbuild lowers it to a bare
-	// `require()` call (which would throw in the browser). Applies to any
-	// TypeScript outside node_modules — previewed workspace sources typically
-	// resolve through symlinks to real paths outside node_modules. Runs in both
-	// serve and build: esbuild lowers import-equals the same way in either mode,
-	// so the rewrite is equally required when Rollup bundles the tree.
-	const importEquals: Plugin = {
-		name: "loom-preview:import-equals",
+	// The roblox-ts source rewrites (see `./transform.ts`): `import X =
+	// require("m")` before vite:esbuild lowers it to a bare `require()` call
+	// (which would throw in the browser), and the `.size()`/`.isEmpty()` macros.
+	//
+	// Applies to any TypeScript outside node_modules — previewed workspace
+	// sources typically resolve through symlinks to real paths outside
+	// node_modules. Confining it there is what makes the macro rewrite safe: it
+	// is the previewed project that writes roblox-ts, and its dependencies,
+	// React and loom's own packages are all left alone. Runs in both serve and
+	// build, since esbuild and Rollup need the same source either way.
+	const rbxtsSyntax: Plugin = {
+		name: "loom-preview:rbxts-syntax",
 		enforce: "pre",
 		transform(code, id) {
 			const file = id.split("?")[0] ?? id;
 			if (!/\.tsx?$/.test(file)) return;
 			if (file.includes("/node_modules/")) return;
-			const rewritten = rewriteImportEquals(code);
-			if (rewritten === undefined) return;
+			const withImports = rewriteImportEquals(code) ?? code;
+			const rewritten = rewriteLuauMacros(withImports) ?? withImports;
+			if (rewritten === code) return;
 			return { code: rewritten, map: null };
 		},
 	};
@@ -593,12 +598,7 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 		},
 	};
 
-	const plugins: Plugin[] = [
-		importEquals,
-		main,
-		serveGlobals,
-		loomAssetProxy(),
-	];
+	const plugins: Plugin[] = [rbxtsSyntax, main, serveGlobals, loomAssetProxy()];
 
 	// Gallery mode: the target import map (dev) + the generated gallery page.
 	const patterns =

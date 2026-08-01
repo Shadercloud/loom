@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { CFrame, Color3, Rect, UDim2, Vector2, Vector3 } from "./datatypes";
 import { Enum } from "./enums";
 import { createInstance } from "./instance";
@@ -6,6 +6,8 @@ import {
 	applyPrototypePatches,
 	assert,
 	ipairs,
+	LUAU_IS_EMPTY,
+	LUAU_SIZE,
 	math,
 	pairs,
 	pcall,
@@ -339,5 +341,64 @@ describe("datatype arithmetic", () => {
 		expect(Enum.TextTruncate.AtEnd).toBeDefined();
 		expect(Enum.ZIndexBehavior.Sibling).toBeDefined();
 		expect(Enum.AutomaticCanvasSize.Y).toBe(Enum.AutomaticSize.Y);
+	});
+});
+
+describe("the size/isEmpty macro keys", () => {
+	// The other half of the preview's `.size()` rewrite. The point of routing
+	// through a symbol is that `Map`/`Set` keep JS semantics for everyone else:
+	// roblox-ts asks through the key, React and loom's own scheduler keep reading
+	// the plain `.size` property.
+	beforeAll(() => applyPrototypePatches());
+
+	/** What the transform emits: `receiver[Symbol.for("loom.size")]()`. */
+	function macro(value: object, key: symbol): unknown {
+		const method = (value as Record<symbol, unknown>)[key];
+		if (typeof method !== "function") {
+			throw new Error(`${String(key)} is not installed`);
+		}
+		return (method as () => unknown).call(value);
+	}
+	const sizeOf = (value: object): unknown => macro(value, LUAU_SIZE);
+	const emptyOf = (value: object): unknown => macro(value, LUAU_IS_EMPTY);
+
+	it("counts a Map and a Set without redefining their `size`", () => {
+		const map = new Map([["a", 1]]);
+		const set = new Set([1, 2, 3]);
+		expect(sizeOf(map)).toBe(1);
+		expect(sizeOf(set)).toBe(3);
+		// Untouched for every other caller — this is the whole reason for the key.
+		expect(map.size).toBe(1);
+		expect(set.size === 3).toBe(true);
+	});
+
+	it("counts arrays and strings through their patched methods", () => {
+		expect(sizeOf([1, 2])).toBe(2);
+		expect(sizeOf(Object("abc") as object)).toBe(3);
+	});
+
+	it("defers to a receiver's own size()", () => {
+		class Bag {
+			size(): number {
+				return 42;
+			}
+		}
+		expect(sizeOf(new Bag())).toBe(42);
+	});
+
+	it("answers isEmpty from the count when the receiver has none", () => {
+		expect(emptyOf(new Map())).toBe(true);
+		expect(emptyOf(new Set([1]))).toBe(false);
+		expect(emptyOf([])).toBe(true);
+		expect(emptyOf([1])).toBe(false);
+	});
+
+	it("stays invisible to enumeration and serialization", () => {
+		const map = new Map();
+		expect(Object.keys(map)).toEqual([]);
+		expect(JSON.stringify({ a: 1 })).toBe('{"a":1}');
+		expect(Object.prototype.propertyIsEnumerable.call({}, LUAU_SIZE)).toBe(
+			false,
+		);
 	});
 });

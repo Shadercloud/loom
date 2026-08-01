@@ -559,7 +559,7 @@ export function assert<T>(
 
 function definePatch(
 	proto: object,
-	name: string,
+	name: string | symbol,
 	value: (...args: never[]) => unknown,
 	/**
 	 * Replace an existing member instead of bailing out. Only for names JS
@@ -577,6 +577,23 @@ function definePatch(
 }
 
 /**
+ * The symbol keys the preview's macro transform rewrites `.size()` and
+ * `.isEmpty()` to (see `@loom-dev/preview`'s `transform.ts`).
+ *
+ * `Map`/`Set` are why this indirection exists. roblox-ts declares `size()` as a
+ * *method* on both; JS defines `size` as a *property*, and one name cannot be
+ * both. Redefining `Map.prototype.size` would reach every `Map` in the page —
+ * React's, Vite's, loom's own scheduler (`dirty.size === 0` drives the frame
+ * loop) — so the roblox-ts spelling is instead resolved through a key nothing
+ * but the transform emits, and only previewed source is ever transformed.
+ *
+ * `Symbol.for`, not `Symbol()`: the emitted code and this module reach the key
+ * independently, and the registry is what makes them the same symbol.
+ */
+export const LUAU_SIZE = Symbol.for("loom.size");
+export const LUAU_IS_EMPTY = Symbol.for("loom.isEmpty");
+
+/**
  * Install the roblox-ts macro methods on `Array.prototype`/`String.prototype`
  * (`.size()`, `.isEmpty()`, `.remove(i)`, `.unorderedRemove(i)`, `.clear()`),
  * plus the Luau string methods roblox-ts calls off a string receiver
@@ -588,6 +605,29 @@ function definePatch(
  * repeatedly.
  */
 export function applyPrototypePatches(): void {
+	// The macro keys, on `Object.prototype` so one definition answers for every
+	// receiver: `Map`/`Set` expose `size` as a number, the patched `Array`/
+	// `String` expose it as a method, and a user class that wrote its own
+	// `size()` keeps it. Symbol-keyed and non-enumerable, so `Object.keys`,
+	// `for…in`, spread and `JSON.stringify` never see them.
+	definePatch(
+		Object.prototype,
+		LUAU_SIZE,
+		function (this: Record<string, unknown>) {
+			const own = this.size;
+			return typeof own === "function" ? own.call(this) : own;
+		},
+	);
+	definePatch(
+		Object.prototype,
+		LUAU_IS_EMPTY,
+		function (this: Record<string, unknown>) {
+			const own = this.isEmpty;
+			if (typeof own === "function") return own.call(this);
+			const size = this.size;
+			return (typeof size === "function" ? size.call(this) : size) === 0;
+		},
+	);
 	definePatch(Array.prototype, "size", function (this: unknown[]) {
 		return this.length;
 	});

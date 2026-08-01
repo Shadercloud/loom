@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rewriteImportEquals } from "./transform.ts";
+import { rewriteImportEquals, rewriteLuauMacros } from "./transform.ts";
 
 describe("rewriteImportEquals", () => {
 	it("rewrites a double-quoted import-equals", () => {
@@ -78,5 +78,57 @@ describe("rewriteImportEquals", () => {
 		const once = rewriteImportEquals('import React = require("@rbxts/react");');
 		expect(once).toBeDefined();
 		expect(rewriteImportEquals(once as string)).toBeUndefined();
+	});
+});
+
+describe("rewriteLuauMacros", () => {
+	const SIZE = 'Symbol.for("loom.size")';
+
+	it("rewrites a size() call to the symbol-keyed macro", () => {
+		expect(rewriteLuauMacros("if (entries.size() === 0) {}")).toBe(
+			`if (entries[${SIZE}]() === 0) {}`,
+		);
+	});
+
+	it("keeps the optional link on an optional call", () => {
+		// `x?.[k]()` is the optional form; `x.[k]()` is not valid JavaScript at all.
+		expect(rewriteLuauMacros("const n = map?.size();")).toBe(
+			`const n = map?.[${SIZE}]();`,
+		);
+	});
+
+	it("rewrites isEmpty() to its own key", () => {
+		expect(rewriteLuauMacros("return list.isEmpty();")).toBe(
+			'return list[Symbol.for("loom.isEmpty")]();',
+		);
+	});
+
+	it("never has to split the receiver expression", () => {
+		// Only the `.size()` suffix is replaced, so an arbitrarily nested receiver
+		// comes through untouched — the reason this needs no parser.
+		expect(rewriteLuauMacros("entries.current.get(key.name)!.size()")).toBe(
+			`entries.current.get(key.name)![${SIZE}]()`,
+		);
+	});
+
+	it("rewrites every occurrence on a line", () => {
+		expect(rewriteLuauMacros("a.size() + b.size()")).toBe(
+			`a[${SIZE}]() + b[${SIZE}]()`,
+		);
+	});
+
+	it("leaves a size call with arguments alone", () => {
+		// roblox-ts' macro takes none, so `size(x)` is somebody else's method.
+		expect(rewriteLuauMacros("grid.size(2)")).toBeUndefined();
+	});
+
+	it("returns undefined when the file calls neither macro", () => {
+		expect(rewriteLuauMacros("const size = map.size;")).toBeUndefined();
+		expect(rewriteLuauMacros("export const x = 1;")).toBeUndefined();
+	});
+
+	it("is idempotent", () => {
+		const once = rewriteLuauMacros("m.size()") as string;
+		expect(rewriteLuauMacros(once)).toBeUndefined();
 	});
 });
