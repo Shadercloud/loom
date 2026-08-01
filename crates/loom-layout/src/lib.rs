@@ -47,6 +47,11 @@ impl std::error::Error for LayoutError {}
 
 // --- small readers -----------------------------------------------------------
 
+/// Slack for "does this still fit?" comparisons, so a row whose items sum to
+/// exactly the container width doesn't wrap its last item on a float rounding
+/// error a fraction of a pixel wide.
+const EPS: f64 = 1e-6;
+
 #[inline]
 fn resolve_axis(u: UDim, parent_axis_px: f64) -> f64 {
     parent_axis_px * u.scale + u.offset
@@ -279,41 +284,106 @@ fn flow_order<'a>(
 
 // --- UIListLayout ------------------------------------------------------------
 
+/// One run of children along the main axis. Without `Wraps` there is exactly
+/// one, holding every child — which is why the placement math below is written
+/// per line and needs no separate non-wrapping path.
+struct ListLine {
+    /// Half-open range into the flow order.
+    start: usize,
+    end: usize,
+    /// Sum of the visible items' main sizes, plus the gaps between them.
+    main_total: f64,
+    /// The tallest (or widest) visible item, i.e. the line's cross extent.
+    cross_max: f64,
+    visible_count: usize,
+}
+
 struct ListMetrics {
     vertical: bool,
+    /// Main extent of the longest line — the whole list's when it doesn't wrap.
     total_main: f64,
+    /// Cross extent of every line stacked, gaps included.
     cross_max: f64,
+    gap: f64,
+    wraps: bool,
+    lines: Vec<ListLine>,
 }
 
 fn list_metrics(content: Rect, list: &SceneNode, children: &[(usize, &SceneNode)]) -> ListMetrics {
     let vertical = enum_name(list, "FillDirection") != Some("Horizontal");
-    let main_content = if vertical {
-        content.height
+    let (main_content, _cross_content) = if vertical {
+        (content.height, content.width)
     } else {
-        content.width
+        (content.width, content.height)
     };
     let gap = udim_prop(list, "Padding").map_or(0.0, |u| resolve_axis(u, main_content));
-    // Roblox UIListLayout ignores `Visible = false` siblings: they take neither a
-    // slot nor a gap, so the visible items pack together (and AutomaticSize hugs
-    // only them). Measure over the visible children alone.
-    let mut total_main = 0.0;
-    let mut cross_max: f64 = 0.0;
-    let mut visible_count = 0usize;
-    for &(_, child) in children {
+    // `Wraps` breaks the flow onto a new line once an item no longer fits along
+    // the fill direction — CSS `flex-wrap: wrap`, and Roblox's own flex model.
+    let wraps = list
+        .properties
+        .get("Wraps")
+        .and_then(PropertyValue::as_bool)
+        .unwrap_or(false);
+
+    let mut lines: Vec<ListLine> = Vec::new();
+    let mut line = ListLine {
+        start: 0,
+        end: 0,
+        main_total: 0.0,
+        cross_max: 0.0,
+        visible_count: 0,
+    };
+    for (i, &(_, child)) in children.iter().enumerate() {
+        // Roblox UIListLayout ignores `Visible = false` siblings: they take
+        // neither a slot nor a gap, so the visible items pack together (and
+        // AutomaticSize hugs only them). They still belong to whichever line is
+        // open, because they are still placed at its cursor.
         if !child.visible() {
+            line.end = i + 1;
             continue;
         }
         let (w, h) = resolve_size(child, content);
         let (main, cross) = if vertical { (h, w) } else { (w, h) };
-        total_main += main;
-        cross_max = cross_max.max(cross);
-        visible_count += 1;
+        let advance = if line.visible_count == 0 {
+            main
+        } else {
+            gap + main
+        };
+        // An item wider than the whole line still gets a line of its own rather
+        // than an empty one before it — hence the `visible_count > 0` guard.
+        if wraps && line.visible_count > 0 && line.main_total + advance > main_content + EPS {
+            line.end = i;
+            lines.push(std::mem::replace(
+                &mut line,
+                ListLine {
+                    start: i,
+                    end: i,
+                    main_total: 0.0,
+                    cross_max: 0.0,
+                    visible_count: 0,
+                },
+            ));
+            line.main_total = main;
+        } else {
+            line.main_total += advance;
+        }
+        line.cross_max = line.cross_max.max(cross);
+        line.visible_count += 1;
+        line.end = i + 1;
     }
-    total_main += gap * (visible_count.saturating_sub(1) as f64);
+    line.end = children.len();
+    lines.push(line);
+
+    let total_main = lines.iter().fold(0.0_f64, |acc, l| acc.max(l.main_total));
+    let cross_max = lines.iter().map(|l| l.cross_max).sum::<f64>()
+        + gap * (lines.len().saturating_sub(1) as f64);
     ListMetrics {
         vertical,
         total_main,
         cross_max,
+        gap,
+        wraps,
+        lines,
     }
 }
 
@@ -389,7 +459,9 @@ fn place_with_list(
     } else {
         content.height
     };
-    let gap = udim_prop(list, "Padding").map_or(0.0, |u| resolve_axis(u, main_content));
+    // The gap `list_metrics` already broke the lines with — recomputing it here
+    // would be a second source of truth for where the wraps landed.
+    let gap = m.gap;
 
     let h_align = enum_name(list, "HorizontalAlignment").unwrap_or("Left");
     let v_align = enum_name(list, "VerticalAlignment").unwrap_or("Top");
@@ -404,79 +476,100 @@ fn place_with_list(
     let main_flex = if vertical { v_flex } else { h_flex };
     let cross_flex = if vertical { h_flex } else { v_flex };
 
-    let visible_count = order.iter().filter(|(_, c)| c.visible()).count();
-    let free = (main_content - m.total_main).max(0.0);
-
-    // `Fill` on the main axis grows every item, which is the same distribution a
-    // per-child `UIFlexItem` asks for — so an explicit `UIFlexItem` anywhere in
-    // the row wins, and `Fill` is the fallback that gives each item weight 1.
-    let explicit_weight: f64 = order
-        .iter()
-        .filter(|(_, c)| c.visible())
-        .map(|&(_, c)| flex_grow_weight(c))
-        .sum();
-    let fill_all = explicit_weight <= 0.0 && main_flex == "Fill";
-    let weight_sum = if fill_all {
-        visible_count as f64
-    } else {
-        explicit_weight
-    };
-    let per_weight = if weight_sum > 0.0 {
-        free / weight_sum
+    // Where the stack of lines starts on the cross axis. One line keeps the
+    // whole content box and sits at 0, so a non-wrapping list aligns its items
+    // against the container exactly as before; several lines align as a block
+    // (CSS `align-content`) and each item then aligns inside its own line.
+    let block_cross = if m.wraps { m.cross_max } else { cross_content };
+    let mut line_cursor = if m.lines.len() > 1 {
+        align_offset(cross_content, block_cross, cross_align)
     } else {
         0.0
     };
 
-    // Growing consumes the leftover space, so the two never apply at once.
-    let spacing = if weight_sum > 0.0 {
-        None
-    } else {
-        flex_spacing(main_flex, free, visible_count)
-    };
-
-    let mut cursor = match &spacing {
-        Some(s) => s.start,
-        None => align_offset(main_content, m.total_main, main_align),
-    };
-    let between = spacing.as_ref().map_or(0.0, |s| s.between);
-
-    for &(idx, child) in &order {
-        let (w, h) = resolve_size(child, content);
-        let (mut main_size, mut cross_size) = if vertical { (h, w) } else { (w, h) };
-        if child.visible() && per_weight > 0.0 {
-            let weight = if fill_all {
-                1.0
-            } else {
-                flex_grow_weight(child)
-            };
-            main_size += weight * per_weight;
-        }
-        if cross_flex == "Fill" {
-            cross_size = cross_content;
-        }
-        let cross_off = align_offset(cross_content, cross_size, cross_align);
-        let rect = if vertical {
-            Rect {
-                x: content.x + cross_off,
-                y: content.y + cursor,
-                width: cross_size,
-                height: main_size,
-            }
+    for line in &m.lines {
+        let line_cross = if m.lines.len() > 1 {
+            line.cross_max
         } else {
-            Rect {
-                x: content.x + cursor,
-                y: content.y + cross_off,
-                width: main_size,
-                height: cross_size,
-            }
+            cross_content
         };
-        place_node(child, rect, format!("{parent_path}/{idx}"), out)?;
-        // `Visible = false` children still get a rect (the renderer hides them via
-        // CSS), but they must not consume flow space — mirror Roblox by advancing
-        // the cursor only for visible items so the rest pack up against them.
-        if child.visible() {
-            cursor += main_size + gap + between;
+        let free = (main_content - line.main_total).max(0.0);
+
+        // `Fill` on the main axis grows every item, which is the same
+        // distribution a per-child `UIFlexItem` asks for — so an explicit
+        // `UIFlexItem` anywhere in the row wins, and `Fill` is the fallback that
+        // gives each item weight 1. Wrapping makes this per line, like flexbox:
+        // each line spreads only its own leftover space.
+        let explicit_weight: f64 = order[line.start..line.end]
+            .iter()
+            .filter(|(_, c)| c.visible())
+            .map(|&(_, c)| flex_grow_weight(c))
+            .sum();
+        let fill_all = explicit_weight <= 0.0 && main_flex == "Fill";
+        let weight_sum = if fill_all {
+            line.visible_count as f64
+        } else {
+            explicit_weight
+        };
+        let per_weight = if weight_sum > 0.0 {
+            free / weight_sum
+        } else {
+            0.0
+        };
+
+        // Growing consumes the leftover space, so the two never apply at once.
+        let spacing = if weight_sum > 0.0 {
+            None
+        } else {
+            flex_spacing(main_flex, free, line.visible_count)
+        };
+
+        let mut cursor = match &spacing {
+            Some(s) => s.start,
+            None => align_offset(main_content, line.main_total, main_align),
+        };
+        let between = spacing.as_ref().map_or(0.0, |s| s.between);
+
+        for &(idx, child) in &order[line.start..line.end] {
+            let (w, h) = resolve_size(child, content);
+            let (mut main_size, mut cross_size) = if vertical { (h, w) } else { (w, h) };
+            if child.visible() && per_weight > 0.0 {
+                let weight = if fill_all {
+                    1.0
+                } else {
+                    flex_grow_weight(child)
+                };
+                main_size += weight * per_weight;
+            }
+            if cross_flex == "Fill" {
+                cross_size = line_cross;
+            }
+            let cross_off = line_cursor + align_offset(line_cross, cross_size, cross_align);
+            let rect = if vertical {
+                Rect {
+                    x: content.x + cross_off,
+                    y: content.y + cursor,
+                    width: cross_size,
+                    height: main_size,
+                }
+            } else {
+                Rect {
+                    x: content.x + cursor,
+                    y: content.y + cross_off,
+                    width: main_size,
+                    height: cross_size,
+                }
+            };
+            place_node(child, rect, format!("{parent_path}/{idx}"), out)?;
+            // `Visible = false` children still get a rect (the renderer hides
+            // them via CSS), but they must not consume flow space — mirror
+            // Roblox by advancing the cursor only for visible items so the rest
+            // pack up against them.
+            if child.visible() {
+                cursor += main_size + gap + between;
+            }
         }
+        line_cursor += line.cross_max + gap;
     }
     Ok(())
 }
@@ -851,6 +944,125 @@ mod tests {
         );
     }
 
+    /// A horizontal `Wraps` list of `count` items, each `item_w` wide and 40
+    /// tall, inside an 800-wide container. `Padding` is the gap in both axes.
+    fn wrapping_row(count: usize, item_w: f64, padding: f64) -> SceneNode {
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                ("Padding", udim(0.0, padding)),
+                ("Wraps", PropertyValue::Known(KnownProperty::Bool(true))),
+            ],
+        );
+        let mut container = with("Frame", "Container", &[("Size", udim2(1.0, 0.0, 1.0, 0.0))]);
+        container.children.push(list);
+        for i in 0..count {
+            container.children.push(with(
+                "Frame",
+                &format!("Item{i}"),
+                &[("Size", udim2(0.0, item_w, 0.0, 40.0))],
+            ));
+        }
+        container
+    }
+
+    #[test]
+    fn ui_list_wraps_onto_new_lines() {
+        // 300 + 10 + 300 = 610 fits in 800; a third would need 920. Lines stack
+        // on the cross axis, separated by the same `Padding`.
+        let r = compute_layout(&screen(vec![wrapping_row(3, 300.0, 10.0)]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/0"].rect.y, 0.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 310.0);
+        assert_eq!(r.rects["0/0/1"].rect.y, 0.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/2"].rect.y, 50.0);
+    }
+
+    #[test]
+    fn ui_list_without_wraps_overflows_in_one_line() {
+        // The default, unchanged: items keep running past the container edge.
+        let mut container = wrapping_row(3, 300.0, 10.0);
+        container.children[0].properties.insert(
+            "Wraps".into(),
+            PropertyValue::Known(KnownProperty::Bool(false)),
+        );
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(r.rects["0/0/2"].rect.x, 620.0);
+        assert_eq!(r.rects["0/0/2"].rect.y, 0.0);
+    }
+
+    #[test]
+    fn ui_list_wrap_gives_an_oversized_item_its_own_line() {
+        // Wider than the container: it must not push an empty line ahead of
+        // itself, and the next item starts a fresh one.
+        let mut container = wrapping_row(2, 100.0, 0.0);
+        container.children[1]
+            .properties
+            .insert("Size".into(), udim2(0.0, 900.0, 0.0, 40.0));
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(
+            r.rects["0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 900.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/1"].rect,
+            Rect {
+                x: 0.0,
+                y: 40.0,
+                width: 100.0,
+                height: 40.0
+            }
+        );
+    }
+
+    #[test]
+    fn ui_list_wrap_aligns_each_line_and_the_block() {
+        // Center on both axes: every line centers its own items along the main
+        // axis, and the stack of lines centers as a block on the cross axis.
+        let mut container = wrapping_row(3, 300.0, 10.0);
+        container.children[0].properties.insert(
+            "HorizontalAlignment".into(),
+            enum_item("HorizontalAlignment", "Center"),
+        );
+        container.children[0].properties.insert(
+            "VerticalAlignment".into(),
+            enum_item("VerticalAlignment", "Center"),
+        );
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        // Line 1 is 610 wide in 800 -> starts at 95; line 2 is 300 -> at 250.
+        assert_eq!(r.rects["0/0/0"].rect.x, 95.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 405.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 250.0);
+        // The block is 40 + 10 + 40 = 90 tall in 600 -> starts at 255.
+        assert_eq!(r.rects["0/0/0"].rect.y, 255.0);
+        assert_eq!(r.rects["0/0/2"].rect.y, 305.0);
+    }
+
+    #[test]
+    fn automatic_size_measures_the_wrapped_block() {
+        // AutomaticSize has to hug the wrapped shape — every line tall, not the
+        // single 40px run the three items would form without wrapping. The main
+        // axis stays fixed at 800: that is what the lines wrap against.
+        let mut container = wrapping_row(3, 300.0, 10.0);
+        container
+            .properties
+            .insert("AutomaticSize".into(), enum_item("AutomaticSize", "Y"));
+        container
+            .properties
+            .insert("Size".into(), udim2(1.0, 0.0, 0.0, 0.0));
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(r.rects["0/0"].rect.width, 800.0);
+        assert_eq!(r.rects["0/0"].rect.height, 90.0);
+    }
+
     #[test]
     fn ui_list_skips_invisible_children() {
         // Roblox UIListLayout ignores `Visible = false` siblings: they reserve no
@@ -873,7 +1085,10 @@ mod tests {
                 name,
                 &[
                     ("Size", udim2(0.0, 100.0, 0.0, 40.0)),
-                    ("Visible", PropertyValue::Known(KnownProperty::Bool(visible))),
+                    (
+                        "Visible",
+                        PropertyValue::Known(KnownProperty::Bool(visible)),
+                    ),
                 ],
             ));
         }
