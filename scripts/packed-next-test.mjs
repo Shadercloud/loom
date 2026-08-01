@@ -147,7 +147,18 @@ write(
 				react: "19.2.0",
 				"react-dom": "19.2.0",
 			},
-			devDependencies: { "@types/react": "19.2.0", typescript: "5.9.2" },
+			// `@types/node` is here for the runner, not for this fixture's own
+			// code: the tsconfig below includes next-env.d.ts, so `next build`
+			// runs its TypeScript check, and that check refuses to start unless
+			// all three of typescript/@types/react/@types/node resolve from the
+			// app. Locally they resolve anyway (Node walks out of the temp dir
+			// into a global types install); a CI runner has nothing to walk into,
+			// so the build died on "Please install @types/node".
+			devDependencies: {
+				"@types/node": "24.13.3",
+				"@types/react": "19.2.0",
+				typescript: "5.9.2",
+			},
 			overrides: loomOverrides,
 		},
 		null,
