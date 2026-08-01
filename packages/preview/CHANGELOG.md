@@ -24,7 +24,7 @@
     was overwriting the size with the content size outright, so a fixed-width
     container with a small child collapsed to the child.
 
-- [#9](https://github.com/astra-void/loom/pull/9) [`06b8636`](https://github.com/astra-void/loom/commit/06b8636e0b3a55001cc81f0db73b183195c75c93) Thanks [@astra-void](https://github.com/astra-void)! - Render `ImageLabel` and `ImageButton`.
+- [#9](https://github.com/astra-void/loom/pull/9) [`06b8636`](https://github.com/astra-void/loom/commit/06b8636e0b3a55001cc81f0db73b183195c75c93) Thanks [@Shadercloud](https://github.com/Shadercloud) and [@astra-void](https://github.com/astra-void)! - Render `ImageLabel` and `ImageButton`.
 
   Image classes now paint their `Image` in an `<img>` layer beneath the text,
   honoring `ScaleType` (`Stretch`/`Fit`/`Crop`) and `ImageTransparency`. Plain
