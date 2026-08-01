@@ -26,6 +26,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { normalizePath, type Plugin } from "vite";
 import {
+	DARK_BACKDROP,
+	GALLERY_BOOT_SCRIPT,
+	GALLERY_BOOT_STYLE,
+} from "./gallery/boot.ts";
+import {
 	findLoomTargets,
 	generateBuildEntryModule,
 	generateBuildTargetsModule,
@@ -65,7 +70,7 @@ export function generateIndexHtml(entryUrl: string, title: string): string {
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<title>${title}</title>
 		<style>
-			html, body { margin: 0; height: 100%; background: #14161a; overscroll-behavior: none; }
+			html, body { margin: 0; height: 100%; background: ${DARK_BACKDROP}; overscroll-behavior: none; }
 			/* dvh where supported: on mobile 100vh is the toolbars-retracted height,
 			   so a 100vh stage hangs below the visible screen. */
 			#loom-root { position: relative; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; }
@@ -88,8 +93,13 @@ export function generateGalleryHtml(entryUrl: string, title: string): string {
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<title>${title}</title>
 		<style>
-			html, body { margin: 0; height: 100%; background: #14161a; overscroll-behavior: none; }
+			${GALLERY_BOOT_STYLE}
 		</style>
+		<!-- The backdrop is settled from the URL here, before the first paint;
+		     see gallery/boot.ts. -->
+		<script>
+			${GALLERY_BOOT_SCRIPT}
+		</script>
 	</head>
 	<body>
 		<aside id="loom-gallery-sidebar"></aside>

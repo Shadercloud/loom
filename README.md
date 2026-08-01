@@ -320,11 +320,17 @@ page's own background show through the iframe. Only colours are accepted;
 anything else (a gradient, a `url(...)`) is ignored and the theme's backdrop
 stands.
 
-A host page that switches theme at runtime can `postMessage` the embedded
-iframe instead of reloading it — `{ type: "loom-theme", theme: "light" }` for
-the palette, `{ type: "loom-background", background: "white" }` for the
+Both are settled from the URL by the generated page itself, before the first
+paint — an iframe that reloads with new params comes up on its final backdrop
+rather than flashing loom's dark default while the bundle loads.
+
+A host page that switches theme at runtime can skip the reload entirely and
+`postMessage` the embedded iframe — `{ type: "loom-theme", theme: "light" }`
+for the palette, `{ type: "loom-background", background: "white" }` for the
 backdrop. Posting `{ type: "loom-background" }` with no colour hands the
-backdrop back to the theme.
+backdrop back to the theme. (A param that drives the *scene* rather than the
+gallery — a control that picks your own component's theme, say — still needs
+the reload; only the backdrop is switchable in place.)
 
 #### Gallery troubleshooting
 

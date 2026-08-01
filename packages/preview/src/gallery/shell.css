@@ -1,6 +1,11 @@
-:root {
-	color-scheme: dark;
-}
+/*
+ * No backdrop and no `color-scheme` here: this stylesheet rides in on the JS
+ * graph (injected by the dev server, a render-blocking `<link>` in the build),
+ * which is late enough that a `?theme=`/`?background=` page would paint dark
+ * first and flash. The generated page's `<head>` owns both — see `./boot.ts`.
+ * What is left is the palette *around* the stage, which nothing paints before
+ * the chrome exists anyway.
+ */
 
 html,
 body {
@@ -21,9 +26,13 @@ body {
 	}
 }
 
+/*
+ * The body stays transparent so the backdrop `<html>` carries — the boot
+ * style's themed default, or the inline `?background=` colour over it —
+ * reaches the canvas unpainted-over.
+ */
 body {
 	display: flex;
-	background: #14161a;
 	color: #cfd3dc;
 	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 	font-size: 12px;
@@ -32,18 +41,9 @@ body {
 
 /*
  * `?theme=light` / `{type:"loom-theme"}` postMessage: match the host docs
- * site's light theme. The color mirrors lattice's defaultLightTheme
- * `colors.background` so the stage blends with themed scene shells.
- *
- * Both backdrops here are the *default* for their theme — `?background=<color>`
- * writes an inline `background` on the body, which outranks these rules while
- * leaving the rest of the palette (chrome, text) to the theme.
+ * site's light theme.
  */
-html.loom-theme-light {
-	color-scheme: light;
-}
 html.loom-theme-light body {
-	background: #f6f9fc;
 	color: #2a3240;
 }
 

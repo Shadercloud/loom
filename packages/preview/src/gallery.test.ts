@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { GALLERY_BOOT_SCRIPT, GALLERY_BOOT_STYLE } from "./gallery/boot.ts";
 import {
 	DEFAULT_TARGETS_GLOB,
 	findLoomTargets,
@@ -272,6 +273,22 @@ describe("generated pages", () => {
 		expect(html).toContain('id="loom-gallery-sidebar"');
 		expect(html).toContain('id="loom-gallery-stage"');
 		expect(html).toContain('id="loom-root"');
+	});
+
+	it("settles the backdrop in the head, ahead of the module entry", () => {
+		const html = generateGalleryHtml("./entry.ts", "loom gallery");
+		expect(html).toContain(GALLERY_BOOT_STYLE);
+		expect(html).toContain(GALLERY_BOOT_SCRIPT);
+		// Both must land before the bundle that would otherwise repaint them.
+		expect(html.indexOf(GALLERY_BOOT_STYLE)).toBeLessThan(
+			html.indexOf(GALLERY_BOOT_SCRIPT),
+		);
+		expect(html.indexOf(GALLERY_BOOT_SCRIPT)).toBeLessThan(
+			html.indexOf('src="./entry.ts"'),
+		);
+		// The boot script is a classic script on purpose: a module would defer to
+		// after parsing, which is the flash it exists to prevent.
+		expect(html).not.toContain(`<script type="module">\n\t\t\t(function ()`);
 	});
 
 	it("gives the single-entry page a full-viewport #loom-root", () => {

@@ -33,13 +33,19 @@ export interface GalleryParams {
  * the browser and the themed default stands.
  */
 const COLOR_FUNCTIONS = "rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|light-dark";
-const CSS_COLOR = new RegExp(
-	`^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|[a-z]+|(?:${COLOR_FUNCTIONS})\\([#0-9a-z%.,+/\\s-]*\\))$`,
-	"i",
-);
+
+/**
+ * Source rather than a literal: the generated page's first-paint script
+ * (`./boot.ts`) rebuilds these from the same strings, so the pre-bundle paint
+ * and {@link parseBackgroundColor} can never drift apart.
+ */
+export const BACKGROUND_COLOR_PATTERN = `^(?:#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|[a-z]+|(?:${COLOR_FUNCTIONS})\\([#0-9a-z%.,+/\\s-]*\\))$`;
 
 /** Hex digits with no `#` — see {@link parseBackgroundColor}. */
-const BARE_HEX = /^(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+export const BARE_HEX_PATTERN = "^(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$";
+
+const CSS_COLOR = new RegExp(BACKGROUND_COLOR_PATTERN, "i");
+const BARE_HEX = new RegExp(BARE_HEX_PATTERN, "i");
 
 /**
  * Read one `?background=` value: trimmed, hex-normalised, and filtered through

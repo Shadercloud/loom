@@ -105,14 +105,19 @@ export function startGallery(targets: TargetMap): void {
 
 	// Backdrop: `?background=<css color>` paints the stage a specific colour
 	// instead of the theme's own — a docs page whose article background isn't
-	// either of loom's two can hand the embed its own. Written inline, so it
-	// outranks the themed rule and survives a later theme flip; a colour the
-	// browser won't take is dropped by the CSSOM and the theme stands.
-	// `{type:"loom-background"}` re-points it live (a null/absent colour
+	// either of loom's two can hand the embed its own. Written inline on
+	// `<html>`, so it outranks the themed rule and survives a later theme flip;
+	// a colour the browser won't take is dropped by the CSSOM and the theme
+	// stands. `{type:"loom-background"}` re-points it live (a null/absent colour
 	// restores the theme), mirroring the theme message.
+	//
+	// The initial pass is almost always a no-op: the generated page's boot script
+	// has already painted this exact colour onto this exact element before the
+	// first frame (see `./boot.ts`). It stays because a host page that embeds the
+	// shell in a document of its own gets no boot script.
 	const applyBackground = (color: string | undefined): void => {
-		document.body.style.removeProperty("background");
-		if (color !== undefined) document.body.style.background = color;
+		document.documentElement.style.removeProperty("background");
+		if (color !== undefined) document.documentElement.style.background = color;
 	};
 	applyBackground(initial.background);
 
