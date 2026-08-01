@@ -1,5 +1,33 @@
 # @loom-dev/react
 
+## 0.6.3
+
+### Patch Changes
+
+- [`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97) Thanks [@astra-void](https://github.com/astra-void)! - Round each `UICorner` corner on its own, and draw a `UIStroke` on the side of the edge it asks for.
+
+  - **`TopLeftRadius` … `BottomRightRadius` are applied**, each overriding `CornerRadius` for its own corner. That is how a card rounds only its top while its footer rounds only its bottom — a shape that came out square before, since only `CornerRadius` was read. Everything drawn from the same box follows: the `UIStroke` ring and the `UIShadow` are box-shadows, so they take the new radius for free. A radius that returns to zero now squares the box off again instead of keeping the last rounding it had. Thanks to [@Shadercloud](https://github.com/Shadercloud) for the report and the first cut in [#10](https://github.com/astra-void/loom/pull/10).
+  - **`UIStroke.BorderStrokePosition`**: `Outer` (the default, and what was always drawn) spreads outward, `Inner` insets so the stroke eats into the object instead of inflating it — a bordered header stays flush with the card around it rather than overhanging it — and `Center` straddles the edge with half the thickness each way.
+  - **`UIStroke.Enabled = false` and a fully transparent stroke paint nothing**, matching what `UIShadow` already did, and a stroke that is switched off takes its ring with it instead of leaving it on the element.
+
+- [`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97) Thanks [@astra-void](https://github.com/astra-void)! - `LineHeight` spaces out wrapped text, the way the engine does.
+
+  The multiplier is read, clamped to the 1…3 Studio allows, and spent **between** lines: `n` lines measure `TextSize + (n - 1) * TextSize * LineHeight`, so a one-line label is exactly `TextSize` tall however high its `LineHeight` is. CSS instead gives every line box the full `line-height`, half of the extra above the text and half below, so the leading is cropped off the two outer edges of the block — the paint then lands where `AutomaticSize` measured it.
+
+  A library that sets a per-variant `LineHeight` on every label (1.25 for a heading, 1.4 for body copy) got single-spaced paragraphs before this, and an `AutomaticSize.Y` container measured to match.
+
+- [`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97) Thanks [@astra-void](https://github.com/astra-void)! - Make wrapped text and auto-sized rows measure the way Roblox does — a card whose body overflowed its own container, and a footer a whole button row too tall.
+
+  - **`TextWrapped` wraps at the nearest ancestor that has a width**, less the padding in between, instead of stopping at the immediate parent. A parent that is itself `AutomaticSize` was sized _by_ the label, so wrapping against it is the same circle as wrapping against the label's own width and the text never wrapped at all. The library idiom stacks two or three such containers (a padded body inside a flex item inside a card), and the card — the one node with a real width — is where the room actually runs out. Text that used to run past its card and get painted over by the next one now wraps inside it.
+  - **A `Wraps` list measures as one run when the fill direction is the axis being measured.** `AutomaticSize` on that axis means there is no width yet to wrap against, so wrapping against the 0-wide measurement box put every item on its own line: a row of buttons measured one line per button, and the auto-sized footer holding them came out a row too tall while the paint — which runs against the real width — still laid them side by side. Same "unconstrained fill axis" rule `UIGridLayout` already followed.
+  - **`TextWrap` is declared on the text props.** It has been read as an alias of `TextWrapped` since 0.6.1, but only `TextWrapped` was on `TextGuiProps`, so a component written against the alias wrapped correctly at runtime and still failed to typecheck. `TextWrapped` continues to win when both are set.
+
+- Updated dependencies [[`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97), [`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97), [`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97)]:
+  - @loom-dev/renderer@0.6.3
+  - @loom-dev/scene@0.6.3
+  - @loom-dev/layout@0.6.3
+  - @loom-dev/runtime@0.6.3
+
 ## 0.6.2
 
 ### Patch Changes

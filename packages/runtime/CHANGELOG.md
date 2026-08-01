@@ -1,5 +1,12 @@
 # @loom-dev/runtime
 
+## 0.6.3
+
+### Patch Changes
+
+- Updated dependencies [[`abe2845`](https://github.com/astra-void/loom/commit/abe28455deb7f12b2a467e6a7ada8b6602f01f97)]:
+  - @loom-dev/scene@0.6.3
+
 ## 0.6.2
 
 ### Patch Changes
