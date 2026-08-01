@@ -48,6 +48,7 @@ import type {
 	Color3,
 	FontValue,
 	LayoutResult,
+	PropertyValue,
 	Rect,
 	SceneNode,
 	UDim,
@@ -195,10 +196,10 @@ export function instanceFont(inst: {
 }): ResolvedFont {
 	const face = inst.FontFace as
 		| {
-				Family?: unknown;
-				Weight?: { Value?: unknown };
-				Style?: { Name?: unknown };
-		  }
+			Family?: unknown;
+			Weight?: { Value?: unknown };
+			Style?: { Name?: unknown };
+		}
 		| undefined;
 	if (face && typeof face.Family === "string") {
 		return resolveFont(undefined, {
@@ -233,9 +234,58 @@ function applyCorner(
 ): void {
 	const corner = findModifier(node, "UICorner");
 	if (!corner) return;
-	const cr = asUDim(corner.properties?.CornerRadius) ?? { scale: 0, offset: 0 };
-	const radius = cr.scale * Math.min(rect.width, rect.height) + cr.offset;
-	if (radius > 0) s.borderRadius = `${radius}px`;
+
+	const shortestSide = Math.min(rect.width, rect.height);
+
+	const resolveRadius = (
+		value: PropertyValue | undefined,
+	): number => {
+		const radius = asUDim(value);
+		if (!radius) return 0;
+
+		return Math.max(
+			0,
+			radius.scale * shortestSide + radius.offset,
+		);
+	};
+
+	const cornerRadius = asUDim(corner.properties?.CornerRadius);
+
+	if (cornerRadius) {
+		const radius = Math.max(
+			0,
+			cornerRadius.scale * shortestSide + cornerRadius.offset,
+		);
+
+		s.borderRadius = radius > 0 ? `${radius}px` : "";
+		return;
+	}
+
+	const topLeft = resolveRadius(
+		corner.properties?.TopLeftRadius,
+	);
+	const topRight = resolveRadius(
+		corner.properties?.TopRightRadius,
+	);
+	const bottomRight = resolveRadius(
+		corner.properties?.BottomRightRadius,
+	);
+	const bottomLeft = resolveRadius(
+		corner.properties?.BottomLeftRadius,
+	);
+
+	if (
+		topLeft === 0 &&
+		topRight === 0 &&
+		bottomRight === 0 &&
+		bottomLeft === 0
+	) {
+		s.borderRadius = "";
+		return;
+	}
+
+	s.borderRadius =
+		`${topLeft}px ${topRight}px ${bottomRight}px ${bottomLeft}px`;
 }
 
 /** A `UDim` resolved against a pixel basis, the Roblox way. */
@@ -572,9 +622,9 @@ function withAlpha(color: string, alpha: number): string {
 		const full =
 			digits.length === 3
 				? digits
-						.split("")
-						.map((d) => d + d)
-						.join("")
+					.split("")
+					.map((d) => d + d)
+					.join("")
 				: digits;
 		const r = Number.parseInt(full.slice(0, 2), 16);
 		const g = Number.parseInt(full.slice(2, 4), 16);
@@ -957,10 +1007,10 @@ function createTextBoxBinding(
 		if (getFocusedTextBox() === inst) setFocusedTextBox(undefined);
 		const input = enterPressed
 			? makeInputObject({
-					UserInputType: Enum.UserInputType.Keyboard,
-					UserInputState: Enum.UserInputState.End,
-					KeyCode: Enum.KeyCode.Return,
-				})
+				UserInputType: Enum.UserInputType.Keyboard,
+				UserInputState: Enum.UserInputState.End,
+				KeyCode: Enum.KeyCode.Return,
+			})
 			: undefined;
 		getEventSignal(inst, "FocusLost").fire(enterPressed, input);
 	};
@@ -1258,7 +1308,7 @@ export function createDomSession(
 		// meant for what is underneath it.
 		const pointerEvents =
 			sinksPointerInput(node) ||
-			hasAnyEventConnection(options.resolveInstance(id), POINTER_EVENT_NAMES)
+				hasAnyEventConnection(options.resolveInstance(id), POINTER_EVENT_NAMES)
 				? "auto"
 				: "none";
 		if (el.style.pointerEvents !== pointerEvents) {

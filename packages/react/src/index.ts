@@ -239,8 +239,8 @@ function syncHandlers(
 		const connection =
 			kind === "E"
 				? getEventSignal(inst, name).Connect((...args: unknown[]) =>
-						fn(inst, ...args),
-					)
+					fn(inst, ...args),
+				)
 				: inst.GetPropertyChangedSignal(name).Connect(() => fn(inst));
 		connections.set(key, connection);
 	}
@@ -717,8 +717,8 @@ class WorldImpl implements World {
 		if (playerGuiOwner && !playerGuiOwner.disposed) {
 			console.warn(
 				"loom react: a new world is claiming Players.LocalPlayer.PlayerGui " +
-					"while another world still owns it — the newest world wins " +
-					"(matching the last-world-wins hit-tester rule)",
+				"while another world still owns it — the newest world wins " +
+				"(matching the last-world-wins hit-tester rule)",
 			);
 		}
 		playerGuiOwner = this;
@@ -828,8 +828,8 @@ class WorldImpl implements World {
 					this.warnedNonLayer.add(child);
 					console.warn(
 						`loom react: "${String(child.Name)}" (${child.ClassName}) is ` +
-							"parented directly to PlayerGui but is not a LayerCollector — " +
-							"skipped (put it inside a ScreenGui)",
+						"parented directly to PlayerGui but is not a LayerCollector — " +
+						"skipped (put it inside a ScreenGui)",
 					);
 				}
 				continue;
@@ -867,7 +867,7 @@ class WorldImpl implements World {
 				this.warnedDepth = true;
 				console.warn(
 					"loom react: layout feedback exceeded flush depth " +
-						`${MAX_FLUSH_DEPTH} — deferring further work to the next frame`,
+					`${MAX_FLUSH_DEPTH} — deferring further work to the next frame`,
 				);
 			}
 			markDirty(this.rootInstance);
@@ -1521,6 +1521,10 @@ export interface UISizeConstraintProps {
 /** `UICorner` props. */
 export interface UICornerProps {
 	CornerRadius?: Bindable<UDim>;
+	BottomLeftRadius?: Bindable<UDim>;
+	BottomRightRadius?: Bindable<UDim>;
+	TopLeftRadius?: Bindable<UDim>;
+	TopRightRadius?: Bindable<UDim>;
 	key?: Key;
 }
 
