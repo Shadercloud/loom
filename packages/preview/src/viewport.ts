@@ -30,11 +30,15 @@
 
 /**
  * The logical viewport width a preview falls back to once the real one is
- * narrower. 1280 is loom's design reference: it is the default
- * `Workspace.CurrentCamera.ViewportSize` the runtime installs (1280x720), so a
- * scaled preview lays out against the same width an unmeasured one assumes.
+ * narrower.
+ *
+ * A trade-off, not a constant with one right answer: the wider the base, the
+ * more desktop layout survives intact and the smaller everything is drawn. 960
+ * is the middle of it — wide enough that a two-column or fixed-panel layout
+ * still has room, small enough that a phone renders the scene at ~40% rather
+ * than the ~30% a 1280 base would give, where body text stops being readable.
  */
-export const BASE_VIEWPORT_WIDTH = 1280;
+export const BASE_VIEWPORT_WIDTH = 960;
 
 export interface ResolvedViewport {
 	/** Logical width the scene lays out against (CSS px, pre-transform). */
