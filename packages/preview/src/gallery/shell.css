@@ -34,6 +34,10 @@ body {
  * `?theme=light` / `{type:"loom-theme"}` postMessage: match the host docs
  * site's light theme. The color mirrors lattice's defaultLightTheme
  * `colors.background` so the stage blends with themed scene shells.
+ *
+ * Both backdrops here are the *default* for their theme — `?background=<color>`
+ * writes an inline `background` on the body, which outranks these rules while
+ * leaving the rest of the palette (chrome, text) to the theme.
  */
 html.loom-theme-light {
 	color-scheme: light;

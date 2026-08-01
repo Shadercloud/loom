@@ -82,6 +82,88 @@ describe("gallery target diagnostics", () => {
 });
 
 /**
+ * The stage backdrop: `?theme=` picks one of loom's two palettes (a class on
+ * `<html>`, coloured by the stylesheet), `?background=` overrides just the
+ * colour with an inline style that outranks it.
+ */
+describe("gallery stage backdrop", () => {
+	const boot = (search: string): void => {
+		document.documentElement.className = "";
+		document.body.className = "";
+		document.body.removeAttribute("style");
+		document.body.innerHTML = `
+			<aside id="loom-gallery-sidebar"></aside>
+			<main id="loom-gallery-stage"><div id="loom-root"></div></main>
+		`;
+		window.history.replaceState({}, "", `/loom-preview/${search}`);
+		startGallery({
+			[TARGET]: async () => ({
+				preview: { render: () => React.createElement("frame") } as const,
+			}),
+		});
+	};
+
+	it("leaves the themed default alone when no background is asked for", () => {
+		boot("?theme=light");
+		expect(
+			document.documentElement.classList.contains("loom-theme-light"),
+		).toBe(true);
+		expect(document.body.style.background).toBe("");
+	});
+
+	it("paints the stage the requested colour, over either theme", () => {
+		boot("?background=white");
+		expect(document.body.style.background).toBe("white");
+		// The theme still owns the rest of the palette.
+		expect(
+			document.documentElement.classList.contains("loom-theme-light"),
+		).toBe(false);
+
+		boot("?theme=light&background=%23ffffff");
+		expect(document.body.style.background).toBe("#ffffff");
+	});
+
+	it("accepts bare hex, which is what survives a query string", () => {
+		boot("?background=f6f9fc");
+		expect(document.body.style.background).toBe("#f6f9fc");
+	});
+
+	it("keeps the themed default when the colour is unusable", () => {
+		boot("?background=url(https://evil.test/x.png)");
+		expect(document.body.getAttribute("style")).toBeNull();
+
+		// Shaped like a colour, but no such keyword: rejected by the CSSOM.
+		boot("?background=nosuchcolor");
+		expect(document.body.style.background).toBe("");
+	});
+
+	it("re-points the backdrop from a host postMessage, and back", () => {
+		boot("?background=white");
+
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: { type: "loom-background", background: "black" },
+			}),
+		);
+		expect(document.body.style.background).toBe("black");
+
+		// A theme flip doesn't reclaim the override.
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: { type: "loom-theme", theme: "light" },
+			}),
+		);
+		expect(document.body.style.background).toBe("black");
+
+		// An absent colour hands the backdrop back to the theme.
+		window.dispatchEvent(
+			new MessageEvent("message", { data: { type: "loom-background" } }),
+		);
+		expect(document.body.style.background).toBe("");
+	});
+});
+
+/**
  * The narrow-screen chrome: the CSS media query stacks the sidebar over the
  * stage and hides the list unless `body.loom-gallery-open` is set — this is the
  * state side of that contract.

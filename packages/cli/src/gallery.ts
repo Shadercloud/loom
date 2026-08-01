@@ -17,6 +17,7 @@ export {
 	findLoomTargets,
 	type GalleryParams,
 	normalizeTargetsPatterns,
+	parseBackgroundColor,
 	parseGalleryParams,
 	type TargetsInput,
 } from "@loom-dev/preview/gallery";

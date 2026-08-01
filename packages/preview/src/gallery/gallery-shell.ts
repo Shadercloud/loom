@@ -31,7 +31,7 @@ import {
 	type PreviewTheme,
 	setPreviewTheme,
 } from "../client.ts";
-import { parseGalleryParams } from "./params.ts";
+import { parseBackgroundColor, parseGalleryParams } from "./params.ts";
 import "./shell.css";
 
 type TargetModule = Record<string, unknown>;
@@ -102,8 +102,34 @@ export function startGallery(targets: TargetMap): void {
 		setPreviewTheme(theme);
 	};
 	applyTheme(initial.theme);
+
+	// Backdrop: `?background=<css color>` paints the stage a specific colour
+	// instead of the theme's own — a docs page whose article background isn't
+	// either of loom's two can hand the embed its own. Written inline, so it
+	// outranks the themed rule and survives a later theme flip; a colour the
+	// browser won't take is dropped by the CSSOM and the theme stands.
+	// `{type:"loom-background"}` re-points it live (a null/absent colour
+	// restores the theme), mirroring the theme message.
+	const applyBackground = (color: string | undefined): void => {
+		document.body.style.removeProperty("background");
+		if (color !== undefined) document.body.style.background = color;
+	};
+	applyBackground(initial.background);
+
 	window.addEventListener("message", (event: MessageEvent) => {
-		const data = event.data as { type?: unknown; theme?: unknown } | null;
+		const data = event.data as {
+			type?: unknown;
+			theme?: unknown;
+			background?: unknown;
+		} | null;
+		if (data?.type === "loom-background") {
+			applyBackground(
+				typeof data.background === "string"
+					? parseBackgroundColor(data.background)
+					: undefined,
+			);
+			return;
+		}
 		if (data?.type !== "loom-theme") return;
 		if (data.theme === "light" || data.theme === "dark") {
 			applyTheme(data.theme);

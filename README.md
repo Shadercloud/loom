@@ -296,6 +296,36 @@ http://localhost:3000/loom-preview?chrome=none&target=src/Scenes/Button.loom.tsx
 
 Development galleries support Windows, macOS, and Linux paths.
 
+#### Gallery URL parameters
+
+The same query contract works on the dev server and the static build:
+
+| param | values | what it does |
+| --- | --- | --- |
+| `target` | a target's path relative to the root | selects the target to show |
+| `chrome` | `none` | drops the sidebar and renders one target full-bleed |
+| `theme` | `light`, `dark` (default) | picks the palette, and seeds `PlayerGui.LoomTheme` |
+| `background` | any CSS colour | paints the stage that exact colour |
+
+`theme` chooses between loom's own two backdrops (`#14161a` and `#f6f9fc`);
+`background` overrides just that backdrop with a colour of your own, leaving
+the chrome and text to `theme`. So a white stage that also reads as light is
+`?theme=light&background=white`.
+
+A `#` opens the URL fragment, so a literal `?background=#ffffff` never reaches
+the gallery. Write hex either percent-encoded or bare — `?background=%23ffffff`
+and `?background=ffffff` are the same colour — or use a name (`white`), an
+`rgb()` / `oklch()` / `light-dark()` form, or `transparent` to let the host
+page's own background show through the iframe. Only colours are accepted;
+anything else (a gradient, a `url(...)`) is ignored and the theme's backdrop
+stands.
+
+A host page that switches theme at runtime can `postMessage` the embedded
+iframe instead of reloading it — `{ type: "loom-theme", theme: "light" }` for
+the palette, `{ type: "loom-background", background: "white" }` for the
+backdrop. Posting `{ type: "loom-background" }` with no colour hands the
+backdrop back to the theme.
+
 #### Gallery troubleshooting
 
 - A black page plus a Vite error mentioning the gallery `shell.ts` or a

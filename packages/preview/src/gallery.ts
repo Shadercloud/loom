@@ -133,7 +133,11 @@ export function generateTargetsModule(
 
 // The browser-side URL contract lives in `./gallery/params` (no node imports)
 // so the bundled shell can use it; re-exported here for the node-side test.
-export { type GalleryParams, parseGalleryParams } from "./gallery/params.ts";
+export {
+	type GalleryParams,
+	parseBackgroundColor,
+	parseGalleryParams,
+} from "./gallery/params.ts";
 
 /**
  * The static-build entry module. `globalsSpecifier` is imported **first** so

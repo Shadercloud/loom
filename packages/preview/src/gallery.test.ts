@@ -11,6 +11,7 @@ import {
 	generateTargetsModule,
 	globToRegExp,
 	normalizeTargetsPatterns,
+	parseBackgroundColor,
 	parseGalleryParams,
 	toViteFsUrl,
 } from "./gallery.ts";
@@ -201,6 +202,66 @@ describe("parseGalleryParams", () => {
 
 	it("treats an empty target as absent", () => {
 		expect(parseGalleryParams("?target=&chrome=none").target).toBeUndefined();
+	});
+
+	it("reads ?background= alongside the rest of the contract", () => {
+		const p = parseGalleryParams("?target=a.loom.tsx&background=white");
+		expect(p.background).toBe("white");
+		expect(p.target).toBe("a.loom.tsx");
+	});
+
+	it("leaves the background undefined when absent", () => {
+		expect(parseGalleryParams("?theme=light").background).toBeUndefined();
+	});
+});
+
+describe("parseBackgroundColor", () => {
+	it("takes the colour spellings a URL can carry", () => {
+		expect(parseBackgroundColor("white")).toBe("white");
+		expect(parseBackgroundColor("transparent")).toBe("transparent");
+		// `%23ffffff`, already decoded by URLSearchParams.
+		expect(parseBackgroundColor("#ffffff")).toBe("#ffffff");
+		expect(parseBackgroundColor("#f0fa")).toBe("#f0fa");
+		expect(parseBackgroundColor("rgb(255, 255, 255)")).toBe(
+			"rgb(255, 255, 255)",
+		);
+		expect(parseBackgroundColor("oklch(0.98 0.01 250)")).toBe(
+			"oklch(0.98 0.01 250)",
+		);
+		expect(parseBackgroundColor("light-dark(white, #14161a)")).toBe(
+			"light-dark(white, #14161a)",
+		);
+	});
+
+	it("prefixes bare hex digits, the spelling that survives a query string", () => {
+		expect(parseBackgroundColor("fff")).toBe("#fff");
+		expect(parseBackgroundColor("F6F9FC")).toBe("#F6F9FC");
+		expect(parseBackgroundColor("11223344")).toBe("#11223344");
+	});
+
+	it("trims, and reads empty or absent as no override", () => {
+		expect(parseBackgroundColor("  white  ")).toBe("white");
+		expect(parseBackgroundColor("")).toBeUndefined();
+		expect(parseBackgroundColor("   ")).toBeUndefined();
+		expect(parseBackgroundColor(null)).toBeUndefined();
+		expect(parseBackgroundColor(undefined)).toBeUndefined();
+	});
+
+	it("refuses anything that could fetch or escape the declaration", () => {
+		expect(
+			parseBackgroundColor("url(https://evil.test/x.png)"),
+		).toBeUndefined();
+		expect(
+			parseBackgroundColor("white; background-image: url(https://evil.test/x)"),
+		).toBeUndefined();
+		expect(parseBackgroundColor("rgb(0,0,0) url(x)")).toBeUndefined();
+		expect(
+			parseBackgroundColor("image-set('https://evil.test/x')"),
+		).toBeUndefined();
+		expect(parseBackgroundColor("rgb(var(--x))")).toBeUndefined();
+		expect(parseBackgroundColor("}html{display:none")).toBeUndefined();
+		// A colour, not a whole `background` — gradients stay out of the allowlist.
+		expect(parseBackgroundColor("linear-gradient(red, blue)")).toBeUndefined();
 	});
 });
 
