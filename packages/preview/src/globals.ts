@@ -19,10 +19,20 @@ installGlobals();
 setImageResolver((image) => {
 	const id = /^rbxassetid:\/\/(\d+)$/.exec(image)?.[1];
 	if (id === undefined) return undefined;
-	// Widened rather than relying on `vite/client`: this module is typechecked by
-	// the previewed app's tsconfig too, which need not pull Vite's types in.
-	const meta = import.meta as ImportMeta & { env?: { BASE_URL?: string } };
-	const base = meta.env?.BASE_URL ?? "/";
+	// `import.meta.env` is spelled out here, on purpose. Vite populates it by
+	// *prepending an assignment* (`import.meta.env = {BASE_URL: …}`) to modules
+	// whose transformed code mentions it by name — so binding `import.meta` to a
+	// variable first hides the mention, the assignment never lands, and the read
+	// runs against the browser's own `import.meta`, which has no `env` at all.
+	// The base then silently fell back to "/" under every mount that has one (the
+	// Next integration, the Astro embed) and the asset route 404'd.
+	//
+	// The cast is inline for the same reason, and widened rather than taken from
+	// `vite/client`: this module is typechecked by the previewed app's tsconfig
+	// too, which need not have Vite's types.
+	const base =
+		(import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env
+			?.BASE_URL ?? "/";
 	return `${base.endsWith("/") ? base : `${base}/`}__loom/asset/${id}`;
 });
 
@@ -49,6 +59,8 @@ declare global {
 	const Color3: typeof runtime.Color3;
 	const ColorSequence: typeof runtime.ColorSequence;
 	const ColorSequenceKeypoint: typeof runtime.ColorSequenceKeypoint;
+	const NumberSequence: typeof runtime.NumberSequence;
+	const NumberSequenceKeypoint: typeof runtime.NumberSequenceKeypoint;
 	const Rect: typeof runtime.Rect;
 	const CFrame: typeof runtime.CFrame;
 	const TweenInfo: typeof runtime.TweenInfo;
