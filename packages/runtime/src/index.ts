@@ -5,15 +5,17 @@
  * datatypes (`datatypes.ts`) and `Enum` namespace (`enums.ts`), the Luau
  * global environment (`luau.ts`), Roblox-shaped signals (`signal.ts`), the
  * Proxy-based live instance tree (`instance.ts` + `registry.ts`), input
- * objects (`input.ts`), the frame scheduler (`scheduler.ts`), and the fake
- * `game` service tree (`game.ts` + `services.ts`). `installGlobals` wires the
- * lot onto `globalThis` the way roblox-ts output expects.
+ * objects (`input.ts`), the frame scheduler (`scheduler.ts`), the stateful
+ * layout classes (`layouts.ts`), and the fake `game` service tree (`game.ts` +
+ * `services.ts`). `installGlobals` wires the lot onto `globalThis` the way
+ * roblox-ts output expects.
  */
 export * from "./datatypes";
 export * from "./enums";
 export * from "./game";
 export * from "./input";
 export * from "./instance";
+export * from "./layouts";
 export * from "./luau";
 export * from "./registry";
 export * from "./scheduler";

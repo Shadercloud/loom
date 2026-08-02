@@ -73,7 +73,16 @@ export const Enum = {
 		"Center",
 		"Bottom",
 	] as const),
+	/**
+	 * The engine's default on every `UIGridStyleLayout` is `Name`, not
+	 * `LayoutOrder` — a list that never sets it flows alphabetically.
+	 */
 	SortOrder: makeEnum("SortOrder", ["Name", "LayoutOrder"] as const),
+	/** `UITableLayout.MajorAxis`: are the direct children rows, or columns? */
+	TableMajorAxis: makeEnum("TableMajorAxis", [
+		"RowMajor",
+		"ColumnMajor",
+	] as const),
 	AutomaticSize: automaticSize,
 	AutomaticCanvasSize: automaticSize,
 	DominantAxis: makeEnum("DominantAxis", ["Width", "Height"] as const),
@@ -280,11 +289,7 @@ export const Enum = {
 		"Size60",
 		"Size96",
 	] as const),
-	/**
-	 * `ImageLabel.ScaleType`. loom paints `Stretch`, `Fit` and `Crop`; `Slice`
-	 * (9-slice) and `Tile` are accepted and fall back to `Stretch` until the
-	 * renderer grows the border/repeat machinery they need.
-	 */
+	/** `ImageLabel.ScaleType` — all five are painted. */
 	ScaleType: makeEnum("ScaleType", [
 		"Stretch",
 		"Slice",
@@ -292,6 +297,11 @@ export const Enum = {
 		"Fit",
 		"Crop",
 	] as const),
+	/**
+	 * `ImageLabel.ResampleMode`: `Pixelated` turns off smoothing when an image is
+	 * scaled up (CSS `image-rendering: pixelated`).
+	 */
+	ResamplerMode: makeEnum("ResamplerMode", ["Default", "Pixelated"] as const),
 	BorderStrokePosition: makeEnum("BorderStrokePosition", [
 		"Outer",
 		"Center",

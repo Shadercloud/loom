@@ -39,6 +39,11 @@ export const EVENT_NAMES: ReadonlySet<string> = new Set([
 	// (`TweenService:Create(...).Completed:Connect(...)`), so it has to resolve
 	// before anything has fired it.
 	"Completed",
+	// UIPageLayout's page-change events, for the same reason: they are connected
+	// on mount, long before the first `JumpToIndex` fires one.
+	"PageEnter",
+	"PageLeave",
+	"Stopped",
 ]);
 
 /**
@@ -393,6 +398,45 @@ function findInterceptor(
 	return undefined;
 }
 
+/** A derived property read (e.g. `UIPageLayout.CurrentPage`). */
+export type PropertyReader = (self: LoomInstance) => unknown;
+
+const PROPERTY_READERS = new Map<string, Map<string, PropertyReader>>();
+
+/**
+ * Register a **derived** read for `className.propertyName` — a property whose
+ * value is computed from the tree rather than stored.
+ *
+ * The read-only Roblox properties that reference other instances need this:
+ * `UIPageLayout.CurrentPage` is a GuiObject, which the Scene IR cannot carry as
+ * a property value, so the runtime keeps the *index* and derives the instance
+ * here. A reader wins over the raw store, which is the point — one source of
+ * truth, no way for the two to drift.
+ */
+export function registerPropertyReader(
+	className: string,
+	propertyName: string,
+	reader: PropertyReader,
+): void {
+	let forClass = PROPERTY_READERS.get(className);
+	if (!forClass) {
+		forClass = new Map();
+		PROPERTY_READERS.set(className, forClass);
+	}
+	forClass.set(propertyName, reader);
+}
+
+function findPropertyReader(
+	className: string,
+	key: string,
+): PropertyReader | undefined {
+	for (const cls of classChain(className)) {
+		const reader = PROPERTY_READERS.get(cls)?.get(key);
+		if (reader) return reader;
+	}
+	return undefined;
+}
+
 // --- TextBox focus adapter ---------------------------------------------------
 
 /** DOM-side focus behavior for one TextBox (wired by the renderer in Phase 3). */
@@ -555,6 +599,8 @@ function getTrap(impl: InstanceImpl, key: string | symbol): unknown {
 		return (...args: unknown[]) =>
 			classMethod(impl.proxy, ...(args as never[]));
 	}
+	const reader = findPropertyReader(impl.className, key);
+	if (reader) return reader(impl.proxy);
 	const value = impl.props.get(key);
 	if (value !== undefined) return value;
 	return classDefaultProperty(impl.className, key);
