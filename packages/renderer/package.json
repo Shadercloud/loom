@@ -1,7 +1,7 @@
 {
 	"name": "@loom-dev/renderer",
 	"version": "0.6.3",
-	"description": "Framework-agnostic DOM renderer for loom — paints Scene IR plus layout into positioned divs and dispatches pointer input.",
+	"description": "Framework-agnostic DOM renderer for loom \u2014 paints Scene IR plus layout into positioned divs and dispatches pointer input.",
 	"keywords": [
 		"loom",
 		"roblox",
@@ -19,12 +19,16 @@
 		"directory": "packages/renderer"
 	},
 	"type": "module",
-	"sideEffects": false,
+	"sideEffects": [
+		"./src/open-fonts.ts",
+		"./dist/open-fonts.js"
+	],
 	"files": [
 		"dist"
 	],
 	"exports": {
-		".": "./src/index.ts"
+		".": "./src/index.ts",
+		"./fonts": "./src/open-fonts.ts"
 	},
 	"types": "./src/index.ts",
 	"publishConfig": {
@@ -34,6 +38,10 @@
 			".": {
 				"types": "./dist/index.d.ts",
 				"default": "./dist/index.js"
+			},
+			"./fonts": {
+				"types": "./dist/open-fonts.d.ts",
+				"default": "./dist/open-fonts.js"
 			}
 		}
 	},
@@ -42,6 +50,10 @@
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
+		"@fontsource-variable/inconsolata": "^5.3.0",
+		"@fontsource-variable/roboto": "^5.3.0",
+		"@fontsource-variable/roboto-mono": "^5.3.0",
+		"@fontsource-variable/source-sans-3": "^5.3.0",
 		"@loom-dev/runtime": "workspace:*",
 		"@loom-dev/scene": "workspace:*"
 	},

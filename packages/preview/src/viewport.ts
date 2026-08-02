@@ -26,6 +26,13 @@
  *
  * At or above the base width nothing is applied at all — a desktop preview is
  * pixel-for-pixel what it was before.
+ *
+ * It is deliberately scoped to devices that are actually phone-shaped (see
+ * {@link resolveBaseWidth}). A desktop window dragged narrow must keep
+ * reflowing: an author narrowing the window is asking to see what the scene
+ * does at that viewport, and Studio reflows there — swapping the reflow for a
+ * zoom shows them a layout no player will ever get, with the text wrapping at
+ * the wrong width and the columns re-proportioning at the wrong breakpoints.
  */
 
 /**
@@ -39,6 +46,45 @@
  * than the ~30% a 1280 base would give, where body text stops being readable.
  */
 export const BASE_VIEWPORT_WIDTH = 960;
+
+/**
+ * The base width a preview mount should adapt to, from the page URL and the
+ * device. `0` means "never adapt" — {@link resolveViewport} is then the
+ * identity, and the scene lays out against the real viewport at every width.
+ *
+ * - **`?base=none`** (or `off`, or `0`) turns the adaptation off outright.
+ * - **`?base=<px>`** sets it, so a docs page embedding a preview at a fixed
+ *   width can pick the logical viewport its scene was written for.
+ * - **Absent**, it applies only where it was meant to: a device whose primary
+ *   pointer is coarse, i.e. a phone or tablet, where the alternative is a
+ *   desktop-width scene sliced down to a ~390px strip. On anything a mouse is
+ *   driving, a narrow window is a narrow window and the scene reflows into it.
+ */
+export function resolveBaseWidth(
+	search: string,
+	coarsePointer: boolean,
+	fallback: number = BASE_VIEWPORT_WIDTH,
+): number {
+	const params = new URLSearchParams(
+		search.startsWith("?") ? search.slice(1) : search,
+	);
+	const raw = params.get("base")?.trim().toLowerCase();
+	if (raw === "none" || raw === "off") return 0;
+	if (raw !== undefined && raw !== "") {
+		const px = Number.parseFloat(raw);
+		// A malformed `?base=` falls through to the device default rather than
+		// silently turning the adaptation off on the phone it exists for.
+		if (Number.isFinite(px)) return Math.max(0, px);
+	}
+	return coarsePointer ? fallback : 0;
+}
+
+/** {@link resolveBaseWidth} for the page this preview is running in. */
+export function currentBaseWidth(): number {
+	const coarse =
+		typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+	return resolveBaseWidth(location.search, coarse);
+}
 
 export interface ResolvedViewport {
 	/** Logical width the scene lays out against (CSS px, pre-transform). */

@@ -91,6 +91,50 @@ fn align_offset(space: f64, block: f64, align: &str) -> f64 {
 
 // --- own size: constraints + automatic size ----------------------------------
 
+/// The room a node's parent leaves it on each axis — the ceiling `AutomaticSize`
+/// grows against.
+///
+/// Roblox bounds it: an object with `AutomaticSize` on an axis "will increase in
+/// size up to maximum size allowed by the parent", and a `TextWrapped` label
+/// resizes "until the maximum extent is reached (parent's max size)" and only
+/// *then* starts wrapping. Growing unbounded instead lets a card whose content
+/// has an irreducible minimum — a row of buttons, a long word — run out of the
+/// container that positions it and paint over its neighbour, which is the one
+/// thing a `45%` column can never do in the engine.
+///
+/// `None` on an axis means there is no ceiling yet: the parent is itself being
+/// measured on it, so its width is the thing being computed and clamping to the
+/// zero-wide measurement box would collapse the whole subtree. Measurement is
+/// then CSS `max-content`, and the real ceiling arrives on the placement pass.
+#[derive(Clone, Copy, Debug)]
+struct Limits {
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+impl Limits {
+    /// A parent whose rect is final: both axes are a real ceiling.
+    fn definite(width: f64, height: f64) -> Self {
+        Limits {
+            x: Some(width),
+            y: Some(height),
+        }
+    }
+
+    /// `value`, never past the ceiling — `value` itself when there isn't one.
+    fn cap(limit: Option<f64>, value: f64) -> f64 {
+        match limit {
+            Some(max) => value.min(max),
+            None => value,
+        }
+    }
+
+    /// The ceiling that survives `pad` px of padding on the way in.
+    fn inset(limit: Option<f64>, pad: f64) -> Option<f64> {
+        limit.map(|max| (max - pad).max(0.0))
+    }
+}
+
 /// `(auto_x, auto_y)` from `AutomaticSize`.
 fn automatic_axes(node: &SceneNode) -> (bool, bool) {
     match enum_name(node, "AutomaticSize") {
@@ -161,8 +205,9 @@ fn base_size(node: &SceneNode, parent: Rect) -> (f64, f64) {
     apply_size_constraint(node, w, h)
 }
 
-/// Final resolved `(width, height)` of a node: base size grown by AutomaticSize.
-fn resolve_size(node: &SceneNode, parent: Rect) -> (f64, f64) {
+/// Final resolved `(width, height)` of a node: base size grown by AutomaticSize,
+/// never past the room `limit` says its parent has (see [`Limits`]).
+fn resolve_size(node: &SceneNode, parent: Rect, limit: Limits) -> (f64, f64) {
     let (w, h) = base_size(node, parent);
     let (ax, ay) = automatic_axes(node);
     if !ax && !ay {
@@ -170,18 +215,52 @@ fn resolve_size(node: &SceneNode, parent: Rect) -> (f64, f64) {
     }
     let (l, r, t, b) = padding_insets(node, w, h);
     let (pad_x, pad_y) = (l + r, t + b);
-    let (content_w, content_h) = measure_content(node, (w - pad_x).max(0.0), (h - pad_y).max(0.0));
+    // What this node can offer its own children: its width when it has one of
+    // its own, else the room it was given — less the padding in between.
+    let child_limit = Limits {
+        x: if ax {
+            Limits::inset(limit.x, pad_x)
+        } else {
+            Some((w - pad_x).max(0.0))
+        },
+        y: if ay {
+            Limits::inset(limit.y, pad_y)
+        } else {
+            Some((h - pad_y).max(0.0))
+        },
+    };
+    let (content_w, content_h) = measure_content(
+        node,
+        (w - pad_x).max(0.0),
+        (h - pad_y).max(0.0),
+        child_limit,
+    );
     let measured_w = content_w + pad_x;
     let measured_h = content_h + pad_y;
 
-    let new_w = if ax { w.max(measured_w) } else { w };
-    let new_h = if ay { h.max(measured_h) } else { h };
+    // `Size` stays the floor even when it is itself past the ceiling — Roblox
+    // never shrinks an object below it — so only the *grown* part is capped.
+    let new_w = if ax {
+        w.max(Limits::cap(limit.x, measured_w))
+    } else {
+        w
+    };
+    let new_h = if ay {
+        h.max(Limits::cap(limit.y, measured_h))
+    } else {
+        h
+    };
     (new_w, new_h)
 }
 
 /// The bounding content size of `node`'s children, given a content box of
 /// `(content_w, content_h)`. Used by AutomaticSize.
-fn measure_content(node: &SceneNode, content_w: f64, content_h: f64) -> (f64, f64) {
+fn measure_content(
+    node: &SceneNode,
+    content_w: f64,
+    content_h: f64,
+    limit: Limits,
+) -> (f64, f64) {
     let content = Rect {
         x: 0.0,
         y: 0.0,
@@ -191,7 +270,7 @@ fn measure_content(node: &SceneNode, content_w: f64, content_h: f64) -> (f64, f6
     let children = layout_children(node);
 
     let (mut w, mut h) = if let Some(list) = find_modifier(node, "UIListLayout") {
-        let m = list_metrics(content, list, &children, automatic_axes(node));
+        let m = list_metrics(content, list, &children, automatic_axes(node), limit);
         if m.vertical {
             (m.cross_max, m.total_main)
         } else {
@@ -208,7 +287,7 @@ fn measure_content(node: &SceneNode, content_w: f64, content_h: f64) -> (f64, f6
         let mut max_w: f64 = 0.0;
         let mut max_h: f64 = 0.0;
         for &(_, child) in &children {
-            let r = child_rect(child, content);
+            let r = child_rect(child, content, limit);
             max_w = max_w.max(r.x + r.width);
             max_h = max_h.max(r.y + r.height);
         }
@@ -314,6 +393,7 @@ fn list_metrics(
     list: &SceneNode,
     children: &[(usize, &SceneNode)],
     auto_axes: (bool, bool),
+    limit: Limits,
 ) -> ListMetrics {
     let vertical = enum_name(list, "FillDirection") != Some("Horizontal");
     let (main_content, _cross_content) = if vertical {
@@ -325,21 +405,32 @@ fn list_metrics(
     // `Wraps` breaks the flow onto a new line once an item no longer fits along
     // the fill direction — CSS `flex-wrap: wrap`, and Roblox's own flex model.
     //
-    // Except when the fill direction is the axis being measured: `AutomaticSize`
-    // on it means there is no width yet to wrap against (the box is 0, or an
-    // explicit `Size` that is only a minimum), so the items measure as one run —
-    // CSS `max-content`, and the same "unconstrained fill axis" rule
-    // `grid_metrics` already applies. Wrapping against the 0-wide measurement box
-    // instead put every item on its own line, so an auto-sized row of buttons
-    // measured a line per button while the paint — which runs against the real
-    // width — still laid them side by side.
+    // The room it wraps against is the content box when the fill direction has a
+    // width of its own. When that axis is being measured (`AutomaticSize` on it)
+    // the box is 0 — or an explicit `Size` that is only a minimum — so wrapping
+    // against it would put every item on its own line: an auto-sized row of
+    // buttons measured a line per button while the paint, which runs against the
+    // real width, still laid them side by side. The ceiling the parent leaves
+    // (see `Limits`) is the room in that case, and only when there is no ceiling
+    // either do the items measure as one run — CSS `max-content`, and the same
+    // "unconstrained fill axis" rule `grid_metrics` applies.
+    //
+    // Measuring and painting have to agree here: sizing a footer for one row and
+    // then painting two puts the second row outside the box that was grown for it.
     let auto_main = if vertical { auto_axes.1 } else { auto_axes.0 };
-    let wraps = !auto_main
+    let main_limit = if vertical { limit.y } else { limit.x };
+    let wrap_room = if auto_main {
+        main_limit
+    } else {
+        Some(main_content)
+    };
+    let wraps = wrap_room.is_some()
         && list
             .properties
             .get("Wraps")
             .and_then(PropertyValue::as_bool)
             .unwrap_or(false);
+    let wrap_room = wrap_room.unwrap_or(main_content);
 
     let mut lines: Vec<ListLine> = Vec::new();
     let mut line = ListLine {
@@ -358,7 +449,7 @@ fn list_metrics(
             line.end = i + 1;
             continue;
         }
-        let (w, h) = resolve_size(child, content);
+        let (w, h) = resolve_size(child, content, limit);
         let (main, cross) = if vertical { (h, w) } else { (w, h) };
         let advance = if line.visible_count == 0 {
             main
@@ -367,7 +458,7 @@ fn list_metrics(
         };
         // An item wider than the whole line still gets a line of its own rather
         // than an empty one before it — hence the `visible_count > 0` guard.
-        if wraps && line.visible_count > 0 && line.main_total + advance > main_content + EPS {
+        if wraps && line.visible_count > 0 && line.main_total + advance > wrap_room + EPS {
             line.end = i;
             lines.push(std::mem::replace(
                 &mut line,
@@ -464,8 +555,10 @@ fn place_with_list(
 ) -> Result<(), LayoutError> {
     let order = flow_order(children, list);
     // Placement runs against the node's final rect, so both axes are definite by
-    // now — whatever `AutomaticSize` asked for has already been resolved into it.
-    let m = list_metrics(content, list, &order, (false, false));
+    // now — whatever `AutomaticSize` asked for has already been resolved into it,
+    // and the content box is a real ceiling for the children.
+    let limit = Limits::definite(content.width, content.height);
+    let m = list_metrics(content, list, &order, (false, false), limit);
     let vertical = m.vertical;
     let main_content = if vertical {
         content.height
@@ -549,7 +642,7 @@ fn place_with_list(
         let between = spacing.as_ref().map_or(0.0, |s| s.between);
 
         for &(idx, child) in &order[line.start..line.end] {
-            let (w, h) = resolve_size(child, content);
+            let (w, h) = resolve_size(child, content, limit);
             let (mut main_size, mut cross_size) = if vertical { (h, w) } else { (w, h) };
             if child.visible() && per_weight > 0.0 {
                 let weight = if fill_all {
@@ -724,8 +817,8 @@ fn place_with_grid(
 // --- placement ---------------------------------------------------------------
 
 /// Resolve a free-positioned child's rect (size + anchor/position).
-fn child_rect(node: &SceneNode, parent_content: Rect) -> Rect {
-    let (w, h) = resolve_size(node, parent_content);
+fn child_rect(node: &SceneNode, parent_content: Rect, limit: Limits) -> Rect {
+    let (w, h) = resolve_size(node, parent_content, limit);
     let pos = node.position();
     let anchor = node.anchor_point();
     Rect {
@@ -757,8 +850,9 @@ fn place_node(
     } else if let Some(grid) = find_modifier(node, "UIGridLayout") {
         place_with_grid(content, grid, &children, &path, out)?;
     } else {
+        let limit = Limits::definite(content.width, content.height);
         for &(idx, child) in &children {
-            let r = child_rect(child, content);
+            let r = child_rect(child, content, limit);
             place_node(child, r, format!("{path}/{idx}"), out)?;
         }
     }
@@ -1705,6 +1799,193 @@ mod tests {
         // Two visible items => one 400px gap; the hidden one takes no slot.
         assert_eq!(r.rects["0/0/0"].rect.x, 0.0);
         assert_eq!(r.rects["0/0/2"].rect.x, 500.0);
+    }
+
+    /// The library card: `Size = fromScale(1, 1)` + `AutomaticSize.XY` inside a
+    /// column that gives it a share of the row, with content `content_w` wide
+    /// that cannot get any narrower (a row of buttons, a long word).
+    fn card_in_column(share: f64, content_w: f64) -> SceneNode {
+        let mut card = with(
+            "Frame",
+            "Card",
+            &[
+                ("Size", udim2(1.0, 0.0, 1.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        card.children.push(with(
+            "Frame",
+            "Footer",
+            &[("Size", udim2(0.0, content_w, 0.0, 40.0))],
+        ));
+        let mut column = with("Frame", "Column", &[("Size", udim2(share, 0.0, 0.0, 100.0))]);
+        column.children.push(card);
+        column
+    }
+
+    #[test]
+    fn automatic_size_stops_at_the_room_its_parent_has() {
+        // Roblox grows an AutomaticSize object "up to maximum size allowed by
+        // the parent". Unbounded, a card whose content has an irreducible
+        // minimum runs straight out of the column that positions it.
+        let r = compute_layout(&screen(vec![card_in_column(0.45, 500.0)]), VP).unwrap();
+        // The column is 45% of 800 = 360, and the card stops there rather than
+        // taking the 500 its footer asks for.
+        assert_eq!(r.rects["0/0"].rect.width, 360.0);
+        assert_eq!(r.rects["0/0/0"].rect.width, 360.0);
+        // The content that still does not fit overflows the card, which is what
+        // the engine does — it does not widen it.
+        assert_eq!(r.rects["0/0/0/0"].rect.width, 500.0);
+    }
+
+    #[test]
+    fn a_narrow_column_no_longer_overlaps_its_neighbour() {
+        // The reported failure, at the width it appears: five 45% columns in a
+        // wrapping row, two to a line. Each card grew to its own content and
+        // painted over the card beside it.
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                ("Wraps", PropertyValue::Known(KnownProperty::Bool(true))),
+            ],
+        );
+        let mut row = with("Frame", "Row", &[("Size", udim2(1.0, 0.0, 0.0, 400.0))]);
+        row.children.push(list);
+        for _ in 0..5 {
+            row.children.push(card_in_column(0.45, 500.0));
+        }
+        let r = compute_layout(&screen(vec![row]), VP).unwrap();
+        // Two columns per line: 0.45 + 0.45 of 800 fits, a third would not.
+        let first = r.rects["0/0/0/0"].rect; // card in column 0
+        let second = r.rects["0/0/1/0"].rect; // card in column 1
+        assert_eq!(first.y, second.y, "expected both on the first line");
+        assert!(
+            first.x + first.width <= second.x + EPS,
+            "card 0 ends at {} but card 1 starts at {}",
+            first.x + first.width,
+            second.x,
+        );
+        // And the third wraps to a second line rather than joining them.
+        assert!(r.rects["0/0/2/0"].rect.y > first.y);
+    }
+
+    #[test]
+    fn an_auto_row_measures_the_wrapping_the_paint_will_do() {
+        // An auto-sized footer holding a `Wraps` row of buttons, in a column too
+        // narrow for them side by side. Measurement used to treat an auto fill
+        // axis as unbounded and size the footer for one row; the paint, which
+        // runs against the real width, then wrapped onto two and put the second
+        // button outside the box that was grown for it. Both passes now wrap
+        // against the same room — the ceiling the column leaves.
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                ("Wraps", PropertyValue::Known(KnownProperty::Bool(true))),
+            ],
+        );
+        let mut footer = with(
+            "Frame",
+            "Footer",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        footer.children.push(list);
+        for name in ["Cancel", "Save"] {
+            footer
+                .children
+                .push(with("Frame", name, &[("Size", udim2(0.0, 80.0, 0.0, 40.0))]));
+        }
+        // 0.125 of 800 = 100: room for one 80-wide button per line, not two.
+        let mut column = with("Frame", "Column", &[("Size", udim2(0.125, 0.0, 0.0, 300.0))]);
+        column.children.push(footer);
+        let r = compute_layout(&screen(vec![column]), VP).unwrap();
+
+        let footer_rect = r.rects["0/0/0"].rect;
+        let cancel = r.rects["0/0/0/0"].rect;
+        let save = r.rects["0/0/0/1"].rect;
+        // Two rows, so the footer is grown for two.
+        assert_eq!(footer_rect.height, 80.0);
+        assert_eq!(save.y, cancel.y + 40.0);
+        // …and every button lands inside it.
+        assert!(save.y + save.height <= footer_rect.y + footer_rect.height + EPS);
+        assert!(save.x + save.width <= footer_rect.x + footer_rect.width + EPS);
+    }
+
+    #[test]
+    fn size_stays_the_floor_even_past_the_parent() {
+        // The ceiling caps what AutomaticSize *grows*; it never shrinks an
+        // object below its own `Size`, which Roblox treats as the minimum.
+        let mut child = with(
+            "Frame",
+            "Wide",
+            &[
+                ("Size", udim2(0.0, 500.0, 0.0, 40.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        child.children.push(with(
+            "Frame",
+            "Inner",
+            &[("Size", udim2(0.0, 10.0, 0.0, 10.0))],
+        ));
+        let mut narrow = with("Frame", "Narrow", &[("Size", udim2(0.0, 100.0, 0.0, 100.0))]);
+        narrow.children.push(child);
+        let r = compute_layout(&screen(vec![narrow]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.width, 500.0);
+    }
+
+    #[test]
+    fn nested_auto_widths_inherit_the_ceiling_through_padding() {
+        // Card (auto, capped by its column) > padded Body (auto, no width of its
+        // own): the Body has to inherit the card's ceiling less the padding
+        // between them, or the chain is unbounded again one level down.
+        let mut body = with(
+            "Frame",
+            "Body",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        body.children.push(with(
+            "UIPadding",
+            "Pad",
+            &[
+                ("PaddingLeft", udim(0.0, 12.0)),
+                ("PaddingRight", udim(0.0, 12.0)),
+            ],
+        ));
+        body.children.push(with(
+            "TextLabel",
+            "Label",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+                ("TextBounds", vector2(900.0, 18.0)),
+            ],
+        ));
+        let mut card = with(
+            "Frame",
+            "Card",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        card.children.push(body);
+        let mut column = with("Frame", "Column", &[("Size", udim2(0.45, 0.0, 0.0, 100.0))]);
+        column.children.push(card);
+        let r = compute_layout(&screen(vec![column]), VP).unwrap();
+        // Column 360 -> card 360 -> body 360 -> label 360 - 24 of padding.
+        assert_eq!(r.rects["0/0/0"].rect.width, 360.0);
+        assert_eq!(r.rects["0/0/0/0"].rect.width, 360.0);
+        assert_eq!(r.rects["0/0/0/0/0"].rect.width, 336.0);
     }
 
     #[test]

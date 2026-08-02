@@ -87,8 +87,19 @@ import {
 	isLayerCollector,
 	participatesInLayout,
 } from "@loom-dev/scene";
+import { familyStack, warnMissingFace } from "./fonts.ts";
 import { parseRichText } from "./richtext.ts";
 
+// Font registration is part of the public surface: a browser has none of the
+// engine's typefaces, so the host installs the ones it has.
+export {
+	clearRegisteredFonts,
+	type FontFaceSource,
+	type FontRegistration,
+	familyKey,
+	onFontsChanged,
+	registerFont,
+} from "./fonts.ts";
 // The rich-text parser is part of the public surface: the react adapter has to
 // measure the *shown* text, not the markup, for AutomaticSize.
 export {
@@ -102,10 +113,6 @@ export {
 const ZERO_RECT: Rect = { x: 0, y: 0, width: 0, height: 0 };
 const TEXT_CLASSES = new Set(["TextLabel", "TextButton", "TextBox"]);
 const IMAGE_CLASSES = new Set(["ImageLabel", "ImageButton"]);
-const SANS =
-	'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
-const MONO = 'ui-monospace, "Roboto Mono", "SF Mono", Menlo, monospace';
-
 function cssColor(c: Color3, transparency: number): string {
 	const r = Math.round(c.r * 255);
 	const g = Math.round(c.g * 255);
@@ -120,16 +127,16 @@ function cssColor(c: Color3, transparency: number): string {
  * item name (`"GothamBold"`) or a `FontFace` family name (`"GothamSSm"`) —
  * both identify the family by prefix. Exported so the adapter can measure text
  * with the exact font the renderer will paint (AutomaticSize text bounds).
+ *
+ * A host-registered typeface wins (see `./fonts.ts`); without one the family
+ * falls back to whatever the machine has, which is where the same scene starts
+ * measuring differently per OS.
  */
 export function fontFamily(name: string | undefined): string {
-	if (!name) return SANS;
-	if (name === "Code" || name === "Inconsolata") return MONO;
-	if (name.startsWith("RobotoMono")) return MONO;
-	if (name.startsWith("Gotham")) return `"Gotham", ${SANS}`;
-	if (name.startsWith("SourceSans")) return `"Source Sans Pro", ${SANS}`;
-	if (name.startsWith("Roboto")) return `"Roboto", ${SANS}`;
-	if (name.startsWith("Arial")) return `Arial, ${SANS}`;
-	return SANS;
+	// Every path that paints or measures a typeface comes through here, so it is
+	// where an unbacked family gets noticed.
+	warnMissingFace(name);
+	return familyStack(name);
 }
 /** Legacy `Enum.Font` item name -> CSS font-weight (the name folds one in). */
 export function fontWeight(name: string | undefined): string {

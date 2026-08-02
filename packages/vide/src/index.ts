@@ -12,13 +12,20 @@
  * number keys are children (vide's array-part).
  */
 import { computeLayout, initLayout } from "@loom-dev/layout";
-import { fontShorthand, instanceFont, renderScene } from "@loom-dev/renderer";
+import {
+	fontShorthand,
+	instanceFont,
+	onFontsChanged,
+	renderScene,
+} from "@loom-dev/renderer";
 import { EnumItem, toPropertyValue } from "@loom-dev/runtime";
 import {
 	fontSizeToPx,
+	type LayoutResult,
 	type PropertyValue,
 	prop,
 	type SceneNode,
+	type Viewport,
 } from "@loom-dev/scene";
 import { effect, root } from "./reactive";
 
@@ -158,12 +165,73 @@ function getMeasureCtx(): CanvasRenderingContext2D | null {
 	return measureCtx;
 }
 
+/** Is `AutomaticSize` covering the X axis, so the width is content-derived? */
+function autoOnX(live: LiveNode): boolean {
+	const auto = live.props.get("AutomaticSize");
+	const name = auto instanceof EnumItem ? auto.Name : undefined;
+	return name === "X" || name === "XY";
+}
+
+/**
+ * Horizontal `UIPadding` on `live`, in pixels — the room it takes away from
+ * whatever it holds. Offsets only, which is what the layout engine resolves a
+ * scale inset to on an automatic axis. Mirrors the react adapter.
+ */
+function horizontalPadding(live: LiveNode): number {
+	for (const slot of live.children) {
+		for (const child of slot.nodes) {
+			if (child.className !== "UIPadding") continue;
+			const side = (name: string): number => {
+				const udim = child.props.get(name) as { Offset?: unknown } | undefined;
+				return typeof udim?.Offset === "number" ? udim.Offset : 0;
+			};
+			return side("PaddingLeft") + side("PaddingRight");
+		}
+	}
+	return 0;
+}
+
+/**
+ * The width `TextWrapped` text wraps at, or `undefined` when it does not wrap.
+ * `TextWrap` is the engine's own deprecated alias for the same property, and
+ * `TextWrapped` still wins when both are set.
+ *
+ * `room` is what the parent had left for its children (see {@link toScene}) and
+ * `own` is this node's own width from the last layout:
+ * - **X is not automatic** — the node's own width is fixed, so it is the
+ *   constraint and the height grows to however many lines result.
+ * - **X is automatic** — the node's width is the thing being computed, so
+ *   wrapping against it would settle at one word per line. The room the nearest
+ *   ancestor with a width of its own leaves is the constraint instead, which is
+ *   what such a label does in Studio.
+ *
+ * Both come from the layout that last ran, so the first snapshot of a label
+ * measures unwrapped; `paint` re-snapshots until the widths it measured against
+ * are the ones the layout produced.
+ */
+function wrapWidth(
+	live: LiveNode,
+	room: number | undefined,
+	own: number | undefined,
+): number | undefined {
+	const wrapped = live.props.get("TextWrapped") ?? live.props.get("TextWrap");
+	if (wrapped !== true) return undefined;
+	const width = autoOnX(live) ? room : own;
+	return width !== undefined && width > 0 ? width : undefined;
+}
+
 /**
  * Measure an auto-sizing text node with the font the renderer paints and emit a
  * `TextBounds` Vector2 the layout engine reads for AutomaticSize (font metrics
  * live browser-side, not in the WASM engine). Mirrors the react adapter.
+ *
+ * With `wrapAt` set the words are laid into lines greedily, which is what
+ * `TextWrapped` asks for; without it each newline is the only line break.
  */
-function measureTextBounds(live: LiveNode): PropertyValue | undefined {
+function measureTextBounds(
+	live: LiveNode,
+	wrapAt?: number,
+): PropertyValue | undefined {
 	if (!TEXT_CLASSES.has(live.className)) return undefined;
 	const auto = live.props.get("AutomaticSize");
 	const autoName = auto instanceof EnumItem ? auto.Name : undefined;
@@ -191,10 +259,6 @@ function measureTextBounds(live: LiveNode): PropertyValue | undefined {
 		}),
 		size,
 	);
-	const lines = text.split("\n");
-	let width = 0;
-	for (const line of lines)
-		width = Math.max(width, ctx.measureText(line).width);
 	// `LineHeight` stretches the gap between lines, so it starts paying from the
 	// second one — same rule as `@loom-dev/scene`'s `getLineHeight`.
 	const rawLineHeight = live.props.get("LineHeight");
@@ -202,14 +266,58 @@ function measureTextBounds(live: LiveNode): PropertyValue | undefined {
 		typeof rawLineHeight === "number"
 			? Math.min(3, Math.max(1, rawLineHeight))
 			: 1;
-	return prop.vector2({
-		x: Math.ceil(width),
-		y: size + (lines.length - 1) * size * lineHeight,
-	});
+
+	let width = 0;
+	let height = 0;
+	let lines = 0;
+	const endLine = (lineWidth: number): void => {
+		width = Math.max(width, lineWidth);
+		height += lines === 0 ? size : size * lineHeight;
+		lines += 1;
+	};
+	for (const line of text.split("\n")) {
+		if (wrapAt === undefined) {
+			endLine(ctx.measureText(line).width);
+			continue;
+		}
+		let lineWidth = 0;
+		// Split *keeping* the whitespace, so the gaps between words are measured
+		// rather than assumed.
+		for (const piece of line.split(/(\s+)/)) {
+			if (piece === "") continue;
+			const pieceWidth = ctx.measureText(piece).width;
+			if (lineWidth > 0 && lineWidth + pieceWidth > wrapAt) {
+				endLine(lineWidth);
+				lineWidth = 0;
+				// A run of spaces that would overflow is dropped rather than carried
+				// to the start of the next line, as every text shaper does.
+				if (piece.trim() === "") continue;
+			}
+			lineWidth += pieceWidth;
+		}
+		endLine(lineWidth);
+	}
+	return prop.vector2({ x: Math.ceil(width), y: height });
 }
 
-/** Snapshot the live tree as Scene IR (called fresh on every paint). */
-function toScene(live: LiveNode): SceneNode {
+/** What one snapshot of the live tree needs from the layout that last ran. */
+interface SnapshotContext {
+	/** Rects from the previous layout — where wrapped text learns its room. */
+	readonly rects: LayoutResult["rects"];
+	/** id → the wrap width each measured text node was measured against. */
+	readonly wrap: Map<string, number>;
+}
+
+/**
+ * Snapshot the live tree as Scene IR (called fresh on every paint). `room` is
+ * what the parent has left for its children: the width of the nearest ancestor
+ * that has one of its own, less every `UIPadding` in between.
+ */
+function toScene(
+	live: LiveNode,
+	ctx: SnapshotContext,
+	room?: number,
+): SceneNode {
 	const node: SceneNode = {
 		className: live.className,
 		name: live.name,
@@ -220,13 +328,39 @@ function toScene(live: LiveNode): SceneNode {
 		const pv = toPropertyValue(value);
 		if (pv !== undefined) properties[key] = pv;
 	}
-	const textBounds = measureTextBounds(live);
-	if (textBounds) properties.TextBounds = textBounds;
+	const own = ctx.rects[live.id]?.rect.width;
+	const wrapAt = wrapWidth(live, room, own);
+	const textBounds = measureTextBounds(live, wrapAt);
+	if (textBounds) {
+		properties.TextBounds = textBounds;
+		ctx.wrap.set(live.id, wrapAt ?? 0);
+	}
 	if (Object.keys(properties).length > 0) node.properties = properties;
 	const children = live.children.flatMap((slot) => slot.nodes);
-	if (children.length > 0) node.children = children.map(toScene);
+	if (children.length > 0) {
+		// An auto-sized node was itself sized by what is inside it, so it passes
+		// its parent's room down untouched; a node with a width of its own becomes
+		// the constraint. Either way its own padding comes off.
+		const base = autoOnX(live) ? room : own;
+		const inner =
+			base === undefined ? undefined : base - horizontalPadding(live);
+		node.children = children.map((child) => toScene(child, ctx, inner));
+	}
 	return node;
 }
+
+/** Whether two snapshots measured their wrapped text against the same widths. */
+function sameWrap(a: Map<string, number>, b: Map<string, number>): boolean {
+	if (a.size !== b.size) return false;
+	for (const [id, width] of a) if (b.get(id) !== width) return false;
+	return true;
+}
+
+// How many times one paint will re-snapshot wrapped text against the width the
+// layout it just ran produced. Two is the settling case (measure unwrapped →
+// learn the width → measure wrapped); the rest is headroom for a label whose
+// wrapping changes the width it wraps against. Mirrors the react adapter.
+const MAX_WRAP_PASSES = 4;
 
 // --- mount -------------------------------------------------------------------
 
@@ -247,6 +381,17 @@ function resolveHost(target?: HTMLElement): HTMLElement {
 	return el;
 }
 
+/** The layout pass a mount runs; the WASM engine unless one is injected. */
+export type ComputeLayout = (
+	root: SceneNode,
+	viewport: Viewport,
+) => LayoutResult;
+
+export interface MountOptions {
+	/** Replace the WASM layout engine (tests). Skips {@link initLayout}. */
+	computeLayout?: ComputeLayout;
+}
+
 /**
  * Mount a vide component into the preview DOM and return an unmount function.
  * `component` is run once to build the tree; reactive props/children drive
@@ -258,17 +403,22 @@ function resolveHost(target?: HTMLElement): HTMLElement {
 export function mount(
 	component: () => VideNode,
 	target?: HTMLElement,
+	options?: MountOptions,
 ): () => void {
 	const host = document.createElement("div");
 	host.style.position = "absolute";
 	host.style.inset = "0";
 	resolveHost(target).appendChild(host);
 
+	const layoutOf = options?.computeLayout ?? computeLayout;
+
 	return root((dispose) => {
 		let ready = false;
 		let scheduled = false;
 		let disposed = false;
 		let live: LiveNode | undefined;
+		/** The rects the last paint produced — this one's wrap widths come from it. */
+		let rects: LayoutResult["rects"] = {};
 
 		const paint = (): void => {
 			scheduled = false;
@@ -277,8 +427,29 @@ export function mount(
 			const height = host.clientHeight;
 			if (width === 0 || height === 0) return; // wait for the mount to be sized
 			try {
-				const scene = toScene(live);
-				renderScene(scene, computeLayout(scene, { width, height }), host);
+				// Wrapped text is measured against a width that only exists once the
+				// layout has run, so the first snapshot of a label is unwrapped.
+				// Rendering that pass would put a label wider than its container into
+				// the DOM, and during a live window resize — where every frame brings
+				// a fresh width — the stale pass is what stays on screen. So keep
+				// re-snapshotting until the widths measured against are the ones the
+				// layout produced, and render once, with the settled result.
+				let scene: SceneNode | undefined;
+				let layout: LayoutResult | undefined;
+				let measured: Map<string, number> | undefined;
+				for (let pass = 0; pass < MAX_WRAP_PASSES; pass++) {
+					const wrap = new Map<string, number>();
+					const next = toScene(live, { rects, wrap });
+					// The snapshot this pass would lay out is the one already laid
+					// out: nothing moved, so it has settled.
+					if (measured && sameWrap(measured, wrap)) break;
+					scene = next;
+					measured = wrap;
+					layout = layoutOf(scene, { width, height });
+					rects = layout.rects;
+				}
+				if (!scene || !layout) return;
+				renderScene(scene, layout, host);
 			} catch (err) {
 				// Never let a malformed scene escape an effect or the RO callback.
 				console.error("loom vide:", err);
@@ -295,14 +466,23 @@ export function mount(
 
 		const observer = new ResizeObserver(() => paint());
 		observer.observe(host);
-		void initLayout().then(() => {
+		// Text bounds were measured against the faces the browser had at the time,
+		// so a face arriving later invalidates the layout that came out of them.
+		const stopFontWatch = onFontsChanged(() => paint());
+		if (options?.computeLayout) {
 			ready = true;
 			paint();
-		});
+		} else {
+			void initLayout().then(() => {
+				ready = true;
+				paint();
+			});
+		}
 
 		return () => {
 			disposed = true; // a queued microtask paint must not resurrect the DOM
 			observer.disconnect();
+			stopFontWatch();
 			dispose();
 			host.remove();
 		};

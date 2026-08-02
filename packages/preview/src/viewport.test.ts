@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	BASE_VIEWPORT_WIDTH,
+	resolveBaseWidth,
 	resolveViewport,
 	scaleMountToViewport,
 } from "./viewport.ts";
@@ -90,5 +91,49 @@ describe("scaleMountToViewport", () => {
 		host.appendChild(mount);
 		const stop = scaleMountToViewport(host, mount);
 		expect(() => stop()).not.toThrow();
+	});
+
+	it("is the identity when the base width is off", () => {
+		// What a desktop preview now gets: a narrow stage lays the scene out
+		// against its real width, the way Studio does at that viewport.
+		const host = makeHost(390, 844);
+		const mount = document.createElement("div");
+		mount.style.position = "absolute";
+		mount.style.inset = "0";
+		host.appendChild(mount);
+
+		scaleMountToViewport(host, mount, 0);
+
+		expect(mount.style.transform).toBe("");
+		expect(mount.style.width).toBe("");
+	});
+});
+
+describe("resolveBaseWidth", () => {
+	it("adapts on a phone and reflows under a mouse", () => {
+		// The adaptation exists so a desktop-width scene isn't sliced down to a
+		// ~390px strip on a phone. A desktop window dragged narrow is an author
+		// asking to see the reflow — and Studio reflows there, so loom must too.
+		expect(resolveBaseWidth("", true)).toBe(BASE_VIEWPORT_WIDTH);
+		expect(resolveBaseWidth("", false)).toBe(0);
+	});
+
+	it("lets ?base= override the device either way", () => {
+		expect(resolveBaseWidth("?base=none", true)).toBe(0);
+		expect(resolveBaseWidth("?base=off", true)).toBe(0);
+		expect(resolveBaseWidth("?base=0", true)).toBe(0);
+		expect(resolveBaseWidth("?base=1280", false)).toBe(1280);
+		expect(resolveBaseWidth("base=1280", false)).toBe(1280);
+		// Alongside the rest of the URL contract, in any order.
+		expect(resolveBaseWidth("?target=a&base=768&theme=light", false)).toBe(768);
+	});
+
+	it("falls back to the device for a value it can't read", () => {
+		// Not to "off": a typo must not silently un-adapt the phone this exists
+		// for. A negative width is nonsense in the same way.
+		expect(resolveBaseWidth("?base=wide", true)).toBe(BASE_VIEWPORT_WIDTH);
+		expect(resolveBaseWidth("?base=", true)).toBe(BASE_VIEWPORT_WIDTH);
+		expect(resolveBaseWidth("?base=wide", false)).toBe(0);
+		expect(resolveBaseWidth("?base=-100", false)).toBe(0);
 	});
 });

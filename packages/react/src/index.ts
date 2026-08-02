@@ -20,6 +20,7 @@ import {
 	type DomSession,
 	fontShorthand,
 	instanceFont,
+	onFontsChanged,
 	parseRichText,
 	type ResolvedFont,
 	type RichSegment,
@@ -735,6 +736,14 @@ export interface World {
 // depth, the remaining work is deferred to the next scheduler frame.
 const MAX_FLUSH_DEPTH = 8;
 
+// How many times one flush will re-measure wrapped text against the width the
+// layout it just ran produced. Two is the settling case (measure unwrapped →
+// learn the width → measure wrapped); the rest is headroom for a label whose
+// wrapping changes the width it wraps against. Past it the flush gives up and
+// leaves the instance dirty for the next frame, which is where this used to
+// resolve every time.
+const MAX_WRAP_PASSES = 4;
+
 const WORLDS = new Set<WorldImpl>();
 let flusherInstalled = false;
 /** Which world currently backs `PlayerGui.GetGuiObjectsAtPosition`. */
@@ -758,6 +767,7 @@ class WorldImpl implements World {
 	private readonly session: DomSession;
 	private readonly computeLayout: ComputeLayout;
 	private readonly observer: ResizeObserver | undefined;
+	private readonly stopFontWatch: () => void;
 	private readonly byId = new Map<string, LoomInstance>();
 	private readonly warnedNonLayer = new WeakSet<LoomInstance>();
 	private depth = 0;
@@ -796,6 +806,14 @@ class WorldImpl implements World {
 			});
 			this.observer.observe(mount);
 		}
+		// Every `AutomaticSize` text bound was measured against the faces the
+		// browser had at the time, so a face arriving later — a host registering
+		// one, or a `@font-face` finishing its download — invalidates the layout
+		// that came out of it.
+		this.stopFontWatch = onFontsChanged(() => {
+			if (this.disposed) return;
+			this.flushSync();
+		});
 		WORLDS.add(this);
 		if (!flusherInstalled) {
 			flusherInstalled = true;
@@ -935,28 +953,41 @@ class WorldImpl implements World {
 			const width = this.mount.clientWidth;
 			const height = this.mount.clientHeight;
 			if (width === 0 || height === 0) return; // wait for the mount to be sized
-			const scene = this.encodeRoot();
+			// Wrapped text is measured against a width that only exists once the
+			// layout below has run, so the first encode of a label is unwrapped.
+			// Settling that here rather than on the next frame is the whole point
+			// of the loop: patching the unwrapped pass puts a label wider than its
+			// container into the DOM, and during a live window resize — where every
+			// frame is a fresh width — that stale pass is what stays on screen, as
+			// text running out of its card and under the next one.
+			let scene = this.encodeRoot();
 			if (!scene) {
 				this.session.clear();
 				return;
 			}
-			const layout = this.computeLayout(scene, { width, height });
-			this.session.patch(scene, layout);
-			// Layout feedback: record absolute geometry, firing the
-			// AbsolutePosition/AbsoluteSize signals only where it changed.
-			for (const [id, entry] of Object.entries(layout.rects)) {
-				const inst = this.byId.get(id);
-				if (!inst) continue; // e.g. the synthetic "loom-root" wrapper
-				updateAbsoluteGeometry(
-					inst,
-					Vector2.new(entry.rect.x, entry.rect.y),
-					Vector2.new(entry.rect.width, entry.rect.height),
-				);
+			let layout = this.computeLayout(scene, { width, height });
+			for (let pass = 1; ; pass++) {
+				// Absolute geometry has to land before the re-measure: `wrapWidth`
+				// reads `AbsoluteSize` off the ancestors this layout just sized.
+				this.applyAbsoluteGeometry(layout);
+				if (!this.wrappedTextIsStale()) break;
+				if (pass >= MAX_WRAP_PASSES) {
+					// Not settling — leave the labels dirty and try again next frame
+					// rather than spinning here inside a React commit.
+					this.remarkStaleWrappedText();
+					break;
+				}
+				scene = this.encodeRoot();
+				if (!scene) {
+					this.session.clear();
+					return;
+				}
+				layout = this.computeLayout(scene, { width, height });
 			}
+			this.session.patch(scene, layout);
 			// ScrollingFrame metrics feedback (AbsoluteWindowSize /
 			// AbsoluteCanvasSize) — change-gated writes, no dirty re-mark.
 			this.applyScrollMetrics(scene, layout);
-			this.remeasureWrappedText();
 		} catch (err) {
 			// A malformed scene or DOM error must never escape the commit phase;
 			// degrade to a logged, contained failure.
@@ -1033,17 +1064,27 @@ class WorldImpl implements World {
 	}
 
 	/**
-	 * Wrapped text is measured against a width the layout has not produced yet —
-	 * the container it wraps inside is only sized once this pass has run. So the
-	 * first measurement of a node is unwrapped, and this re-marks it dirty once
-	 * the width is known.
-	 *
-	 * It converges rather than looping: the second measurement wraps at the width
-	 * the layout just reported, and unless that width itself changes the recorded
-	 * value now matches and nothing is marked again. The flush-depth guard above
-	 * bounds it either way.
+	 * Record absolute geometry from a layout, firing the
+	 * AbsolutePosition/AbsoluteSize signals only where it changed.
 	 */
-	private remeasureWrappedText(): void {
+	private applyAbsoluteGeometry(layout: LayoutResult): void {
+		for (const [id, entry] of Object.entries(layout.rects)) {
+			const inst = this.byId.get(id);
+			if (!inst) continue; // e.g. the synthetic "loom-root" wrapper
+			updateAbsoluteGeometry(
+				inst,
+				Vector2.new(entry.rect.x, entry.rect.y),
+				Vector2.new(entry.rect.width, entry.rect.height),
+			);
+		}
+	}
+
+	/**
+	 * Every auto-sizing text node whose wrap width is no longer the one it was
+	 * measured against — the layout that just ran moved the container it wraps
+	 * inside, so its `TextBounds` is stale and the next encode has to re-measure.
+	 */
+	private *staleWrappedText(): Generator<LoomInstance> {
 		for (const inst of this.byId.values()) {
 			if (!TEXT_CLASSES.has(inst.ClassName)) continue;
 			const auto = inst.AutomaticSize;
@@ -1051,8 +1092,18 @@ class WorldImpl implements World {
 			if (autoName === undefined || autoName === "None") continue;
 			const recorded = MEASURED_WRAP.get(inst);
 			if (recorded === undefined) continue;
-			if ((wrapWidth(inst, autoName) ?? 0) !== recorded) markDirty(inst);
+			if ((wrapWidth(inst, autoName) ?? 0) !== recorded) yield inst;
 		}
+	}
+
+	private wrappedTextIsStale(): boolean {
+		for (const _ of this.staleWrappedText()) return true;
+		return false;
+	}
+
+	/** The give-up path: settle these on a later frame instead of this flush. */
+	private remarkStaleWrappedText(): void {
+		for (const inst of this.staleWrappedText()) markDirty(inst);
 	}
 
 	/**
@@ -1109,6 +1160,7 @@ class WorldImpl implements World {
 			setHitTester(undefined);
 		}
 		this.observer?.disconnect();
+		this.stopFontWatch();
 		this.session.dispose();
 		// PlayerGui is the shared runtime instance — never Destroy it. Tear down
 		// only what this world owns: its default ScreenGui, and (while still the

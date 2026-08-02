@@ -202,8 +202,10 @@ body.loom-chromeless #loom-gallery-stage {
  * render into on a ~390px screen, so below this width the shell stacks: the
  * sidebar becomes a collapsed top bar (the target list opens on tap and closes
  * again on selection, see `gallery-shell.ts`) and the stage takes the rest of
- * the screen. The scene inside the stage adapts on its own — the preview mount
- * keeps a desktop-width logical viewport and scales down (`../viewport.ts`).
+ * the screen. What the scene inside the stage does is a separate decision made
+ * per device (`../viewport.ts`): on a phone the preview mount keeps a
+ * desktop-width logical viewport and scales down, while a desktop window merely
+ * dragged this narrow reflows into it, as Studio would.
  *
  * `?chrome=none` is unaffected: it has no sidebar to collapse on any screen.
  */

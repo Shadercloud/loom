@@ -8,7 +8,7 @@ import type { LoomRoot } from "@loom-dev/react";
 import { createPortal, render as loomRender } from "@loom-dev/react";
 import { getService } from "@loom-dev/runtime";
 import React, { type ReactElement } from "react";
-import { scaleMountToViewport } from "./viewport.ts";
+import { currentBaseWidth, scaleMountToViewport } from "./viewport.ts";
 
 /**
  * Stand-in for `ReactRoblox.createPortal`. Renders children into a LoomInstance
@@ -78,9 +78,10 @@ export interface RootOptions {
  * `replaceChildren()`es its own mount on every commit.
  *
  * The container is also what carries the mobile viewport adaptation (see
- * `./viewport.ts`): on a screen narrower than the base width it keeps a
- * desktop-sized logical viewport and is scaled down to fit, so a scene written
- * for a desktop screen shrinks instead of overflowing.
+ * `./viewport.ts`): on a phone-shaped screen narrower than the base width it
+ * keeps a desktop-sized logical viewport and is scaled down to fit, so a scene
+ * written for a desktop screen shrinks instead of overflowing. A desktop window
+ * dragged narrow reflows instead, and `?base=` overrides both.
  */
 export function createRoot(
 	_target?: unknown,
@@ -91,7 +92,7 @@ export function createRoot(
 	mount.style.inset = "0";
 	const host = resolveHost();
 	host.appendChild(mount);
-	const stopScaling = scaleMountToViewport(host, mount);
+	const stopScaling = scaleMountToViewport(host, mount, currentBaseWidth());
 
 	let root: Promise<LoomRoot> | undefined;
 	const dispose = (): void => {

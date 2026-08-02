@@ -5,6 +5,7 @@
  * Absolute* signals exactly once per actual change; `Event` handlers receive
  * Roblox `(rbx, ...args)` calling convention from delegated pointer input.
  */
+import { clearRegisteredFonts, registerFont } from "@loom-dev/renderer";
 import type { InputObject, LoomInstance } from "@loom-dev/runtime";
 import { Color3, Enum, flushDirtyNow, UDim, UDim2 } from "@loom-dev/runtime";
 import type { LayoutResult, SceneNode, Viewport } from "@loom-dev/scene";
@@ -686,6 +687,120 @@ describe("mountSync world", () => {
 		// 500, and not the 133 the string measures on one line.
 		expect(last?.x).toBeLessThanOrEqual(80);
 		expect(last?.y).toBeGreaterThan(10);
+	});
+
+	it("settles a re-wrap inside one flush, never painting the unwrapped pass", () => {
+		// The wrap width comes from the layout this same flush produces, so the
+		// first encode after the container narrows still measures against the old,
+		// wider one. Deferring the re-measure to the next frame put that unwrapped
+		// label into the DOM for a frame — and during a live window resize, where
+		// every frame narrows the container again, the stale pass is what stays on
+		// screen: body text running past its card and under the next one.
+		const card = { width: 300 };
+		const computeLayout: ComputeLayout = (node) => {
+			const rects: LayoutResult["rects"] = {};
+			const walk = (n: SceneNode): void => {
+				const bounds = n.properties?.TextBounds;
+				// An auto-sized label is exactly its measured text; everything else
+				// is the card, which is what the label has to wrap inside.
+				const size =
+					bounds && bounds.type === "Vector2"
+						? (bounds.value as { x: number; y: number })
+						: { x: card.width, y: 100 };
+				rects[n.id ?? "?"] = {
+					rect: { x: 0, y: 0, width: size.x, height: size.y },
+				};
+				for (const child of n.children ?? []) walk(child);
+			};
+			walk(node);
+			return { rects };
+		};
+		const root = mountSync(
+			createElement(
+				"screengui",
+				null,
+				createElement(
+					"frame",
+					{ Name: "Card" },
+					createElement(
+						"frame",
+						{ Name: "Body", AutomaticSize: Enum.AutomaticSize.XY },
+						createElement("uipadding", {
+							PaddingLeft: new UDim(0, 10),
+							PaddingRight: new UDim(0, 10),
+						}),
+						createElement("textlabel", {
+							Name: "Wrapped",
+							Text: "aaaa bbbb cccc dddd",
+							TextWrapped: true,
+							AutomaticSize: Enum.AutomaticSize.XY,
+							TextSize: 10,
+						}),
+					),
+				),
+			),
+			mount,
+			{ computeLayout },
+		);
+		roots.push(root);
+		const label = mount.querySelector<HTMLElement>(
+			'[data-loom-name="Wrapped"]',
+		);
+		const painted = (): number => Number.parseFloat(label?.style.width ?? "");
+		// 280 of room, so the 133 the string measures on one line fits as it is.
+		expect(painted()).toBe(133);
+
+		// The container narrows — one resize tick, one flush.
+		card.width = 100;
+		root.world.flushSync();
+		// Already wrapped: 80 of room, not the 133 of the pass that measured
+		// against the width the card had a moment ago.
+		expect(painted()).toBeLessThanOrEqual(80);
+	});
+
+	it("re-measures text when a font is registered", async () => {
+		// Text bounds are measured against the faces the browser has at the time,
+		// so a face registered (or finishing its download) after the first paint
+		// leaves the whole layout measured in the fallback. The world listens and
+		// lays out again with the font it is actually going to paint in.
+		const fonts: string[] = [];
+		const computeLayout: ComputeLayout = (node) => {
+			const rects: LayoutResult["rects"] = {};
+			const walk = (n: SceneNode): void => {
+				if (n.className === "TextLabel") fonts.push(measureStub.font);
+				rects[n.id ?? "?"] = { rect: { x: 0, y: 0, width: 100, height: 100 } };
+				for (const child of n.children ?? []) walk(child);
+			};
+			walk(node);
+			return { rects };
+		};
+		roots.push(
+			mountSync(
+				createElement(
+					"screengui",
+					null,
+					createElement("textlabel", {
+						Text: "hi",
+						Font: Enum.Font.SourceSans,
+						AutomaticSize: Enum.AutomaticSize.XY,
+						TextSize: 10,
+					}),
+				),
+				mount,
+				{ computeLayout },
+			),
+		);
+		const beforeCount = fonts.length;
+		expect(fonts.at(-1)).toContain("Source Sans");
+		expect(fonts.at(-1)).not.toContain("Registered Sans");
+
+		registerFont("SourceSans", { family: "Registered Sans" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(fonts.length).toBeGreaterThan(beforeCount);
+		// Measured again, in the family that was just installed.
+		expect(fonts.at(-1)).toContain("Registered Sans");
+		clearRegisteredFonts();
 	});
 
 	it("measures LineHeight into the gaps between lines only", () => {
