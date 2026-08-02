@@ -1,5 +1,23 @@
 # @loom-dev/renderer
 
+## 0.6.4
+
+### Patch Changes
+
+- Let the host install the engine's typefaces, and stop silently drifting per OS when it hasn't.
+
+  Loom named the Roblox families in CSS (`font-family: "Gotham", system-ui, …`) and loaded nothing behind them, so on a machine without the font installed every family resolved to `system-ui` — SF Pro on macOS, Segoe UI on Windows, Roboto on Linux. Three typefaces, three sets of advance widths, and `AutomaticSize` and `TextWrapped` are driven by measuring those widths: the same scene laid out differently on each, with nothing pointing at the font as the reason.
+
+  - **`registerFont(family, { family, faces, fallback })`** installs a typeface for one Roblox family, following the `setImageResolver` contract already used for `rbxassetid://`. Any spelling of the name reaches it — `Gotham`, `GothamBold` and a `GothamSSm` `FontFace` are one family — and `faces` declares `@font-face` rules for a family the page has not loaded itself. `clearRegisteredFonts()` takes it all back out.
+  - **A late face re-lays-out.** Text bounds are measured against whatever the browser had at the time, so a registration (or a `@font-face` finishing its download) invalidates every `AutomaticSize` bound that came out of the old one. Both adapters subscribe to `onFontsChanged` and measure again, so the settled layout is the one the registered face produces rather than the fallback's.
+  - **`import "@loom-dev/renderer/fonts"`** registers the Roblox families that are openly licensed — `SourceSans` (Source Sans 3), `Roboto`, `RobotoMono` and `Inconsolata`, all OFL-1.1. These are the _actual_ fonts the engine draws with, so their metrics are the engine's rather than an approximation. It is a separate entry point with the font packages behind it, so a project that does not import it ships none of it.
+  - **`Gotham` cannot ship here.** Roblox's default family — and the Builder faces behind it today — is proprietary. A project that has the files registers them itself, with the same call `/fonts` makes.
+  - **Unbacked families now say so, once each**, naming the family and what to do about it, rather than leaving a layout that is simply different on a different machine. Availability is decided by probe-string width, not `document.fonts.check()`, which answers "would this resolve" and so returns true for a family nobody has.
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.6.4
+  - @loom-dev/runtime@0.6.4
+
 ## 0.6.3
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @loom-dev/runtime
 
+## 0.6.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.6.4
+
 ## 0.6.3
 
 ### Patch Changes

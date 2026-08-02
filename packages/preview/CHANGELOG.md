@@ -1,5 +1,21 @@
 # @loom-dev/preview
 
+## 0.6.4
+
+### Patch Changes
+
+- Let a narrow desktop preview reflow instead of zooming out, and add `?base=` to control it.
+
+  Below 960px the preview stopped laying the scene out against the window and started shrinking the pixels instead: the mount kept a 960-wide logical viewport and took a CSS `scale()` to fit. That adaptation exists for phones — a desktop-width UI sliced down to a ~390px strip is a slice of a layout rather than a layout — but it was applied to every screen, including a desktop window an author had merely dragged narrow. There, it is wrong in the way that matters most: Studio reflows at that viewport, so the preview showed text wrapping at the wrong width and columns re-proportioning at the wrong breakpoints, and dragging the window narrower stopped changing the layout at all.
+
+  - **It now applies only where it was meant to**, a device whose primary pointer is coarse — a phone or a tablet. Under a mouse, a narrow window is a narrow window and the scene lays out against it, matching Studio at every width.
+  - **`?base=<px>`** sets the logical viewport explicitly, so a docs page embedding a preview at a fixed width can pick the one its scene was written for. `?base=none` (or `off`, or `0`) turns the adaptation off outright, and `?base=960` restores the previous behaviour everywhere. A value that can't be read falls back to the device default rather than silently un-adapting the phone this exists for.
+
+- Updated dependencies []:
+  - @loom-dev/react@0.6.4
+  - @loom-dev/renderer@0.6.4
+  - @loom-dev/runtime@0.6.4
+
 ## 0.6.3
 
 ### Patch Changes

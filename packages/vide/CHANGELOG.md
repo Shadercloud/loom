@@ -1,5 +1,34 @@
 # @loom-dev/vide
 
+## 0.6.4
+
+### Patch Changes
+
+- Wrap `TextWrapped` text in the vide adapter, the way the react adapter already does.
+
+  The vide adapter measured a label's `TextBounds` by splitting on newlines only, so `TextWrapped` (and its `TextWrap` alias) did nothing: a long label measured onto one line whatever it sat in, grew its `AutomaticSize` ancestors with it, and ran out of the container. The same scene therefore laid out differently through vide than through react, which is the one thing the shared Scene IR is supposed to rule out.
+
+  - **Words are laid into lines greedily** at the wrap width, whitespace measured rather than assumed, and a run of spaces that would overflow is dropped instead of being carried to the next line. `LineHeight` is spent between lines, so `n` lines measure `TextSize + (n - 1) * TextSize * LineHeight` and a one-line label is unaffected.
+  - **Which width it wraps at** follows react: a label with a width of its own wraps at that width; an `AutomaticSize.X` label — whose width is the thing being computed — wraps at the room left by the nearest ancestor that has a width of its own, less every `UIPadding` in between. Wrapping against an auto-sized parent that this label sized is the same circle as wrapping against the label itself.
+  - **The re-wrap settles inside the paint that caused it.** The wrap width comes from the layout the paint itself produces, so the first snapshot after a container narrows still measures against the old width; the paint now re-snapshots until the two agree (up to four passes) and renders once, with the settled result. Rendering the first pass would put a label wider than its container on screen for a frame — which, during a live window resize, is every frame.
+  - `mount` takes an optional `{ computeLayout }`, matching `mountSync` in `@loom-dev/react`, so the layout pass can be replaced in tests without the WASM engine.
+
+- Let the host install the engine's typefaces, and stop silently drifting per OS when it hasn't.
+
+  Loom named the Roblox families in CSS (`font-family: "Gotham", system-ui, …`) and loaded nothing behind them, so on a machine without the font installed every family resolved to `system-ui` — SF Pro on macOS, Segoe UI on Windows, Roboto on Linux. Three typefaces, three sets of advance widths, and `AutomaticSize` and `TextWrapped` are driven by measuring those widths: the same scene laid out differently on each, with nothing pointing at the font as the reason.
+
+  - **`registerFont(family, { family, faces, fallback })`** installs a typeface for one Roblox family, following the `setImageResolver` contract already used for `rbxassetid://`. Any spelling of the name reaches it — `Gotham`, `GothamBold` and a `GothamSSm` `FontFace` are one family — and `faces` declares `@font-face` rules for a family the page has not loaded itself. `clearRegisteredFonts()` takes it all back out.
+  - **A late face re-lays-out.** Text bounds are measured against whatever the browser had at the time, so a registration (or a `@font-face` finishing its download) invalidates every `AutomaticSize` bound that came out of the old one. Both adapters subscribe to `onFontsChanged` and measure again, so the settled layout is the one the registered face produces rather than the fallback's.
+  - **`import "@loom-dev/renderer/fonts"`** registers the Roblox families that are openly licensed — `SourceSans` (Source Sans 3), `Roboto`, `RobotoMono` and `Inconsolata`, all OFL-1.1. These are the _actual_ fonts the engine draws with, so their metrics are the engine's rather than an approximation. It is a separate entry point with the font packages behind it, so a project that does not import it ships none of it.
+  - **`Gotham` cannot ship here.** Roblox's default family — and the Builder faces behind it today — is proprietary. A project that has the files registers them itself, with the same call `/fonts` makes.
+  - **Unbacked families now say so, once each**, naming the family and what to do about it, rather than leaving a layout that is simply different on a different machine. Availability is decided by probe-string width, not `document.fonts.check()`, which answers "would this resolve" and so returns true for a family nobody has.
+
+- Updated dependencies []:
+  - @loom-dev/layout@0.6.4
+  - @loom-dev/renderer@0.6.4
+  - @loom-dev/scene@0.6.4
+  - @loom-dev/runtime@0.6.4
+
 ## 0.6.3
 
 ### Patch Changes

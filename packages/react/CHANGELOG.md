@@ -1,5 +1,39 @@
 # @loom-dev/react
 
+## 0.6.4
+
+### Patch Changes
+
+- Settle wrapped text inside the flush that resizes it, so a live window resize stops painting labels that overrun their container.
+
+  A `TextWrapped` label with `AutomaticSize` wraps at a width that only exists once the layout has run, so the first encode after its container changes still measures against the width the container had a moment ago. That first, unwrapped measurement was patched into the DOM and the re-measure was deferred to the next scheduler frame — fine when the width settles, but during a window drag every frame brings a new width, so the stale pass is what stays on screen: body text painted past the edge of its card and under the card beside it.
+
+  The flush now re-encodes and re-lays-out until the wrap widths it measured against are the ones the layout produced (up to four passes, then it defers as before), and patches the DOM once, with the settled result. Reported in [#11](https://github.com/astra-void/loom/issues/11), where it shows up as the left column of a `Card` grid clipping mid-word while the right column renders in full — but only in the frames where the window is being dragged.
+
+- Stop `AutomaticSize` at the room its parent has, so a narrow column can no longer overrun the one beside it.
+
+  Roblox bounds automatic growth: an object with `AutomaticSize` on an axis increases "up to maximum size allowed by the parent", and a `TextWrapped` label grows "until the maximum extent is reached (parent's max size)" and only _then_ wraps. Loom grew unbounded. Any content with an irreducible minimum — a row of buttons, a long word — therefore pushed its container wider than the slot positioning it, and at narrow viewports a `width="45%"` card grew past its column and painted over the card beside it. Every auto-sized node now carries the ceiling its parent leaves, inherited through the padding in between, and `Size` remains the floor even when it is itself past that ceiling.
+
+  A wrapping `UIListLayout` on an automatic fill axis now wraps against that same ceiling. It previously measured as one run there — correct while the axis was genuinely unbounded, but it left the measure and paint passes disagreeing once a ceiling existed: an auto-sized footer was grown for one row of buttons and then painted with two, putting the second row outside the box that was grown for it.
+
+  Content that still does not fit overflows, which is what the engine does — it does not widen the object to make room.
+
+- Let the host install the engine's typefaces, and stop silently drifting per OS when it hasn't.
+
+  Loom named the Roblox families in CSS (`font-family: "Gotham", system-ui, …`) and loaded nothing behind them, so on a machine without the font installed every family resolved to `system-ui` — SF Pro on macOS, Segoe UI on Windows, Roboto on Linux. Three typefaces, three sets of advance widths, and `AutomaticSize` and `TextWrapped` are driven by measuring those widths: the same scene laid out differently on each, with nothing pointing at the font as the reason.
+
+  - **`registerFont(family, { family, faces, fallback })`** installs a typeface for one Roblox family, following the `setImageResolver` contract already used for `rbxassetid://`. Any spelling of the name reaches it — `Gotham`, `GothamBold` and a `GothamSSm` `FontFace` are one family — and `faces` declares `@font-face` rules for a family the page has not loaded itself. `clearRegisteredFonts()` takes it all back out.
+  - **A late face re-lays-out.** Text bounds are measured against whatever the browser had at the time, so a registration (or a `@font-face` finishing its download) invalidates every `AutomaticSize` bound that came out of the old one. Both adapters subscribe to `onFontsChanged` and measure again, so the settled layout is the one the registered face produces rather than the fallback's.
+  - **`import "@loom-dev/renderer/fonts"`** registers the Roblox families that are openly licensed — `SourceSans` (Source Sans 3), `Roboto`, `RobotoMono` and `Inconsolata`, all OFL-1.1. These are the _actual_ fonts the engine draws with, so their metrics are the engine's rather than an approximation. It is a separate entry point with the font packages behind it, so a project that does not import it ships none of it.
+  - **`Gotham` cannot ship here.** Roblox's default family — and the Builder faces behind it today — is proprietary. A project that has the files registers them itself, with the same call `/fonts` makes.
+  - **Unbacked families now say so, once each**, naming the family and what to do about it, rather than leaving a layout that is simply different on a different machine. Availability is decided by probe-string width, not `document.fonts.check()`, which answers "would this resolve" and so returns true for a family nobody has.
+
+- Updated dependencies []:
+  - @loom-dev/layout@0.6.4
+  - @loom-dev/renderer@0.6.4
+  - @loom-dev/scene@0.6.4
+  - @loom-dev/runtime@0.6.4
+
 ## 0.6.3
 
 ### Patch Changes

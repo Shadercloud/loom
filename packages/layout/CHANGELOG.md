@@ -1,5 +1,20 @@
 # @loom-dev/layout
 
+## 0.6.4
+
+### Patch Changes
+
+- Stop `AutomaticSize` at the room its parent has, so a narrow column can no longer overrun the one beside it.
+
+  Roblox bounds automatic growth: an object with `AutomaticSize` on an axis increases "up to maximum size allowed by the parent", and a `TextWrapped` label grows "until the maximum extent is reached (parent's max size)" and only _then_ wraps. Loom grew unbounded. Any content with an irreducible minimum — a row of buttons, a long word — therefore pushed its container wider than the slot positioning it, and at narrow viewports a `width="45%"` card grew past its column and painted over the card beside it. Every auto-sized node now carries the ceiling its parent leaves, inherited through the padding in between, and `Size` remains the floor even when it is itself past that ceiling.
+
+  A wrapping `UIListLayout` on an automatic fill axis now wraps against that same ceiling. It previously measured as one run there — correct while the axis was genuinely unbounded, but it left the measure and paint passes disagreeing once a ceiling existed: an auto-sized footer was grown for one row of buttons and then painted with two, putting the second row outside the box that was grown for it.
+
+  Content that still does not fit overflows, which is what the engine does — it does not widen the object to make room.
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.6.4
+
 ## 0.6.3
 
 ### Patch Changes
