@@ -46,6 +46,7 @@ loomPreview({
   title: "my UI",           // <title> of the generated page
   html: false,              // opt out of the generated page entirely
   shims: {},                // package redirects — see "Package compatibility"
+  assets: false,            // don't bake rbxassetid images into a build
 })
 ```
 
@@ -692,13 +693,33 @@ The exported services are the ones loom implements for the browser:
 | --- | --- |
 | `CollectionService` | the real tag registry (code-set tags; no Studio tag editor) |
 | `ContextActionService` | `BindAction` / `BindActionAtPriority` / `UnbindAction` as no-ops |
+| `Debris` | `AddItem(instance, lifetime)` on a real timer |
 | `GuiService` | `SelectedObject` with selection signals, `GetGuiInset`, `ReducedMotionEnabled` |
 | `HttpService` | `GenerateGUID` and the JSON pair — see below |
 | `Players` | `LocalPlayer` with a pre-built `PlayerGui` |
 | `RunService` | `RenderStepped` / `Heartbeat` / `PostSimulation`, `IsStudio` / `IsRunning` / `IsClient` |
+| `StarterGui` | a real container; `SetCore` / `GetCore` / `SetCoreGuiEnabled` as no-ops |
+| `TextService` | `GetTextSize` / `GetTextBoundsAsync`, measured with the renderer's own fonts |
 | `TweenService` | `Create` and real tween playback |
 | `UserInputService` | input signals, `GetMouseLocation`, `GetFocusedTextBox`, capability flags |
 | `Workspace` | `CurrentCamera` with a live `ViewportSize` |
+
+Plus the services that are only *containers* in a client, exported so a tree can
+be parented into them: `Lighting`, `ReplicatedFirst`, `ReplicatedStorage`,
+`ServerScriptService`, `ServerStorage`, `SoundService`, `StarterPack`,
+`StarterPlayer` and `Teams`.
+
+`TextService` measures through the same font stack the renderer paints with, so
+a component that reserves room for a label agrees with the label it then draws:
+
+```ts
+const bounds = TextService.GetTextSize(
+  "Hello world",
+  18,
+  Enum.Font.SourceSans,
+  new Vector2(200, 1000),
+);
+```
 
 That list is deliberate rather than exhaustive. Importing a service loom does
 *not* implement fails with the normal ESM missing-export error, which is better
@@ -767,9 +788,22 @@ CSS shorthand (`#FFF`), an alpha channel (`#FFFFFFFF`), `0x` notation and
 surrounding whitespace are all rejected — accepting them would render a color
 the same source never shows in Studio.
 
-`Color3:ToHex()` is **not** implemented yet: its casing and rounding could not
-be verified against a running engine, and guessing them would make round trips
-quietly wrong.
+#### `Color3:ToHex()` and the HSV pair
+
+```ts
+Color3.fromRGB(99, 102, 241).ToHex(); // "6366f1"
+```
+
+Six **lowercase** hexadecimal digits, no leading `#` — verified against a running
+engine rather than guessed at, along with its rounding (each channel is clamped
+to 0…1 and rounded to the nearest 255th, so `Color3.fromHex(c.ToHex())` is `c`
+again). `ToHSV()` destructures as a tuple (`const [h, s, v] = color.ToHSV()`) and
+`Color3.fromHSV(h, s, v)` is its inverse.
+
+The other datatype members that come with them: `Vector2`'s `Unit` / `Dot` /
+`Cross` / `Lerp` / `Min` / `Max` / `Abs` and its `xAxis` / `yAxis` constants,
+`Vector3`'s `Unit` / `Dot` / `Cross` / `Lerp` and axis constants, and
+`UDim2:Lerp`. `UDim` has no `Lerp` here because it has none in the engine.
 
 ### `shims`
 
@@ -858,6 +892,111 @@ a lazy `import()`, so the dev server never fetches a scene you don't open, while
 `loom build` (and `next build`) follows every target eagerly to code-split it.
 A gallery that runs fine in development can still fail the build — which is why
 loom applies the same aliases and the same resolver in both modes.
+
+## Layouts
+
+Every `UIGridStyleLayout` the engine has is implemented: `UIListLayout` (with
+`Wraps` and the flex properties), `UIGridLayout`, `UITableLayout` and
+`UIPageLayout`. The geometry was read off a running engine, not inferred.
+
+> **`SortOrder` defaults to `Name`**, as it does on a fresh layout in Studio — so
+> a list whose children carry distinct `Name`s flows *alphabetically* unless it
+> says otherwise. Children with equal names keep source order (the sort is
+> stable), which is why a tree that never sets `Name` is unaffected. Set
+> `SortOrder={Enum.SortOrder.LayoutOrder}` for source/`LayoutOrder` order.
+
+### `UITableLayout`
+
+The layout's siblings are the table's *lines* — rows, or columns under
+`MajorAxis.ColumnMajor` — and each line's own children are the cells:
+
+```tsx
+<frame Size={UDim2.new(1, 0, 0, 120)}>
+  <uitablelayout Padding={UDim2.new(0, 8, 0, 4)} FillEmptySpaceColumns={true} />
+  <frame Name="Row1">
+    <textlabel Text="Region" Size={UDim2.fromOffset(120, 26)} />
+    <textlabel Text="Players" Size={UDim2.fromOffset(100, 26)} />
+  </frame>
+</frame>
+```
+
+A column is as wide as its widest cell and a row as tall as its tallest, both
+measured against the *table's* content box (so a `0.25` scale cell is a quarter
+of the table, not of its row). `FillEmptySpaceColumns` / `FillEmptySpaceRows`
+scale the tracks proportionally to span the container — in both directions, as
+the engine does. A hidden cell takes neither a track nor a gap.
+
+### `UIPageLayout`
+
+Pages keep their own `Size` and sit one container-plus-`Padding` apart along
+`FillDirection`, so a parent with `ClipsDescendants` shows exactly one. Which one
+is *state*, changed by method call as in Roblox — through a ref:
+
+```tsx
+const pager = useRef<{ Next(): void; CurrentPageIndex: number }>();
+
+<frame ClipsDescendants={true}>
+  <uipagelayout
+    ref={(instance) => { pager.current = instance as never; }}
+    Padding={UDim.new(0, 16)}
+    Circular={true}
+  />
+  {/* …pages… */}
+</frame>;
+```
+
+`JumpToIndex(i)` / `JumpTo(page)` / `Next()` / `Previous()` all work, and fire
+`PageLeave` → `PageEnter` → `Stopped`. `Circular` decides whether `Next` and
+`Previous` wrap. `Animated`, `TweenTime` and the easing properties are accepted
+and ignored: a preview shows the settled layout, so page changes are instant.
+
+The engine's `CurrentPage` is a **GuiObject reference**, and a Scene IR property
+value is a datatype — never a node — so it cannot cross the wasm boundary. The
+layout engine reads **`CurrentPageIndex`** (a 0-based int) instead, which the
+runtime keeps in step; `CurrentPage` itself still reads back as the instance for
+app code, and is what a non-react adapter should set if it drives a pager itself.
+
+## Images
+
+`ImageLabel` and `ImageButton` paint every `ScaleType`:
+
+| `ScaleType` | What loom paints |
+| --- | --- |
+| `Stretch` (default) | the image over the whole node |
+| `Fit` / `Crop` | contained / covered, centred |
+| `Slice` | a 9-slice from `SliceCenter`, borders scaled by `SliceScale` |
+| `Tile` | repeated at `TileSize` (a `UDim2` against the node) |
+
+`ImageRectOffset` / `ImageRectSize` window a sprite out of a sheet (a zero size
+means the whole image, as in Roblox), `ImageColor3` multiplies the image per
+channel, `ImageTransparency` fades it, and `ResampleMode.Pixelated` turns off
+smoothing when it is scaled up.
+
+Two combinations are **not** reproduced, and say so rather than painting
+something wrong: `ScaleType.Tile` with an `ImageRect` window (CSS backgrounds
+cannot repeat a *region*, so the whole image is tiled and a console warning names
+the node), and a `SliceCenter` measured against a window rather than the whole
+image.
+
+### `rbxassetid://`
+
+A browser cannot resolve an asset id by itself — Roblox's thumbnail API sends no
+CORS header — so loom does the id → URL hop for it:
+
+- **Dev server** (`loom preview`, the embedded server, Next dev): the id is
+  resolved on request and answered as a redirect from `<base>__loom/asset/<id>`.
+- **Static build** (`loom build`, `vite build`): there is no server later, so the
+  ids the bundle mentions are resolved *at build time*, the images are downloaded
+  into the output, and a `__loom/assets.json` manifest points the page at them.
+  The result needs nothing but its own origin.
+
+Only ids **written out** as `rbxassetid://<digits>` can be baked; one assembled
+at runtime (`"rbxassetid://" + id`) is not in the output to find. An id that will
+not resolve is warned about and skipped — the build never fails over an image.
+Pass `loomPreview({ assets: false })` to keep a build off the network entirely.
+
+Anywhere else, a host can install its own resolver with `setImageResolver` from
+`@loom-dev/renderer`; plain `http(s):`, `data:` and `blob:` URLs never need one.
 
 ## Layout
 
@@ -971,12 +1110,11 @@ Requires pnpm 11.6+ (it performs the OIDC exchange itself) and Node 22.14+.
 - **M0** — workspace skeleton ✅
 - **M1** — vertical slice: Scene IR + WASM layout + DOM renderer ✅
 - **M2** — Roblox runtime datatypes + `@rbxts/react` adapter ✅
-- **M3** — layout completeness ✅ list/grid/padding/constraints/automatic size/
-  text/flex (`HorizontalFlex`/`VerticalFlex`, `UIFlexItem`);
-  `UIPageLayout` / `UITableLayout` are recognized but not implemented
-- **M4** — visual fidelity — text (both the legacy `Font` enum and the modern
+- **M3** — layout completeness ✅ list/grid/table/pages/padding/constraints/
+  automatic size/text/flex (`HorizontalFlex`/`VerticalFlex`, `UIFlexItem`)
+- **M4** — visual fidelity ✅ text (both the legacy `Font` enum and the modern
   `FontFace`), corners, strokes, gradients, clipping, transparency, rotation,
-  and scrolling frames done; **images pending**
+  scrolling frames, and images (every `ScaleType`, sprite windows, tints)
 - **M5** — dev loop ✅ (Vite plugin, HMR, `loom preview`, `loom build`);
   a standalone roblox-ts compiler transform is still open
 - **M6** — extensibility proof — `vide` adapter shipped on the same Scene IR;
