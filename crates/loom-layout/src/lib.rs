@@ -237,7 +237,22 @@ fn base_size(node: &SceneNode, parent: Rect) -> (f64, f64) {
 /// never past the room `limit` says its parent has (see [`Limits`]).
 fn resolve_size(node: &SceneNode, parent: Rect, limit: Limits) -> (f64, f64) {
     let (w, h) = base_size(node, parent);
-    let (ax, ay) = automatic_axes(node);
+    let (mut ax, mut ay) = automatic_axes(node);
+    // A scale size against a parent axis that has no size *yet* is not zero.
+    // `Size={fromScale(1, 0)}` inside an auto-sizing parent is the library idiom
+    // for "as wide as whatever ends up holding me", and the chain is circular:
+    // the parent is waiting on this node's content and this node is waiting on
+    // the parent. The engine settles it on the content — a `fromScale(1, 0)`
+    // control inside an auto-sized row comes out the width of its own text, not
+    // nothing — so the axis behaves as automatic here. Resolving it to zero
+    // instead collapsed the node and everything under it.
+    let s = node.size();
+    if !ax && s.x.scale > 0.0 && parent.width <= 0.0 {
+        ax = true;
+    }
+    if !ay && s.y.scale > 0.0 && parent.height <= 0.0 {
+        ay = true;
+    }
     if !ax && !ay {
         return (w, h);
     }
@@ -2083,6 +2098,102 @@ mod tests {
         assert_eq!(caret.x, label.x + label.width);
         // …so the row is one item tall, not two.
         assert_eq!(r.rects["0/0/0"].rect.height, 20.0);
+    }
+
+    #[test]
+    fn a_scale_size_against_an_unsized_parent_settles_on_its_content() {
+        // Measured in Studio, which is where these numbers come from: a padded
+        // 300 box holding an auto-sized row, a fixed 150 label that does not
+        // grow, and a control that does — whose own child is
+        // `Size={fromScale(1, 0)}` and so has no width of its own to offer.
+        //
+        // Studio: fieldset 240.5, label 150, control 84.5, inner 84.5. The
+        // circular pair (parent waiting on content, content waiting on parent)
+        // settles on the text, not on nothing — loom collapsed the whole branch
+        // to 0 and the control vanished.
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                ("Wraps", PropertyValue::Known(KnownProperty::Bool(true))),
+                ("HorizontalFlex", enum_item("UIFlexAlignment", "Fill")),
+                ("Padding", udim(0.0, 6.0)),
+            ],
+        );
+        let mut label = with("Frame", "Label", &[("Size", udim2(0.0, 150.0, 0.0, 20.0))]);
+        label.children.push(with(
+            "UIFlexItem",
+            "LabelFlex",
+            &[
+                ("FlexMode", enum_item("UIFlexMode", "Custom")),
+                ("GrowRatio", num(0.0)),
+            ],
+        ));
+
+        let mut text = with(
+            "TextLabel",
+            "Text",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+                ("TextBounds", vector2(84.5, 18.0)),
+            ],
+        );
+        text.properties.insert("Text".into(), num(0.0));
+        let mut inner = with(
+            "Frame",
+            "Inner",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        inner.children.push(text);
+        let mut control = with(
+            "Frame",
+            "Control",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        control.children.push(with(
+            "UIFlexItem",
+            "ControlFlex",
+            &[
+                ("FlexMode", enum_item("UIFlexMode", "Custom")),
+                ("GrowRatio", num(1.0)),
+            ],
+        ));
+        control.children.push(inner);
+
+        let mut fieldset = with(
+            "Frame",
+            "Fieldset",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        fieldset.children = vec![list, label, control];
+
+        let mut outer = with("Frame", "Outer", &[("Size", udim2(0.0, 300.0, 0.0, 120.0))]);
+        outer.children.push(with(
+            "UIPadding",
+            "Pad",
+            &[
+                ("PaddingLeft", udim(0.0, 12.0)),
+                ("PaddingRight", udim(0.0, 12.0)),
+            ],
+        ));
+        outer.children.push(fieldset);
+
+        let r = compute_layout(&screen(vec![outer]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.width, 240.5, "fieldset");
+        assert_eq!(r.rects["0/0/0/0"].rect.width, 150.0, "label");
+        assert_eq!(r.rects["0/0/0/1"].rect.width, 84.5, "control");
+        assert_eq!(r.rects["0/0/0/1/0"].rect.width, 84.5, "inner");
     }
 
     #[test]
