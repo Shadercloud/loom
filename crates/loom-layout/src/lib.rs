@@ -116,8 +116,27 @@ impl Limits {
     /// A parent whose rect is final: both axes are a real ceiling.
     fn definite(width: f64, height: f64) -> Self {
         Limits {
-            x: Some(width),
-            y: Some(height),
+            x: Limits::room(width),
+            y: Limits::room(height),
+        }
+    }
+
+    /// A measurement as a ceiling — `None` once there is no room left to speak
+    /// of.
+    ///
+    /// A box with nothing on an axis does not mean "everything inside you is
+    /// zero": a container laid out `Size={fromScale(1, 0)} AutomaticSize={Y}`
+    /// has no width of its own until its parent gives it one, and a dropdown
+    /// positioned from a ref is 0 wide on the render before the ref resolves.
+    /// The engine lets what is inside overflow such a box rather than
+    /// collapsing it, and so does the rest of this file — `grid_metrics` reads
+    /// a `line_len <= 0` fill axis as unconstrained, and `content_box` ignores
+    /// a zero `CanvasSize`.
+    fn room(size: f64) -> Option<f64> {
+        if size > 0.0 {
+            Some(size)
+        } else {
+            None
         }
     }
 
@@ -131,7 +150,7 @@ impl Limits {
 
     /// The ceiling that survives `pad` px of padding on the way in.
     fn inset(limit: Option<f64>, pad: f64) -> Option<f64> {
-        limit.map(|max| (max - pad).max(0.0))
+        limit.and_then(|max| Limits::room(max - pad))
     }
 }
 
@@ -221,12 +240,12 @@ fn resolve_size(node: &SceneNode, parent: Rect, limit: Limits) -> (f64, f64) {
         x: if ax {
             Limits::inset(limit.x, pad_x)
         } else {
-            Some((w - pad_x).max(0.0))
+            Limits::room(w - pad_x)
         },
         y: if ay {
             Limits::inset(limit.y, pad_y)
         } else {
-            Some((h - pad_y).max(0.0))
+            Limits::room(h - pad_y)
         },
     };
     let (content_w, content_h) = measure_content(
@@ -1920,6 +1939,41 @@ mod tests {
         // …and every button lands inside it.
         assert!(save.y + save.height <= footer_rect.y + footer_rect.height + EPS);
         assert!(save.x + save.width <= footer_rect.x + footer_rect.width + EPS);
+    }
+
+    #[test]
+    fn a_parent_with_no_width_is_no_ceiling_at_all() {
+        // A box with nothing on an axis does not mean everything inside it is
+        // zero. `Size={fromScale(1, 0)} AutomaticSize={Y}` is the library idiom
+        // for "as wide as my parent, as tall as my content", and a popover
+        // positioned from a ref is 0 wide on the render before the ref
+        // resolves. Reading either as a ceiling collapsed the whole subtree —
+        // a select's label came out 0 wide and the control vanished.
+        let mut label = with(
+            "TextLabel",
+            "Label",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+                ("TextBounds", vector2(62.0, 18.0)),
+            ],
+        );
+        label.properties.insert("Text".into(), num(0.0)); // presence only
+        let mut zero_wide = with(
+            "Frame",
+            "NoWidth",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        zero_wide.children.push(label);
+        let r = compute_layout(&screen(vec![zero_wide]), VP).unwrap();
+        // The container has no width, as asked; the label keeps its own.
+        assert_eq!(r.rects["0/0"].rect.width, 0.0);
+        assert_eq!(r.rects["0/0/0"].rect.width, 62.0);
+        // …and it still grows in height, which is what it was asked to do.
+        assert_eq!(r.rects["0/0"].rect.height, 18.0);
     }
 
     #[test]
