@@ -38,6 +38,12 @@ export interface BuildOptions {
 	base?: string;
 	/** Package redirects for packages loom can't run — see `LoomPreviewOptions.shims`. */
 	shims?: Record<string, string>;
+	/**
+	 * `false` stops the build downloading the `rbxassetid://` images its bundle
+	 * mentions — see `LoomPreviewOptions.assets`. They are baked in by default,
+	 * since a static gallery has no dev server to resolve ids for it later.
+	 */
+	assets?: boolean;
 }
 
 /**
@@ -67,6 +73,7 @@ export async function runBuild(options: BuildOptions): Promise<string> {
 			loomPreview({
 				targets: patterns,
 				...(options.shims ? { shims: options.shims } : {}),
+				...(options.assets === false ? { assets: false } : {}),
 			}),
 		],
 		build: {

@@ -3,7 +3,7 @@
  * `loom` CLI — preview a roblox-ts UI project in the browser with zero config.
  *
  *   loom preview [dir] [--port <n>] [--host] [--targets [glob]]
- *   loom build [dir] --targets [glob] [--out <dir>] [--base <path>]
+ *   loom build [dir] --targets [glob] [--out <dir>] [--base <path>] [--no-assets]
  *
  * `preview` runs a Vite dev server with the loom plugin pre-applied, so no
  * vite.config is needed. Everything past that — the generated index.html, the
@@ -131,7 +131,7 @@ const USAGE =
 	"loom — Roblox UI preview\n\n" +
 	"Usage:\n" +
 	"  loom preview [dir] [--port <n>] [--host] [--targets [glob]]\n" +
-	"  loom build [dir] --targets [glob] [--out <dir>] [--base <path>]\n";
+	"  loom build [dir] --targets [glob] [--out <dir>] [--base <path>] [--no-assets]\n";
 
 /**
  * Read `--targets`: a boolean (default glob `**\/*.loom.tsx`) unless followed by
@@ -196,8 +196,12 @@ function runBuildCommand(args: string[]): void {
 	}
 	const out = parseStringFlag(args, "--out") ?? "dist-preview";
 	const base = parseStringFlag(args, "--base");
+	// `--no-assets` keeps the build off the network: the `rbxassetid://` images
+	// the bundle mentions are normally downloaded into the output, since a static
+	// gallery has no dev server to resolve ids for it later.
+	const assets = !args.includes("--no-assets");
 
-	runBuild({ dir, targets, out, base })
+	runBuild({ dir, targets, out, base, assets })
 		.then((outDir) => {
 			console.log(`\n  loom build → ${outDir}\n`);
 		})

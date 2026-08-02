@@ -70,6 +70,12 @@ export interface GalleryEmbedOptions {
 	 * `LoomPreviewOptions.shims`.
 	 */
 	shims?: Record<string, string>;
+	/**
+	 * `false` stops a **build** downloading the `rbxassetid://` images the gallery
+	 * mentions — see `LoomPreviewOptions.assets`. Ignored by
+	 * {@link createGalleryServer}, which has a dev server to resolve ids with.
+	 */
+	assets?: boolean;
 }
 
 export interface GalleryServer {
@@ -229,5 +235,6 @@ export async function buildGallery(
 		out: options.outDir,
 		base: options.base ?? "./",
 		...(options.shims ? { shims: options.shims } : {}),
+		...(options.assets === false ? { assets: false } : {}),
 	});
 }

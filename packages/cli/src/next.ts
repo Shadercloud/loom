@@ -224,6 +224,12 @@ export interface LoomNextOptions {
 	 * Next app, so `next dev` and the `next build` static gallery agree.
 	 */
 	shims?: Record<string, string>;
+	/**
+	 * `false` stops the `next build` static gallery downloading the
+	 * `rbxassetid://` images it mentions — see `GalleryEmbedOptions.assets`. The
+	 * dev gallery is unaffected: it has a server to resolve ids with.
+	 */
+	assets?: boolean;
 }
 
 /**
@@ -461,6 +467,7 @@ async function buildStaticGalleryOnce(
 			// which has no rewrites to fix them up at request time.
 			base: bases.publicBase,
 			...(options.shims ? { shims: options.shims } : {}),
+			...(options.assets === false ? { assets: false } : {}),
 		});
 		console.log(`loom: static gallery → ${outDir} (base ${bases.publicBase})`);
 	}
