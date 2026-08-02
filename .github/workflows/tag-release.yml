@@ -22,7 +22,7 @@ jobs:
     permissions:
       contents: write # create the release, upload assets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0

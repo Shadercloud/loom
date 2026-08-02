@@ -29,7 +29,7 @@ jobs:
       contents: read
       id-token: write # mint the OIDC token npm exchanges for a publish token
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

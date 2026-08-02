@@ -19,12 +19,12 @@ runs:
       with:
         tool: wasm-pack
 
-    - uses: pnpm/action-setup@v4
+    - uses: pnpm/action-setup@v6
 
     # No `registry-url`: that input exists to write an .npmrc line pinning
     # _authToken to $NODE_AUTH_TOKEN, which trusted publishing does not use.
     # Node 24 also clears the >=22.14.0 floor OIDC publishing requires.
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: 24
         cache: pnpm
