@@ -1,5 +1,12 @@
 # @loom-dev/next-demo
 
+## 0.0.15
+
+### Patch Changes
+
+- Updated dependencies [[`47e4796`](https://github.com/astra-void/loom/commit/47e4796df59a746194607806ea8145545fba4490)]:
+  - loom-dev@0.7.0
+
 ## 0.0.14
 
 ### Patch Changes
