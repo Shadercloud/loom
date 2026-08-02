@@ -1,5 +1,14 @@
 # @loom-dev/preview
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/runtime@0.7.1
+  - @loom-dev/renderer@0.7.1
+  - @loom-dev/react@0.7.1
+
 ## 0.7.0
 
 ### Minor Changes

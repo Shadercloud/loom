@@ -1,5 +1,18 @@
 # loom-dev
 
+## 0.7.1
+
+### Patch Changes
+
+- [`7eef986`](https://github.com/astra-void/loom/commit/7eef986d72991b0a084b1b381108a51a94b18b03) Thanks [@astra-void](https://github.com/astra-void)! - Let a host actually turn the `rbxassetid://` bake off. `assets: false` shipped on
+  the Vite plugin in `0.7.0`, but every wrapper around it — `loom build`,
+  `buildGallery`, `withLoomGallery` — dropped the option on the floor, so the one
+  place a build most needs to stay off the network (a docs site's embedded
+  gallery) had no way to say so. All three forward it now, and `loom build` takes
+  `--no-assets`.
+- Updated dependencies []:
+  - @loom-dev/preview@0.7.1
+
 ## 0.7.0
 
 ### Minor Changes
