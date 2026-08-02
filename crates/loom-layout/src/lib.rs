@@ -442,10 +442,16 @@ fn list_metrics(
     // then painting two puts the second row outside the box that was grown for it.
     let auto_main = if vertical { auto_axes.1 } else { auto_axes.0 };
     let main_limit = if vertical { limit.y } else { limit.x };
+    // A fill axis with no room on it is unconstrained, not a zero-wide box to
+    // break every item against — the same reading `grid_metrics` gives a
+    // `line_len <= 0` fill axis, and `Limits` gives a parent with no width.
+    // Wrapping against zero put every item on a line of its own: a select's
+    // caret dropped below its own label, inside a box that had not been sized
+    // yet.
     let wrap_room = if auto_main {
         main_limit
     } else {
-        Some(main_content)
+        Limits::room(main_content)
     };
     let wraps = wrap_room.is_some()
         && list
@@ -2023,6 +2029,60 @@ mod tests {
         assert_eq!(r.rects["0/0/1"].rect.x, 100.0);
         // …and the string `FlexMode` took all 400 of the leftover space.
         assert_eq!(r.rects["0/0/1"].rect.width, 500.0);
+    }
+
+    #[test]
+    fn a_wraps_list_with_no_room_stays_one_run() {
+        // A fill axis with nothing on it is unconstrained, not a zero-wide box
+        // to break every item against — `grid_metrics` has always read a
+        // `line_len <= 0` fill axis that way. Wrapping against zero gave every
+        // item a line of its own: a select's caret dropped below its own label
+        // because the button around them had not been given a width yet.
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[
+                ("FillDirection", enum_item("FillDirection", "Horizontal")),
+                ("Wraps", PropertyValue::Known(KnownProperty::Bool(true))),
+            ],
+        );
+        // Scale width against a parent that has none: 0 wide, height from content.
+        let mut row = with(
+            "Frame",
+            "Row",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        row.children.push(list);
+        row.children.push(with(
+            "Frame",
+            "Label",
+            &[("Size", udim2(0.0, 62.0, 0.0, 18.0))],
+        ));
+        row.children.push(with(
+            "Frame",
+            "Caret",
+            &[("Size", udim2(0.0, 20.0, 0.0, 20.0))],
+        ));
+        let mut no_width = with(
+            "Frame",
+            "NoWidth",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        no_width.children.push(row);
+        let r = compute_layout(&screen(vec![no_width]), VP).unwrap();
+        let label = r.rects["0/0/0/0"].rect;
+        let caret = r.rects["0/0/0/1"].rect;
+        // Side by side on one line, not stacked.
+        assert_eq!(caret.y, label.y);
+        assert_eq!(caret.x, label.x + label.width);
+        // …so the row is one item tall, not two.
+        assert_eq!(r.rects["0/0/0"].rect.height, 20.0);
     }
 
     #[test]
