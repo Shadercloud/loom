@@ -1,5 +1,12 @@
 # @loom-dev/layout
 
+## 0.8.0
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.8.0
+
 ## 0.7.1
 
 ### Patch Changes
