@@ -73,11 +73,20 @@ fn vec2_prop(node: &SceneNode, key: &str) -> Option<Vector2> {
     node.properties.get(key).and_then(PropertyValue::as_vector2)
 }
 
+/// An enum property's item name, from either spelling the engine accepts.
+///
+/// Roblox coerces a bare string on an enum property — `FlexMode = "Custom"` is
+/// `Enum.UIFlexMode.Custom` — and roblox-ts types it that way, so component
+/// libraries pass strings through freely (`valign="Center"`, `mode="Custom"`,
+/// `align="Right"`). Reading only the `EnumItem` form made every one of those a
+/// silent no-op: a `UIFlexItem` written with a string `FlexMode` took no share
+/// of the row, and the control it wrapped came out zero wide.
 fn enum_name<'a>(node: &'a SceneNode, key: &str) -> Option<&'a str> {
-    node.properties
-        .get(key)
-        .and_then(PropertyValue::as_enum)
-        .map(|e| e.name.as_str())
+    let prop = node.properties.get(key)?;
+    if let Some(item) = prop.as_enum() {
+        return Some(item.name.as_str());
+    }
+    prop.as_str().filter(|name| !name.is_empty())
 }
 
 /// Aligned start offset of a block of `block` px within `space` px.
@@ -1974,6 +1983,46 @@ mod tests {
         assert_eq!(r.rects["0/0/0"].rect.width, 62.0);
         // …and it still grows in height, which is what it was asked to do.
         assert_eq!(r.rects["0/0"].rect.height, 18.0);
+    }
+
+    #[test]
+    fn an_enum_property_written_as_a_string_still_counts() {
+        // Roblox coerces a bare string on an enum property, and roblox-ts types
+        // it that way, so libraries pass `mode="Custom"` / `valign="Center"`
+        // straight through. Reading only the EnumItem form made each of those a
+        // silent no-op — this row's grower took no share at all, and the
+        // control inside it came out zero wide.
+        let list = with(
+            "UIListLayout",
+            "List",
+            &[(
+                "FillDirection",
+                PropertyValue::Known(KnownProperty::Str("Horizontal".into())),
+            )],
+        );
+        let mut grower = with("Frame", "Grow", &[("Size", udim2(0.0, 100.0, 0.0, 50.0))]);
+        grower.children.push(with(
+            "UIFlexItem",
+            "Flex",
+            &[
+                (
+                    "FlexMode",
+                    PropertyValue::Known(KnownProperty::Str("Custom".into())),
+                ),
+                ("GrowRatio", num(1.0)),
+            ],
+        ));
+        let mut row = with("Frame", "Row", &[("Size", udim2(0.0, 600.0, 0.0, 200.0))]);
+        row.children = vec![
+            list,
+            with("Frame", "Fixed", &[("Size", udim2(0.0, 100.0, 0.0, 50.0))]),
+            grower,
+        ];
+        let r = compute_layout(&screen(vec![row]), VP).unwrap();
+        // The string `FillDirection` laid the row out horizontally…
+        assert_eq!(r.rects["0/0/1"].rect.x, 100.0);
+        // …and the string `FlexMode` took all 400 of the leftover space.
+        assert_eq!(r.rects["0/0/1"].rect.width, 500.0);
     }
 
     #[test]

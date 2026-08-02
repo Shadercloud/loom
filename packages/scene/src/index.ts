@@ -211,12 +211,30 @@ export function asColor3(p: PropertyValue | undefined): Color3 | undefined {
 export function asUDim(p: PropertyValue | undefined): UDim | undefined {
 	return p?.type === "UDim" ? ((p as KnownProperty).value as UDim) : undefined;
 }
+/**
+ * An enum property, from either spelling the engine accepts.
+ *
+ * Roblox coerces a bare string on an enum property — `FlexMode = "Custom"` is
+ * `Enum.UIFlexMode.Custom` — and roblox-ts types it that way, so component
+ * libraries pass strings through freely (`valign="Center"`, `mode="Custom"`,
+ * `align="Right"`). Reading only the `EnumItem` form made every one of those a
+ * silent no-op: a `UIFlexItem` written with a string `FlexMode` took no share of
+ * the row, and the control it wrapped came out zero wide.
+ *
+ * The string carries no enum type or numeric value, and nothing downstream reads
+ * either — every consumer switches on `name` — so it is filled in as the name
+ * with an empty type rather than guessed at.
+ */
 export function asEnum(
 	p: PropertyValue | undefined,
 ): EnumItemValue | undefined {
-	return p?.type === "EnumItem"
-		? ((p as KnownProperty).value as EnumItemValue)
-		: undefined;
+	if (p?.type === "EnumItem")
+		return (p as KnownProperty).value as EnumItemValue;
+	if (p?.type === "string") {
+		const name = (p as KnownProperty).value as string;
+		return name === "" ? undefined : { enumType: "", name, value: 0 };
+	}
+	return undefined;
 }
 export function asColorSequence(
 	p: PropertyValue | undefined,

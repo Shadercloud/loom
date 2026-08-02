@@ -184,6 +184,12 @@ impl PropertyValue {
             _ => None,
         }
     }
+    pub fn as_str(&self) -> Option<&str> {
+        match self.known()? {
+            KnownProperty::Str(v) => Some(v.as_str()),
+            _ => None,
+        }
+    }
     /// `number` and `int` cross-coerce (so e.g. ZIndex tolerates either tag).
     pub fn as_number(&self) -> Option<f64> {
         match self.known()? {
