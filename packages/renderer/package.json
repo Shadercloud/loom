@@ -1,7 +1,7 @@
 {
 	"name": "@loom-dev/renderer",
-	"version": "0.6.4",
-	"description": "Framework-agnostic DOM renderer for loom \u2014 paints Scene IR plus layout into positioned divs and dispatches pointer input.",
+	"version": "0.6.5",
+	"description": "Framework-agnostic DOM renderer for loom — paints Scene IR plus layout into positioned divs and dispatches pointer input.",
 	"keywords": [
 		"loom",
 		"roblox",
