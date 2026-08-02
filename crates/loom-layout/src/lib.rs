@@ -255,12 +255,7 @@ fn resolve_size(node: &SceneNode, parent: Rect, limit: Limits) -> (f64, f64) {
 
 /// The bounding content size of `node`'s children, given a content box of
 /// `(content_w, content_h)`. Used by AutomaticSize.
-fn measure_content(
-    node: &SceneNode,
-    content_w: f64,
-    content_h: f64,
-    limit: Limits,
-) -> (f64, f64) {
+fn measure_content(node: &SceneNode, content_w: f64, content_h: f64, limit: Limits) -> (f64, f64) {
     let content = Rect {
         x: 0.0,
         y: 0.0,
@@ -1818,7 +1813,11 @@ mod tests {
             "Footer",
             &[("Size", udim2(0.0, content_w, 0.0, 40.0))],
         ));
-        let mut column = with("Frame", "Column", &[("Size", udim2(share, 0.0, 0.0, 100.0))]);
+        let mut column = with(
+            "Frame",
+            "Column",
+            &[("Size", udim2(share, 0.0, 0.0, 100.0))],
+        );
         column.children.push(card);
         column
     }
@@ -1897,12 +1896,18 @@ mod tests {
         );
         footer.children.push(list);
         for name in ["Cancel", "Save"] {
-            footer
-                .children
-                .push(with("Frame", name, &[("Size", udim2(0.0, 80.0, 0.0, 40.0))]));
+            footer.children.push(with(
+                "Frame",
+                name,
+                &[("Size", udim2(0.0, 80.0, 0.0, 40.0))],
+            ));
         }
         // 0.125 of 800 = 100: room for one 80-wide button per line, not two.
-        let mut column = with("Frame", "Column", &[("Size", udim2(0.125, 0.0, 0.0, 300.0))]);
+        let mut column = with(
+            "Frame",
+            "Column",
+            &[("Size", udim2(0.125, 0.0, 0.0, 300.0))],
+        );
         column.children.push(footer);
         let r = compute_layout(&screen(vec![column]), VP).unwrap();
 
@@ -1934,7 +1939,11 @@ mod tests {
             "Inner",
             &[("Size", udim2(0.0, 10.0, 0.0, 10.0))],
         ));
-        let mut narrow = with("Frame", "Narrow", &[("Size", udim2(0.0, 100.0, 0.0, 100.0))]);
+        let mut narrow = with(
+            "Frame",
+            "Narrow",
+            &[("Size", udim2(0.0, 100.0, 0.0, 100.0))],
+        );
         narrow.children.push(child);
         let r = compute_layout(&screen(vec![narrow]), VP).unwrap();
         assert_eq!(r.rects["0/0/0"].rect.width, 500.0);
