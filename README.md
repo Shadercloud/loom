@@ -59,7 +59,7 @@ Or skip the config file entirely:
 
 ```sh
 loom preview [dir] [--port <n>] [--host] [--targets [glob]]
-loom build   [dir] --targets [glob] [--out <dir>] [--base <path>]
+loom build   [dir] --targets [glob] [--out <dir>] [--base <path>] [--no-assets]
 ```
 
 `preview` boots a Vite dev server with the plugin pre-applied — same generated
@@ -67,7 +67,8 @@ page, same entry detection. `--targets` switches to **gallery mode**: every
 `**/*.loom.tsx` under the directory gets a sidebar entry with lazy mounts and
 per-target error containment. `build` bundles that same gallery into a static,
 client-only site (default `dist-preview/`) — which is exactly what `vite build`
-does with `loomPreview({ targets })`.
+does with `loomPreview({ targets })`. `--no-assets` keeps that build off the
+network by skipping the `rbxassetid://` bake.
 
 Only `preview` reads `<dir>/loom.config.ts` (an optional default export of
 `{ targets?, port? }`, used when the matching flag is absent). `build` does not
@@ -993,7 +994,10 @@ CORS header — so loom does the id → URL hop for it:
 Only ids **written out** as `rbxassetid://<digits>` can be baked; one assembled
 at runtime (`"rbxassetid://" + id`) is not in the output to find. An id that will
 not resolve is warned about and skipped — the build never fails over an image.
-Pass `loomPreview({ assets: false })` to keep a build off the network entirely.
+
+To keep a build off the network entirely, turn the bake off wherever the build is
+configured: `loomPreview({ assets: false })`, `loom build --no-assets`, or
+`assets: false` on `loom-dev/embed`'s `buildGallery` and `withLoomGallery`.
 
 Anywhere else, a host can install its own resolver with `setImageResolver` from
 `@loom-dev/renderer`; plain `http(s):`, `data:` and `blob:` URLs never need one.
