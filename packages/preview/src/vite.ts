@@ -25,7 +25,7 @@ import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isAbsolute, resolve, sep } from "node:path";
 import { type Plugin, searchForWorkspaceRoot } from "vite";
-import { loomAssetProxy } from "./asset-proxy.ts";
+import { loomAssetBundle, loomAssetProxy } from "./asset-proxy.ts";
 import {
 	builtInCompatibilityAliases,
 	exactSpecifierPattern,
@@ -336,6 +336,14 @@ export interface LoomPreviewOptions {
 	 * plumbing (aliases, resolver, globals injection) stays.
 	 */
 	html?: boolean;
+	/**
+	 * Set `false` to stop a **build** downloading the `rbxassetid://` images its
+	 * bundle mentions (see `./asset-proxy.ts`). They are baked into the output by
+	 * default, since a static page has no dev server to resolve ids for it; turn
+	 * it off for a build that must not reach the network, or one whose images
+	 * come from somewhere else entirely. The dev-server route is unaffected.
+	 */
+	assets?: boolean;
 }
 
 export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
@@ -599,6 +607,7 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 	};
 
 	const plugins: Plugin[] = [rbxtsSyntax, main, serveGlobals, loomAssetProxy()];
+	if (options.assets !== false) plugins.push(loomAssetBundle());
 
 	// Gallery mode: the target import map (dev) + the generated gallery page.
 	const patterns =

@@ -1,22 +1,31 @@
 /**
- * `rbxassetid://` resolution for the preview, as a same-origin dev-server route.
+ * `rbxassetid://` resolution for the preview: a dev-server route, and a
+ * build-time bake for the static output that has no server to ask.
  *
  * A browser cannot resolve an asset id by itself: Roblox's thumbnail API sends
  * no `Access-Control-Allow-Origin`, so the JSON read is blocked cross-origin.
- * The *image* it points at needs no CORS at all — an `<img>` loads any origin —
- * so only the id → URL hop has to happen server-side. This plugin does that hop
- * in the dev server and answers with a redirect, which keeps the browser half
- * synchronous: the client resolver just points `<img src>` at this route.
+ * The *image* it points at needs no CORS at all — a browser loads any origin —
+ * so only the id → URL hop has to happen server-side.
  *
- * Scope: the dev server (`loom preview`, the embedded server, Next dev). A
- * static gallery build has no server to ask, so asset ids do not resolve there
- * — a build that needs them should pass real URLs, or install its own
- * `setImageResolver`.
+ * - **Dev** ({@link loomAssetProxy}): the server does that hop and answers with
+ *   a redirect, which keeps the browser half synchronous — the client resolver
+ *   just points the layer at this route.
+ * - **Build** ({@link loomAssetBundle}): there is no server later, so the ids
+ *   the bundle mentions are resolved *now*, the images are downloaded into the
+ *   output, and a manifest maps each id to its emitted file. The page then needs
+ *   nothing but its own origin.
  */
 import type { Plugin, ViteDevServer } from "vite";
 
 /** Route the client resolver points at, appended to the configured base. */
 export const ASSET_ROUTE = "__loom/asset/";
+
+/**
+ * Where the baked manifest lands in a build, appended to the configured base.
+ * `./globals.ts` spells this out again rather than importing it: that module is
+ * bundled into the page, and this one is server code.
+ */
+export const ASSET_MANIFEST = "__loom/assets.json";
 
 /** How long a resolved CDN URL stays good enough to hand out again. */
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -117,6 +126,98 @@ export function loomAssetProxy(): Plugin {
 						res.setHeader("Content-Type", "text/plain");
 						res.end(`could not resolve asset ${assetId}: ${message}`);
 					});
+			});
+		},
+	};
+}
+
+// --- static build ------------------------------------------------------------
+
+/** Every `rbxassetid://<id>` a piece of emitted output mentions. */
+export function assetIdsIn(
+	code: string,
+	into = new Set<string>(),
+): Set<string> {
+	for (const match of code.matchAll(/rbxassetid:\/\/(\d+)/g)) {
+		const id = match[1];
+		if (id !== undefined) into.add(id);
+	}
+	return into;
+}
+
+/** File extension for a downloaded thumbnail, from what the CDN said it is. */
+function extensionFor(contentType: string | null): string {
+	if (contentType?.includes("jpeg")) return "jpg";
+	if (contentType?.includes("webp")) return "webp";
+	if (contentType?.includes("gif")) return "gif";
+	// The thumbnail endpoint is asked for `format=Png`, so this is the answer
+	// almost every time.
+	return "png";
+}
+
+/** id → the bytes and the name they were served under. */
+async function downloadAsset(
+	assetId: string,
+	fetchImpl: typeof fetch,
+): Promise<{ fileName: string; source: Uint8Array }> {
+	const url = await resolveAssetUrl(assetId, "420x420", fetchImpl);
+	const response = await fetchImpl(url);
+	if (!response.ok) {
+		throw new Error(
+			`download failed (${response.status} ${response.statusText})`,
+		);
+	}
+	return {
+		fileName: `${ASSET_ROUTE}${assetId}.${extensionFor(response.headers.get("content-type"))}`,
+		source: new Uint8Array(await response.arrayBuffer()),
+	};
+}
+
+/**
+ * Resolve and download every asset id the bundle mentions, then emit them —
+ * plus a `<base>__loom/assets.json` manifest — into the build output, so a
+ * static preview paints its `rbxassetid://` images with no server behind it.
+ *
+ * Only ids **written out** as `rbxassetid://<digits>` are found. One assembled
+ * at runtime (`"rbxassetid://" + id`) is not in the output to find, and stays
+ * unresolved — the honest limit of a static build.
+ *
+ * Never fails the build: an id that will not resolve (offline, deleted, or
+ * moderated) is warned about and left out of the manifest, exactly as it would
+ * have been before this ran.
+ */
+export function loomAssetBundle(fetchImpl: typeof fetch = fetch): Plugin {
+	return {
+		name: "loom:asset-bundle",
+		apply: "build",
+		async generateBundle(_options, bundle) {
+			const ids = new Set<string>();
+			for (const file of Object.values(bundle)) {
+				if (file.type === "chunk") assetIdsIn(file.code, ids);
+				else if (typeof file.source === "string") assetIdsIn(file.source, ids);
+			}
+			if (ids.size === 0) return;
+
+			const manifest: Record<string, string> = {};
+			await Promise.all(
+				[...ids].map(async (assetId) => {
+					try {
+						const { fileName, source } = await downloadAsset(
+							assetId,
+							fetchImpl,
+						);
+						this.emitFile({ type: "asset", fileName, source });
+						manifest[assetId] = fileName;
+					} catch (err: unknown) {
+						const message = err instanceof Error ? err.message : String(err);
+						this.warn(`[loom] asset ${assetId}: ${message}`);
+					}
+				}),
+			);
+			this.emitFile({
+				type: "asset",
+				fileName: ASSET_MANIFEST,
+				source: JSON.stringify(manifest),
 			});
 		},
 	};

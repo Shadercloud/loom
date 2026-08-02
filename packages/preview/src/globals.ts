@@ -11,10 +11,34 @@ import { installGlobals } from "@loom-dev/runtime";
 installGlobals();
 
 /**
- * Point `rbxassetid://<id>` at the dev server's asset route (see
- * `./asset-proxy.ts`), which redirects to the CDN image. Synchronous: the
- * server does the lookup, the browser only follows a redirect. Anything that is
- * not an asset id is left alone — the renderer already loads plain URLs.
+ * The build's baked asset manifest (`id` → emitted file), fetched at most once.
+ * Absent — a build with no asset ids, or one made with `assets: false` — leaves
+ * every id unresolved, which is what it was before the bake existed.
+ *
+ * The name is spelled out rather than imported from `./asset-proxy.ts`: that
+ * module is the server half, and this one is bundled into the page.
+ */
+let bakedAssets: Promise<Record<string, string> | undefined> | undefined;
+function manifest(base: string): Promise<Record<string, string> | undefined> {
+	bakedAssets ??= fetch(`${base}__loom/assets.json`)
+		.then((response) =>
+			response.ok
+				? (response.json() as Promise<Record<string, string>>)
+				: undefined,
+		)
+		.catch(() => undefined);
+	return bakedAssets;
+}
+
+/**
+ * Resolve `rbxassetid://<id>` to something the browser can load.
+ *
+ * Under the **dev server**, the asset route (see `./asset-proxy.ts`), which
+ * redirects to the CDN image — synchronous, because the server does the lookup
+ * and the browser only follows a redirect. In a **static build** there is no
+ * server, so the answer comes from the manifest the build baked, one lookup for
+ * the whole page. Anything that is not an asset id is left alone — the renderer
+ * already loads plain URLs.
  */
 setImageResolver((image) => {
 	const id = /^rbxassetid:\/\/(\d+)$/.exec(image)?.[1];
@@ -30,10 +54,16 @@ setImageResolver((image) => {
 	// The cast is inline for the same reason, and widened rather than taken from
 	// `vite/client`: this module is typechecked by the previewed app's tsconfig
 	// too, which need not have Vite's types.
-	const base =
-		(import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env
-			?.BASE_URL ?? "/";
-	return `${base.endsWith("/") ? base : `${base}/`}__loom/asset/${id}`;
+	const env = (
+		import.meta as ImportMeta & { env?: { BASE_URL?: string; PROD?: boolean } }
+	).env;
+	const raw = env?.BASE_URL ?? "/";
+	const base = raw.endsWith("/") ? raw : `${raw}/`;
+	if (env?.PROD !== true) return `${base}__loom/asset/${id}`;
+	return manifest(base).then((baked) => {
+		const file = baked?.[id];
+		return file === undefined ? undefined : `${base}${file}`;
+	});
 });
 
 // Diagnostic: if nothing mounts into #loom-root shortly after load, the entry
