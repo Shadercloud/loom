@@ -71,6 +71,19 @@ const CLASS_PARENTS: Record<string, string> = {
 	ContextActionService: "Instance",
 	HttpService: "Instance",
 	CollectionService: "Instance",
+	TextService: "Instance",
+	Debris: "Instance",
+	Lighting: "Instance",
+	ReplicatedFirst: "Instance",
+	ReplicatedStorage: "Instance",
+	ServerScriptService: "Instance",
+	ServerStorage: "Instance",
+	SoundService: "Instance",
+	StarterGui: "BasePlayerGui",
+	StarterPack: "Instance",
+	StarterPlayer: "Instance",
+	Teams: "Instance",
+	GetTextBoundsParams: "Instance",
 };
 
 const warnedUnknown = new Set<string>();

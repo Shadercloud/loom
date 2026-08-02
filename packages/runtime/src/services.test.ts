@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Vector2 } from "./datatypes";
+import { Enum } from "./enums";
 import { game } from "./game";
 import { createInstance, type LoomInstance } from "./instance";
-import { setViewportSize } from "./services";
+import { setTextMeasurer, setViewportSize } from "./services";
 import type { LoomSignal } from "./signal";
 
 describe("game.GetService", () => {
@@ -365,5 +366,135 @@ describe("CollectionService", () => {
 		service.RemoveTag(frame, "signalled");
 		service.RemoveTag(frame, "signalled");
 		expect(removed).toEqual([frame]);
+	});
+});
+
+/** The service methods this file calls, past `LoomInstance`'s `unknown` index. */
+interface TextServiceShape {
+	GetTextSize(
+		text: string,
+		fontSize: number,
+		font?: unknown,
+		frameSize?: Vector2,
+	): Vector2;
+	GetTextBoundsAsync(params: LoomInstance): Vector2;
+}
+interface DebrisShape {
+	AddItem(instance: LoomInstance, lifetime?: number): void;
+}
+interface StarterGuiShape extends LoomInstance {
+	SetCore(name: string, value: unknown): void;
+	GetCoreGuiEnabled(coreGuiType: unknown): boolean;
+}
+
+describe("TextService", () => {
+	afterEach(() => {
+		setTextMeasurer(undefined);
+	});
+
+	it("measures through the installed measurer, in the requested font", () => {
+		const seen: unknown[] = [];
+		setTextMeasurer((request) => {
+			seen.push(request);
+			return { x: 71.5, y: 18 };
+		});
+		const service = game.GetService(
+			"TextService",
+		) as unknown as TextServiceShape;
+		const size = service.GetTextSize(
+			"Hello world",
+			18,
+			Enum.Font.SourceSans,
+			Vector2.new(200, 1000),
+		);
+		// Studio measures this string at (71.5, 18) — a float width, so the
+		// measurement is not rounded on the way out.
+		expect(size).toEqual(Vector2.new(71.5, 18));
+		expect(seen).toEqual([
+			{ text: "Hello world", size: 18, font: "SourceSans", width: 200 },
+		]);
+	});
+
+	it("takes the modern GetTextBoundsParams spelling too", () => {
+		setTextMeasurer((request) => ({ x: request.width ?? 0, y: request.size }));
+		const params = createInstance("GetTextBoundsParams");
+		params.Text = "wrapped";
+		params.Size = 24;
+		params.Width = 120;
+		const service = game.GetService(
+			"TextService",
+		) as unknown as TextServiceShape;
+		expect(service.GetTextBoundsAsync(params)).toEqual(Vector2.new(120, 24));
+	});
+
+	it("warns once and estimates when no measurer is installed", () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const service = game.GetService(
+			"TextService",
+		) as unknown as TextServiceShape;
+		const first = service.GetTextSize("abcd", 10);
+		expect(first.Y).toBe(10);
+		expect(first.X).toBeGreaterThan(0);
+		service.GetTextSize("abcd", 10);
+		expect(warnSpy).toHaveBeenCalledTimes(1);
+		warnSpy.mockRestore();
+	});
+});
+
+describe("Debris", () => {
+	it("destroys the instance after its lifetime", () => {
+		vi.useFakeTimers();
+		const frame = createInstance("Frame");
+		const parent = createInstance("Frame");
+		frame.Parent = parent;
+		(game.GetService("Debris") as unknown as DebrisShape).AddItem(frame, 2);
+		vi.advanceTimersByTime(1999);
+		expect(parent.GetChildren()).toEqual([frame]);
+		vi.advanceTimersByTime(2);
+		expect(parent.GetChildren()).toEqual([]);
+		vi.useRealTimers();
+	});
+
+	it("survives an instance destroyed before the timer fires", () => {
+		vi.useFakeTimers();
+		const frame = createInstance("Frame");
+		(game.GetService("Debris") as unknown as DebrisShape).AddItem(frame, 1);
+		frame.Destroy();
+		expect(() => vi.advanceTimersByTime(2000)).not.toThrow();
+		vi.useRealTimers();
+	});
+});
+
+describe("StarterGui and the container services", () => {
+	it("answers the core-UI calls instead of crashing on them", () => {
+		const starterGui = game.GetService("StarterGui") as StarterGuiShape;
+		expect(() =>
+			starterGui.SetCore("ResetButtonCallback", false),
+		).not.toThrow();
+		expect(starterGui.GetCoreGuiEnabled(undefined)).toBe(true);
+		// It is a real container too: app code parents templates into it.
+		const gui = createInstance("ScreenGui", "Template");
+		gui.Parent = starterGui;
+		expect(starterGui.FindFirstChild("Template")).toBe(gui);
+		gui.Destroy();
+	});
+
+	it("registers the container services rather than warning about them", () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		for (const name of [
+			"Lighting",
+			"ReplicatedFirst",
+			"ReplicatedStorage",
+			"SoundService",
+			"StarterPack",
+			"StarterPlayer",
+			"Teams",
+		]) {
+			const service = game.GetService(name);
+			expect(service.ClassName).toBe(name);
+			expect(service).toBe(game.GetService(name));
+		}
+		expect(warnSpy).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
 	});
 });

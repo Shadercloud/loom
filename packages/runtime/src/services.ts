@@ -6,11 +6,14 @@
  * (LocalPlayer → PlayerGui, pre-built so `WaitForChild` works synchronously),
  * Workspace (CurrentCamera + viewport size), a real CollectionService (the tag
  * registry behind `@rbxts/react`'s `Tag` prop), a no-op ContextActionService,
- * and the deterministic slice of HttpService (`GenerateGUID` over Web Crypto,
- * plus JSON encoding). Each is a real `LoomInstance` parented under `game`, so
+ * the deterministic slice of HttpService (`GenerateGUID` over Web Crypto, plus
+ * JSON encoding), TextService measuring against the renderer's own fonts,
+ * Debris on real timers, StarterGui's core-UI no-ops, and the services that are
+ * only containers. Each is a real `LoomInstance` parented under `game`, so
  * `GetFullName`, `GetPropertyChangedSignal`, and `IsA` behave normally.
  */
 import { Vector2 } from "./datatypes";
+import { EnumItem } from "./enums";
 import { getService, registerService } from "./game";
 import {
 	createInstance,
@@ -386,6 +389,168 @@ export function clearTags(instance: LoomInstance): void {
 		TAGGED.get(tag)?.delete(instance);
 		TAG_REMOVED.get(tag)?.fire(instance);
 	}
+}
+
+// --- TextService -------------------------------------------------------------
+
+/** How the host measures a string; `@loom-dev/renderer` installs a real one. */
+export type TextMeasurer = (request: {
+	text: string;
+	size: number;
+	/** A legacy `Enum.Font` name, or nothing for the default face. */
+	font?: string;
+	/** Wrap width in pixels; 0 or absent means no wrapping. */
+	width?: number;
+}) => { x: number; y: number };
+
+let textMeasurer: TextMeasurer | undefined;
+let warnedNoMeasurer = false;
+
+/**
+ * Install the text measurer behind `TextService`. The renderer calls this on
+ * load — it is the half of loom that knows about fonts and canvases — so app
+ * code sizing a label gets the same numbers the label will paint at.
+ */
+export function setTextMeasurer(measurer: TextMeasurer | undefined): void {
+	textMeasurer = measurer;
+}
+
+/** The measurer's answer, or a warned-about estimate when none is installed. */
+function measureString(
+	text: string,
+	size: number,
+	font: unknown,
+	width: number,
+): Vector2 {
+	const fontName =
+		font instanceof EnumItem
+			? font.Name
+			: typeof font === "string" && font !== ""
+				? font
+				: undefined;
+	if (textMeasurer) {
+		const bounds = textMeasurer({
+			text,
+			size,
+			...(fontName === undefined ? {} : { font: fontName }),
+			width,
+		});
+		return new Vector2(bounds.x, bounds.y);
+	}
+	if (!warnedNoMeasurer) {
+		warnedNoMeasurer = true;
+		console.warn(
+			"[loom] TextService has no text measurer installed — import " +
+				"@loom-dev/renderer (every adapter does) for real measurements; " +
+				"returning a rough estimate until then",
+		);
+	}
+	// Deliberately crude, and warned about: half an em per character is wrong for
+	// every font, but a zero would have UI code divide by nothing and lay out
+	// against it as if it were the truth.
+	return new Vector2(text.length * size * 0.5, text === "" ? 0 : size);
+}
+
+/**
+ * `TextService` — the measurement half, which is the half a UI needs.
+ *
+ * `GetTextSize` and `GetTextBoundsAsync` both answer from the renderer's own
+ * font stack, so a component that measures before it lays out agrees with what
+ * lands on screen. Neither yields here (nothing to wait for in a browser), and
+ * the filtering methods are absent: moderation is a server call loom will not
+ * make on anyone's behalf.
+ */
+registerClassMethods("TextService", {
+	GetTextSize: (
+		_self: LoomInstance,
+		text: string,
+		fontSize: number,
+		font?: unknown,
+		frameSize?: Vector2,
+	) => measureString(String(text ?? ""), fontSize, font, frameSize?.X ?? 0),
+	// The modern spelling takes a `GetTextBoundsParams` instance instead of four
+	// arguments; the properties it carries are the same measurement.
+	GetTextBoundsAsync: (_self: LoomInstance, params: LoomInstance) =>
+		measureString(
+			String(params?.Text ?? ""),
+			typeof params?.Size === "number" ? params.Size : 14,
+			params?.Font,
+			typeof params?.Width === "number" ? params.Width : 0,
+		),
+});
+
+registerService("TextService", () =>
+	createInstance("TextService", "TextService"),
+);
+
+// --- Debris ------------------------------------------------------------------
+
+/**
+ * `Debris` — the one-line lifetime service, which is a real timer here rather
+ * than a stub: `AddItem(instance, 3)` genuinely destroys the instance three
+ * seconds later, so a toast that cleans itself up behaves as it does in-game.
+ */
+registerClassMethods("Debris", {
+	AddItem: (_self: LoomInstance, instance: LoomInstance, lifetime = 10) => {
+		if (!instance) return undefined;
+		setTimeout(() => {
+			try {
+				instance.Destroy();
+			} catch {
+				// Already destroyed, or never a live instance — either way there is
+				// nothing left for the timer to clean up.
+			}
+		}, Math.max(0, lifetime) * 1000);
+		return undefined;
+	},
+});
+
+registerService("Debris", () => createInstance("Debris", "Debris"));
+
+// --- StarterGui --------------------------------------------------------------
+
+/**
+ * `StarterGui` — a real container (app code parents `ScreenGui` templates into
+ * it) whose `SetCore`/`GetCore` pair covers the core-UI toggles a preview has no
+ * core UI to toggle. They are no-ops rather than absent so a mount that turns
+ * the backpack off does not take the whole preview down with it; `GetCore`
+ * answers `true`, which is what an untouched client reports.
+ */
+registerClassMethods("StarterGui", {
+	SetCore: () => undefined,
+	GetCore: () => true,
+	SetCoreGuiEnabled: () => undefined,
+	GetCoreGuiEnabled: () => true,
+});
+
+// --- plain containers --------------------------------------------------------
+
+/**
+ * The services that are *only* containers in a client: no behavior to model,
+ * just a place instances live. Registering them turns `GetService` from a warned
+ * stub into a plain instance — the same object every time, `IsA` correct, and
+ * children that survive — which is all a preview ever needs from them.
+ *
+ * Anything not listed still resolves to a warned stub. That list stays
+ * deliberate rather than exhaustive: a service loom cannot honestly model
+ * (DataStores, marketplace, teleports) should say so by warning, not by looking
+ * like it works.
+ */
+const CONTAINER_SERVICES = [
+	"Lighting",
+	"ReplicatedFirst",
+	"ReplicatedStorage",
+	"ServerScriptService",
+	"ServerStorage",
+	"SoundService",
+	"StarterGui",
+	"StarterPack",
+	"StarterPlayer",
+	"Teams",
+] as const;
+
+for (const name of CONTAINER_SERVICES) {
+	registerService(name, () => createInstance(name, name));
 }
 
 // --- eager construction ------------------------------------------------------

@@ -9,7 +9,7 @@
  * would be a warned stub anyway, so a missing name here surfaces as a build
  * error instead of a silent stub.
  */
-import { getService, type LoomInstance } from "@loom-dev/runtime";
+import { getService, type LoomInstance, type Vector2 } from "@loom-dev/runtime";
 
 export const CollectionService: LoomInstance = getService("CollectionService");
 export const ContextActionService: LoomInstance = getService(
@@ -34,3 +34,47 @@ export const RunService: LoomInstance = getService("RunService");
 export const TweenService: LoomInstance = getService("TweenService");
 export const UserInputService: LoomInstance = getService("UserInputService");
 export const Workspace: LoomInstance = getService("Workspace");
+
+/**
+ * Typed for the same reason as {@link LoomHttpService}: app code *calls* these,
+ * and the index signature would hand it `unknown`. `GetTextSize` measures with
+ * the renderer's own fonts, so what a component reserves matches what it paints.
+ */
+export interface LoomTextService extends LoomInstance {
+	GetTextSize(
+		text: string,
+		fontSize: number,
+		font?: unknown,
+		frameSize?: Vector2,
+	): Vector2;
+	GetTextBoundsAsync(params: LoomInstance): Vector2;
+}
+export const TextService = getService("TextService") as LoomTextService;
+
+/** `AddItem(instance, lifetime)` really does destroy it, on a real timer. */
+export interface LoomDebris extends LoomInstance {
+	AddItem(instance: LoomInstance, lifetime?: number): void;
+}
+export const Debris = getService("Debris") as LoomDebris;
+
+/** `SetCore`/`GetCore` are no-ops: a preview has no core UI to toggle. */
+export interface LoomStarterGui extends LoomInstance {
+	SetCore(name: string, value: unknown): void;
+	GetCore(name: string): unknown;
+	SetCoreGuiEnabled(coreGuiType: unknown, enabled: boolean): void;
+	GetCoreGuiEnabled(coreGuiType: unknown): boolean;
+}
+export const StarterGui = getService("StarterGui") as LoomStarterGui;
+
+// Container-only services: no behavior to model, just a place instances live.
+export const Lighting: LoomInstance = getService("Lighting");
+export const ReplicatedFirst: LoomInstance = getService("ReplicatedFirst");
+export const ReplicatedStorage: LoomInstance = getService("ReplicatedStorage");
+export const ServerScriptService: LoomInstance = getService(
+	"ServerScriptService",
+);
+export const ServerStorage: LoomInstance = getService("ServerStorage");
+export const SoundService: LoomInstance = getService("SoundService");
+export const StarterPack: LoomInstance = getService("StarterPack");
+export const StarterPlayer: LoomInstance = getService("StarterPlayer");
+export const Teams: LoomInstance = getService("Teams");
