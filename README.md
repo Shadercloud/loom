@@ -806,6 +806,80 @@ The other datatype members that come with them: `Vector2`'s `Unit` / `Dot` /
 `Vector3`'s `Unit` / `Dot` / `Cross` / `Lerp` and axis constants, and
 `UDim2:Lerp`. `UDim` has no `Lerp` here because it has none in the engine.
 
+### The Luau standard library
+
+The whole environment roblox-ts output expects is installed as globals, so code
+that calls it with no import runs as written: the `math`, `string`, `table`,
+`os`, `bit32`, `utf8`, `buffer` and `debug` libraries, `task`, `pcall` /
+`xpcall`, `pairs` / `ipairs` / `next`, `select`, `unpack`, `rawget` / `rawset` /
+`rawequal` / `rawlen`, `typeIs` / `typeOf`, `tostring` / `tonumber`, `assert`,
+`warn` and an inert `coroutine`.
+
+**Positions stay 1-based**, as they are in Luau: `table.insert(list, 1, x)` puts
+`x` at the front, `table.find` and `string.find` return 1-based indices, and
+`table.concat(list, sep, i, j)` includes both ends. These are not roblox-ts
+macros — the compiler passes their arguments straight to the engine, so the
+number written in the source is already a Luau index. The array *methods*
+roblox-ts does compile as macros are the other way round: `list.remove(0)`
+drops the first element, and `table.remove(list, 1)` drops that same one.
+
+`table` is complete: `insert`, `remove`, `find`, `concat`, `sort`, `create`,
+`clear`, `clone`, `freeze`, `isfrozen`, `pack`, `unpack` and `move`, over
+arrays, `Map`s, `Set`s and plain objects — plus the Lua 5.1 leftovers Roblox
+still exposes and marks deprecated, `getn`, `maxn`, `foreach` and `foreachi`
+(deprecated here too, and present for the same reason: old code calls them).
+`sort` takes Luau's *predicate* comparator, not a JS one — `comp(a, b)` is true
+when `a` comes first:
+
+```ts
+table.sort(players, (a, b) => a.score > b.score);
+```
+
+Where the engine would raise an error, loom leans forgiving instead, so a
+preview renders rather than dying over an off-by-one: an out-of-range `insert`
+position clamps, an out-of-range `remove` returns `nil` and mutates nothing, and
+`concat` stringifies whatever it is given. `freeze` is `Object.freeze` — enough
+for arrays and objects, but it cannot stop `Map.set`.
+
+#### Where the rest differs from the engine
+
+Everything below is a deliberate choice, not a gap:
+
+- **Strings are JS strings.** Luau's are byte strings, so `string.len`,
+  `string.byte` and every index count UTF-16 code units here, not bytes. ASCII
+  is identical either way. `utf8.len`, `utf8.char` and `utf8.codepoint` deal in
+  code points and match exactly; the positions `utf8.codes`, `utf8.offset` and
+  `utf8.graphemes` return are code-unit positions — the ones `string.sub` on
+  that same string wants.
+- **Patterns are a subset.** `find`, `match`, `gmatch` and `gsub` translate
+  literals, `%w`-style classes, bracket sets, `.`, the `+*-?` quantifiers and
+  the edge anchors; anything richer (`%b`, `%f`, negated classes) is treated as
+  literal text rather than silently mismatched.
+- **`string.match` is not patched onto `String.prototype`.** JS already defines
+  `match` there with different semantics, and these patches are page-wide —
+  forcing it would rewrite `match` for React and Vite too. Call
+  `string.match(s, pattern)`, which is the form roblox-ts code writes anyway.
+  The other Luau string methods (`sub`, `gsub`, `gmatch`, `byte`, `len`,
+  `reverse`, `format`, …) are patched on and work off a string receiver.
+- **`math.randomseed` really seeds.** `Math.random` cannot be, so seeding
+  switches `math.random` to a small deterministic generator — same seed, same
+  sequence. The numbers are loom's, not the engine's.
+- **`os.date` is a strftime subset** (`%a %A %b %B %c %d %H %I %j %m %M %p %S
+  %x %X %y %Y %%`, plus `*t` and the `!` UTC prefix). An unknown specifier is
+  left as written.
+- **`bit32` follows Luau on shifts.** A displacement of 32 or more clears the
+  value, where JS would mask the count to 5 bits and shift by nothing.
+- **`debug` profiling is wired to the browser.** `profilebegin`/`profileend`
+  become a `performance.measure` the devtools Performance panel shows;
+  `setmemorycategory` and `resetmemorycategory` are no-ops, and `debug.info`
+  returns an empty tuple because there is no Luau VM to interrogate.
+- **`buffer` is bounds-checked and little-endian**, like the engine's, and
+  `typeOf` answers `"buffer"` for one.
+- **There is no `setmetatable` / `getmetatable` / `newproxy`.** Loom runs the
+  author's TypeScript, whose classes are JS classes; giving a plain object a
+  metatable's `__index` behaviour would mean proxying every table in the
+  program, and a half-working metatable is worse than an honest omission.
+
 ### `shims`
 
 For any other package loom can't run, point the specifier at a browser module
