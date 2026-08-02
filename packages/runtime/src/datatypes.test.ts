@@ -6,11 +6,13 @@ import {
 	Font,
 	NumberSequence,
 	NumberSequenceKeypoint,
+	Rect,
 	robloxEquals,
 	toPropertyValue,
 	UDim,
 	UDim2,
 	Vector2,
+	Vector3,
 } from "./datatypes";
 import { Enum } from "./enums";
 import { installGlobals } from "./index";
@@ -184,14 +186,82 @@ describe("Color3.fromHex", () => {
 		expect(Global?.fromHex("#FFFFFF")).toEqual(Color3.fromRGB(255, 255, 255));
 	});
 
-	it("has no ToHex counterpart yet (documented gap, not a silent one)", () => {
-		// Roblox's `Color3:ToHex()` is not implemented: its casing and rounding
-		// could not be verified against a running engine, and guessing them would
-		// make round trips quietly wrong. Asserted so adding it is a deliberate
-		// change to this test, with the round trip written at the same time.
-		expect(
-			(Color3.fromHex("#6366F1") as unknown as { ToHex?: unknown }).ToHex,
-		).toBeUndefined();
+	it("ToHex is lowercase, unprefixed, and the inverse of fromHex", () => {
+		// Every expectation here was read off a running engine (Studio):
+		// `Color3.fromRGB(99, 102, 241):ToHex()` is "6366f1", lowercase and with
+		// no leading "#".
+		expect(Color3.fromRGB(99, 102, 241).ToHex()).toBe("6366f1");
+		expect(Color3.new(1, 1, 1).ToHex()).toBe("ffffff");
+		expect(Color3.new(0, 0, 0).ToHex()).toBe("000000");
+		expect(Color3.new(0.5, 0.5, 0.5).ToHex()).toBe("808080");
+		// Either case in, always lowercase out.
+		expect(Color3.fromHex("#A1B2C3").ToHex()).toBe("a1b2c3");
+	});
+
+	it("ToHex rounds and clamps each channel exactly as the engine does", () => {
+		// Studio: 0.002 -> "01" (0.51 rounds up), 1/510 -> "01" (a half rounds
+		// away from zero), 0.999 -> "ff", and out-of-range channels clamp.
+		expect(Color3.new(0.002, 0.6, 0.999).ToHex()).toBe("0199ff");
+		expect(Color3.new(1 / 510, 0, 0).ToHex()).toBe("010000");
+		expect(Color3.new(1.5, -0.2, 0).ToHex()).toBe("ff0000");
+	});
+
+	it("converts to and from HSV", () => {
+		// Studio: Color3.fromRGB(200, 100, 50):ToHSV() is
+		// (0.0555555634, 0.75, 0.784313738), and the round trip comes back.
+		const [h, s, v] = Color3.fromRGB(200, 100, 50).ToHSV();
+		expect(h).toBeCloseTo(0.055_555_5, 6);
+		expect(s).toBeCloseTo(0.75, 6);
+		expect(v).toBeCloseTo(0.784_313_7, 6);
+		expect(Color3.fromHSV(h, s, v).ToHex()).toBe("c86432");
+		expect(Color3.fromHSV(0, 0, 1).ToHex()).toBe("ffffff");
+		expect(Color3.fromHSV(0.5, 1, 1).ToHex()).toBe("00ffff");
+		// A grey has no hue, and the engine reports 0 rather than nothing.
+		expect(Color3.new(0.5, 0.5, 0.5).ToHSV().slice(0, 2)).toEqual([0, 0]);
+	});
+});
+
+describe("vector and UDim helpers", () => {
+	it("Vector2 reports its unit, dot, cross and per-component extremes", () => {
+		const v = Vector2.new(3, 4);
+		expect(v.Magnitude).toBe(5);
+		expect(v.Unit.X).toBeCloseTo(0.6, 6);
+		expect(v.Unit.Y).toBeCloseTo(0.8, 6);
+		expect(v.Dot(Vector2.new(1, 2))).toBe(11);
+		expect(v.Cross(Vector2.new(1, 2))).toBe(2);
+		expect(v.Lerp(Vector2.new(13, 14), 0.25)).toEqual(Vector2.new(5.5, 6.5));
+		expect(v.Max(Vector2.new(5, 1))).toEqual(Vector2.new(5, 4));
+		expect(v.Min(Vector2.new(5, 1))).toEqual(Vector2.new(3, 1));
+		expect(Vector2.new(-3, 4).Abs()).toEqual(Vector2.new(3, 4));
+		expect(Vector2.xAxis).toEqual(Vector2.new(1, 0));
+		// The engine answers NAN for a zero vector's direction, not zero.
+		expect(Number.isNaN(Vector2.zero.Unit.X)).toBe(true);
+	});
+
+	it("Vector3 crosses and dots like the engine", () => {
+		expect(Vector3.new(1, 0, 0).Cross(Vector3.new(0, 1, 0))).toEqual(
+			Vector3.new(0, 0, 1),
+		);
+		expect(Vector3.new(1, 2, 3).Dot(Vector3.new(4, 5, 6))).toBe(32);
+		expect(Vector3.new(0, 3, 4).Unit.Y).toBeCloseTo(0.6, 6);
+	});
+
+	it("UDim2.Lerp interpolates scale and offset on both axes", () => {
+		// Studio: {0,0},{0.5,10} lerped halfway to {1,100},{1,20} is
+		// {0.5, 50}, {0.75, 15}.
+		const mid = UDim2.new(0, 0, 0.5, 10).Lerp(UDim2.new(1, 100, 1, 20), 0.5);
+		expect(mid.toString()).toBe("{0.5, 50}, {0.75, 15}");
+	});
+
+	it("Rect prints both corners flattened", () => {
+		expect(Rect.new(1, 2, 5, 9).toString()).toBe("1, 2, 5, 9");
+	});
+
+	it("Rect encodes to the IR the 9-slice renderer reads", () => {
+		expect(toPropertyValue(Rect.new(8, 8, 24, 24))).toEqual({
+			type: "Rect",
+			value: { min: { x: 8, y: 8 }, max: { x: 24, y: 24 } },
+		});
 	});
 });
 

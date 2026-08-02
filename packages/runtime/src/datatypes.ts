@@ -75,6 +75,15 @@ export class UDim2 {
 			new UDim(this.Y.Scale - other.Y.Scale, this.Y.Offset - other.Y.Offset),
 		);
 	}
+	/** Interpolates both axes' scale *and* offset — the engine's own `Lerp`. */
+	Lerp(other: UDim2, alpha: number): UDim2 {
+		const axis = (from: UDim, to: UDim): UDim =>
+			new UDim(
+				from.Scale + (to.Scale - from.Scale) * alpha,
+				from.Offset + (to.Offset - from.Offset) * alpha,
+			);
+		return new UDim2(axis(this.X, other.X), axis(this.Y, other.Y));
+	}
 	/** Roblox `tostring`: `"{0.5, 10}, {0, 20}"`. */
 	toString(): string {
 		return `{${this.X}}, {${this.Y}}`;
@@ -91,8 +100,42 @@ export class Vector2 {
 	}
 	static readonly zero = new Vector2(0, 0);
 	static readonly one = new Vector2(1, 1);
+	static readonly xAxis = new Vector2(1, 0);
+	static readonly yAxis = new Vector2(0, 1);
 	get Magnitude(): number {
 		return Math.sqrt(this.X * this.X + this.Y * this.Y);
+	}
+	/**
+	 * The direction alone. A zero vector has none, and the engine answers `NAN`
+	 * for it (verified) rather than zero — dividing by the magnitude, as here.
+	 */
+	get Unit(): Vector2 {
+		const length = this.Magnitude;
+		return new Vector2(this.X / length, this.Y / length);
+	}
+	Dot(other: Vector2): number {
+		return this.X * other.X + this.Y * other.Y;
+	}
+	/** The z of the 3D cross product — a scalar, as in the engine. */
+	Cross(other: Vector2): number {
+		return this.X * other.Y - this.Y * other.X;
+	}
+	Lerp(other: Vector2, alpha: number): Vector2 {
+		return new Vector2(
+			this.X + (other.X - this.X) * alpha,
+			this.Y + (other.Y - this.Y) * alpha,
+		);
+	}
+	/** Per-component maximum, not the longer vector. */
+	Max(other: Vector2): Vector2 {
+		return new Vector2(Math.max(this.X, other.X), Math.max(this.Y, other.Y));
+	}
+	/** Per-component minimum. */
+	Min(other: Vector2): Vector2 {
+		return new Vector2(Math.min(this.X, other.X), Math.min(this.Y, other.Y));
+	}
+	Abs(): Vector2 {
+		return new Vector2(Math.abs(this.X), Math.abs(this.Y));
 	}
 	/** roblox-ts `+` operator macro. */
 	add(other: Vector2): Vector2 {
@@ -131,8 +174,33 @@ export class Vector3 {
 	}
 	static readonly zero = new Vector3(0, 0, 0);
 	static readonly one = new Vector3(1, 1, 1);
+	static readonly xAxis = new Vector3(1, 0, 0);
+	static readonly yAxis = new Vector3(0, 1, 0);
+	static readonly zAxis = new Vector3(0, 0, 1);
 	get Magnitude(): number {
 		return Math.sqrt(this.X * this.X + this.Y * this.Y + this.Z * this.Z);
+	}
+	/** Direction only; `NAN` components for a zero vector, as in the engine. */
+	get Unit(): Vector3 {
+		const length = this.Magnitude;
+		return new Vector3(this.X / length, this.Y / length, this.Z / length);
+	}
+	Dot(other: Vector3): number {
+		return this.X * other.X + this.Y * other.Y + this.Z * other.Z;
+	}
+	Cross(other: Vector3): Vector3 {
+		return new Vector3(
+			this.Y * other.Z - this.Z * other.Y,
+			this.Z * other.X - this.X * other.Z,
+			this.X * other.Y - this.Y * other.X,
+		);
+	}
+	Lerp(other: Vector3, alpha: number): Vector3 {
+		return new Vector3(
+			this.X + (other.X - this.X) * alpha,
+			this.Y + (other.Y - this.Y) * alpha,
+			this.Z + (other.Z - this.Z) * alpha,
+		);
 	}
 	/** roblox-ts `+` operator macro. */
 	add(other: Vector3): Vector3 {
@@ -179,6 +247,10 @@ export class Rect {
 			new Vector2(a, typeof b === "number" ? b : 0),
 			new Vector2(maxX, maxY),
 		);
+	}
+	/** Roblox `tostring`: `"1, 2, 5, 9"` — both corners, flattened. */
+	toString(): string {
+		return `${this.Min.X}, ${this.Min.Y}, ${this.Max.X}, ${this.Max.Y}`;
 	}
 }
 
@@ -368,6 +440,72 @@ export class Color3 {
 			Number.parseInt(value.slice(4, 6), 16),
 		);
 	}
+	/**
+	 * `Color3.fromHSV(h, s, v)` — every component 0..1, hue wrapping at 1.
+	 *
+	 * Kept in floating point rather than routed through `fromRGB`: the engine
+	 * does not quantize here either, and a round trip through `ToHSV` comes back
+	 * to the colour it started from.
+	 */
+	static fromHSV(hue = 0, saturation = 0, value = 0): Color3 {
+		const h = ((hue % 1) + 1) % 1;
+		const s = Math.min(1, Math.max(0, saturation));
+		const v = Math.min(1, Math.max(0, value));
+		const sector = h * 6;
+		const chroma = v * s;
+		// The second-largest component, falling off either side of each sector.
+		const middle = chroma * (1 - Math.abs((sector % 2) - 1));
+		const floor = v - chroma;
+		const [r, g, b] =
+			sector < 1
+				? [chroma, middle, 0]
+				: sector < 2
+					? [middle, chroma, 0]
+					: sector < 3
+						? [0, chroma, middle]
+						: sector < 4
+							? [0, middle, chroma]
+							: sector < 5
+								? [middle, 0, chroma]
+								: [chroma, 0, middle];
+		return new Color3(r + floor, g + floor, b + floor);
+	}
+	/**
+	 * `Color3:ToHSV()` — hue, saturation and value, each 0..1, destructured by
+	 * roblox-ts as a tuple: `const [h, s, v] = color.ToHSV()`.
+	 *
+	 * A grey has no hue to report, and the engine answers 0 for it (verified),
+	 * rather than leaving it undefined as some conversions do.
+	 */
+	ToHSV(): [number, number, number] {
+		const max = Math.max(this.R, this.G, this.B);
+		const min = Math.min(this.R, this.G, this.B);
+		const chroma = max - min;
+		const hue =
+			chroma === 0
+				? 0
+				: max === this.R
+					? (((this.G - this.B) / chroma) % 6) / 6
+					: max === this.G
+						? ((this.B - this.R) / chroma + 2) / 6
+						: ((this.R - this.G) / chroma + 4) / 6;
+		return [hue < 0 ? hue + 1 : hue, max === 0 ? 0 : chroma / max, max];
+	}
+	/**
+	 * `Color3:ToHex()` — six **lowercase** hexadecimal digits, no leading `#`.
+	 *
+	 * Verified against a running engine rather than guessed at: `ToHex` is
+	 * lowercase, unbraced and unprefixed, and each channel is clamped to 0..1 and
+	 * then rounded to the nearest 255th — the exact inverse of
+	 * {@link Color3.fromRGB}, so `Color3.fromHex(c.ToHex())` is `c` again.
+	 */
+	ToHex(): string {
+		const channel = (n: number): string =>
+			Math.round(Math.min(1, Math.max(0, n)) * 255)
+				.toString(16)
+				.padStart(2, "0");
+		return `${channel(this.R)}${channel(this.G)}${channel(this.B)}`;
+	}
 	Lerp(other: Color3, alpha: number): Color3 {
 		return new Color3(
 			this.R + (other.R - this.R) * alpha,
@@ -525,8 +663,8 @@ function keypointsEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
 /**
  * Encode a Roblox datatype instance (or primitive) as a Scene IR `PropertyValue` —
  * the canonical datatype→IR mapping shared by every frontend adapter (react, vide,
- * …). Unknown values (including Rect/Vector3/CFrame/TweenInfo, which the IR has
- * no slot for) return `undefined` so the property is dropped.
+ * …). Unknown values (including Vector3/CFrame/TweenInfo, which the IR has no slot
+ * for) return `undefined` so the property is dropped.
  */
 export function toPropertyValue(v: unknown): PropertyValue | undefined {
 	if (v instanceof UDim2) {
@@ -544,6 +682,12 @@ export function toPropertyValue(v: unknown): PropertyValue | undefined {
 				time: k.Time,
 				color: { r: k.Value.R, g: k.Value.G, b: k.Value.B },
 			})),
+		});
+	}
+	if (v instanceof Rect) {
+		return prop.rect({
+			min: { x: v.Min.X, y: v.Min.Y },
+			max: { x: v.Max.X, y: v.Max.Y },
 		});
 	}
 	if (v instanceof Font) {

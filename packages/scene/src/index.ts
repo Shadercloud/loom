@@ -51,6 +51,19 @@ export interface ColorSequenceValue {
 }
 
 /**
+ * A `Rect` datatype payload (`ImageLabel.SliceCenter`) — the two corners, in the
+ * source image's own pixels.
+ *
+ * TypeScript-only, like {@link ColorSequenceValue}: the Rust engine degrades the
+ * tag to `Unknown` and ignores it, which is correct — nothing about a 9-slice
+ * window changes where a node lands, only how the renderer paints inside it.
+ */
+export interface RectValue {
+	min: Vector2;
+	max: Vector2;
+}
+
+/**
  * A `Font` datatype payload (`TextLabel.FontFace`). `family` is the font-family
  * asset URI, `weight` the Roblox 100–900 number (which is also the CSS one),
  * and `style` an `Enum.FontStyle` name.
@@ -68,6 +81,7 @@ export type KnownProperty =
 	| { type: "Vector2"; value: Vector2 }
 	| { type: "Color3"; value: Color3 }
 	| { type: "ColorSequence"; value: ColorSequenceValue }
+	| { type: "Rect"; value: RectValue }
 	| { type: "Font"; value: FontValue }
 	| { type: "EnumItem"; value: EnumItemValue }
 	| { type: "number"; value: number }
@@ -91,6 +105,7 @@ const KNOWN_TAGS = new Set<string>([
 	"Vector2",
 	"Color3",
 	"ColorSequence",
+	"Rect",
 	"Font",
 	"EnumItem",
 	"number",
@@ -243,6 +258,12 @@ export function asColorSequence(
 		? ((p as KnownProperty).value as ColorSequenceValue)
 		: undefined;
 }
+/** A `Rect` datatype property (`SliceCenter`), in source-image pixels. */
+export function asRect(p: PropertyValue | undefined): RectValue | undefined {
+	return p?.type === "Rect"
+		? ((p as KnownProperty).value as RectValue)
+		: undefined;
+}
 export function asFont(p: PropertyValue | undefined): FontValue | undefined {
 	return p?.type === "Font"
 		? ((p as KnownProperty).value as FontValue)
@@ -366,6 +387,42 @@ export const getImageColor3 = (n: SceneNode): Color3 =>
 /** Enum item name, e.g. "Fit"; default "Stretch" (the Roblox default). */
 export const getScaleType = (n: SceneNode): string =>
 	asEnum(props(n).ScaleType)?.name ?? "Stretch";
+/**
+ * The sprite window inside the source image — `ImageRectOffset` /
+ * `ImageRectSize`, in image pixels — or `undefined` for the whole image.
+ *
+ * Roblox reads a zero `ImageRectSize` as "no window", which is its default, and
+ * loom reads a zero (or negative) extent on *either* axis the same way: half a
+ * window has no meaning, and the whole image is the answer the engine gives.
+ */
+export const getImageRect = (
+	n: SceneNode,
+): { offset: Vector2; size: Vector2 } | undefined => {
+	const size = asVector2(props(n).ImageRectSize);
+	if (!size || size.x <= 0 || size.y <= 0) return undefined;
+	return {
+		offset: asVector2(props(n).ImageRectOffset) ?? { x: 0, y: 0 },
+		size,
+	};
+};
+/** `SliceCenter` — the 9-slice center, in source-image pixels. */
+export const getSliceCenter = (n: SceneNode): RectValue | undefined =>
+	asRect(props(n).SliceCenter);
+/** `SliceScale`; default 1 (borders at their own pixel size). */
+export const getSliceScale = (n: SceneNode): number =>
+	asNumber(props(n).SliceScale) ?? 1;
+/**
+ * `TileSize`, the size of one tile relative to the node — default
+ * `{1,0},{1,0}`, i.e. one tile filling the node.
+ */
+export const getTileSize = (n: SceneNode): UDim2 =>
+	asUDim2(props(n).TileSize) ?? {
+		x: { scale: 1, offset: 0 },
+		y: { scale: 1, offset: 0 },
+	};
+/** `ResampleMode` enum item name; default "Default" (smooth scaling). */
+export const getResampleMode = (n: SceneNode): string =>
+	asEnum(props(n).ResampleMode)?.name ?? "Default";
 
 /** First child of the given Roblox class (e.g. a `UICorner`/`UIStroke` modifier). */
 export const findModifier = (
@@ -412,6 +469,7 @@ export const prop = {
 		type: "ColorSequence",
 		value: v,
 	}),
+	rect: (v: RectValue): PropertyValue => ({ type: "Rect", value: v }),
 	font: (v: FontValue): PropertyValue => ({ type: "Font", value: v }),
 	enum: (v: EnumItemValue): PropertyValue => ({ type: "EnumItem", value: v }),
 	number: (v: number): PropertyValue => ({ type: "number", value: v }),
