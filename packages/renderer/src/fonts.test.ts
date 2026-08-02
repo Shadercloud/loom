@@ -11,7 +11,7 @@ import {
 	onFontsChanged,
 	registerFont,
 } from "./fonts.ts";
-import { fontFamily } from "./index.ts";
+import { fontFamily, measureText } from "./index.ts";
 
 afterEach(() => {
 	clearRegisteredFonts();
@@ -143,5 +143,25 @@ describe("clearRegisteredFonts", () => {
 		clearRegisteredFonts();
 		expect(document.querySelector("style[data-loom-fonts]")).toBeNull();
 		expect(fontFamily("GothamBold")).not.toContain("Builder Sans");
+	});
+});
+
+describe("measureText", () => {
+	it("returns nothing for an empty string, and one line otherwise", () => {
+		expect(measureText({ text: "", size: 18 })).toEqual({ x: 0, y: 0 });
+		expect(measureText({ text: "hello", size: 18 }).y).toBe(18);
+	});
+
+	it("counts a line per newline, wrap or not", () => {
+		expect(measureText({ text: "a\nb\nc", size: 10 }).y).toBe(30);
+	});
+
+	it("wraps at word boundaries when a width is given", () => {
+		// happy-dom's canvas has no text metrics, so widths measure 0 and nothing
+		// can overflow: the shape under test here is that a 0 width means "no
+		// frame" (one line) rather than "wrap at zero" (a line per word).
+		expect(measureText({ text: "one two three", size: 12, width: 0 }).y).toBe(
+			12,
+		);
 	});
 });

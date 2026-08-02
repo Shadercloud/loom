@@ -17,11 +17,16 @@ import type { LayoutResult, Rect, SceneNode } from "@loom-dev/scene";
 import { color3FromRGB, prop, udim2 } from "@loom-dev/scene";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	clearImageSizeCache,
 	createDomSession,
 	type DomSession,
 	renderScene,
 	setImageResolver,
 } from "./index";
+
+/** A `ScaleType` enum property, the shape the adapters encode. */
+const scaleType = (name: string) =>
+	prop.enum({ enumType: "ScaleType", name, value: 0 });
 
 function layoutOf(entries: Record<string, Rect>): LayoutResult {
 	const rects: LayoutResult["rects"] = {};
@@ -804,6 +809,7 @@ describe("text sizing", () => {
 describe("image layer", () => {
 	afterEach(() => {
 		setImageResolver(undefined);
+		clearImageSizeCache();
 	});
 
 	function imageScene(properties: SceneNode["properties"]): SceneNode {
@@ -819,11 +825,19 @@ describe("image layer", () => {
 		icon: { x: 0, y: 0, width: 64, height: 64 },
 	});
 
-	function paint(properties: SceneNode["properties"]): HTMLImageElement | null {
+	const LAYER = '[data-loom-layer="image"]';
+
+	function paint(
+		properties: SceneNode["properties"],
+		layout = iconLayout,
+	): HTMLElement | null {
 		const host = document.createElement("div");
-		renderScene(imageScene(properties), iconLayout, host);
-		return host.querySelector("img");
+		renderScene(imageScene(properties), layout, host);
+		return host.querySelector<HTMLElement>(LAYER);
 	}
+
+	const background = (el: HTMLElement | null): string =>
+		el?.style.backgroundImage ?? "";
 
 	it("paints a plain URL without consulting the resolver", () => {
 		let calls = 0;
@@ -831,23 +845,23 @@ describe("image layer", () => {
 			calls += 1;
 			return "never";
 		});
-		const img = paint({ Image: prop.string("https://example.test/a.png") });
-		expect(img?.getAttribute("src")).toBe("https://example.test/a.png");
+		const layer = paint({ Image: prop.string("https://example.test/a.png") });
+		expect(background(layer)).toBe('url("https://example.test/a.png")');
 		expect(calls).toBe(0);
 	});
 
 	it("leaves an asset id unpainted when no resolver is installed", () => {
-		const img = paint({ Image: prop.string("rbxassetid://1818") });
-		expect(img).not.toBeNull();
-		expect(img?.getAttribute("src")).toBeNull();
+		const layer = paint({ Image: prop.string("rbxassetid://1818") });
+		expect(layer).not.toBeNull();
+		expect(background(layer)).toBe("");
 	});
 
-	it("fills in the src once an async resolver answers", async () => {
+	it("fills in the background once an async resolver answers", async () => {
 		setImageResolver(async (image) => `https://cdn.test/${image.slice(13)}`);
-		const img = paint({ Image: prop.string("rbxassetid://1818") });
-		expect(img?.getAttribute("src")).toBeNull(); // nothing to paint yet
+		const layer = paint({ Image: prop.string("rbxassetid://1818") });
+		expect(background(layer)).toBe(""); // nothing to paint yet
 		await vi.waitFor(() =>
-			expect(img?.getAttribute("src")).toBe("https://cdn.test/1818"),
+			expect(background(layer)).toBe('url("https://cdn.test/1818")'),
 		);
 	});
 
@@ -882,31 +896,71 @@ describe("image layer", () => {
 		// resolved URL rather than resolving again, and paint it synchronously.
 		renderScene(scene, layout, host);
 		expect(
-			[...host.querySelectorAll("img")].map((el) => el.getAttribute("src")),
-		).toEqual(["https://cdn.test/1818", "https://cdn.test/1818"]);
+			[...host.querySelectorAll<HTMLElement>(LAYER)].map(
+				(el) => el.style.backgroundImage,
+			),
+		).toEqual(['url("https://cdn.test/1818")', 'url("https://cdn.test/1818")']);
 		expect(calls).toBe(1);
 	});
 
-	it("maps ScaleType onto object-fit", () => {
-		const scaleType = (name: string) =>
-			prop.enum({ enumType: "ScaleType", name, value: 0 });
-		const fitOf = (name?: string) =>
+	it("maps ScaleType onto the background size", () => {
+		const sizeOf = (name?: string) =>
 			paint({
 				Image: prop.string("https://example.test/a.png"),
 				...(name ? { ScaleType: scaleType(name) } : {}),
-			})?.style.objectFit;
-		expect(fitOf()).toBe("fill"); // Stretch is the Roblox default
-		expect(fitOf("Fit")).toBe("contain");
-		expect(fitOf("Crop")).toBe("cover");
-		expect(fitOf("Slice")).toBe("fill"); // deferred, falls back to Stretch
+			})?.style.backgroundSize;
+		expect(sizeOf()).toBe("100% 100%"); // Stretch is the Roblox default
+		expect(sizeOf("Fit")).toBe("contain");
+		expect(sizeOf("Crop")).toBe("cover");
+		// Slice with no SliceCenter has no border to keep: it stretches, which is
+		// what the engine shows for an empty slice rect too.
+		expect(sizeOf("Slice")).toBe("100% 100%");
+	});
+
+	it("tiles from TileSize, resolved against the node in CSS", () => {
+		const layer = paint({
+			Image: prop.string("https://example.test/a.png"),
+			ScaleType: scaleType("Tile"),
+			TileSize: prop.udim2({
+				x: { scale: 0, offset: 16 },
+				y: { scale: 0.5, offset: 0 },
+			}),
+		});
+		expect(layer?.style.backgroundRepeat).toBe("repeat");
+		expect(layer?.style.backgroundSize).toBe("calc(0% + 16px) calc(50% + 0px)");
+	});
+
+	it("defaults TileSize to one tile filling the node", () => {
+		const layer = paint({
+			Image: prop.string("https://example.test/a.png"),
+			ScaleType: scaleType("Tile"),
+		});
+		expect(layer?.style.backgroundSize).toBe(
+			"calc(100% + 0px) calc(100% + 0px)",
+		);
 	});
 
 	it("maps ImageTransparency onto opacity", () => {
-		const img = paint({
+		const layer = paint({
 			Image: prop.string("https://example.test/a.png"),
 			ImageTransparency: prop.number(0.25),
 		});
-		expect(img?.style.opacity).toBe("0.75");
+		expect(layer?.style.opacity).toBe("0.75");
+	});
+
+	it("turns off smoothing for ResampleMode.Pixelated", () => {
+		const resample = (name: string) =>
+			prop.enum({ enumType: "ResamplerMode", name, value: 0 });
+		expect(
+			paint({
+				Image: prop.string("https://example.test/a.png"),
+				ResampleMode: resample("Pixelated"),
+			})?.style.imageRendering,
+		).toBe("pixelated");
+		expect(
+			paint({ Image: prop.string("https://example.test/a.png") })?.style
+				.imageRendering,
+		).toBe("");
 	});
 
 	it("keeps the image behind the node's children", () => {
@@ -927,7 +981,9 @@ describe("image layer", () => {
 		);
 		const el = host.firstElementChild as HTMLElement;
 		// The image is an overlay, so it precedes every laid-out child.
-		expect([...el.children].map((c) => c.tagName)).toEqual(["IMG", "DIV"]);
+		expect(
+			[...el.children].map((c) => c.getAttribute("data-loom-layer")),
+		).toEqual(["image", null]);
 	});
 
 	it("rebuilds the layer only when an image prop changes", async () => {
@@ -942,9 +998,9 @@ describe("image layer", () => {
 			imageScene({ Image: prop.string("rbxassetid://1818") }),
 			iconLayout,
 		);
-		const first = mount.querySelector("img");
+		const first = mount.querySelector<HTMLElement>(LAYER);
 		await vi.waitFor(() =>
-			expect(first?.getAttribute("src")).toBe("https://cdn.test/1818"),
+			expect(background(first)).toBe('url("https://cdn.test/1818")'),
 		);
 
 		// Same image, unrelated prop churn: the element must survive.
@@ -955,20 +1011,207 @@ describe("image layer", () => {
 			}),
 			iconLayout,
 		);
-		expect(mount.querySelector("img")).toBe(first);
+		expect(mount.querySelector(LAYER)).toBe(first);
+
+		// …and so must a resize, since nothing about this paint reads the box.
+		session.patch(
+			imageScene({ Image: prop.string("rbxassetid://1818") }),
+			layoutOf({ icon: { x: 0, y: 0, width: 128, height: 32 } }),
+		);
+		expect(mount.querySelector(LAYER)).toBe(first);
 
 		// A different image replaces it.
 		session.patch(
 			imageScene({ Image: prop.string("https://example.test/b.png") }),
 			iconLayout,
 		);
-		const second = mount.querySelector("img");
+		const second = mount.querySelector<HTMLElement>(LAYER);
 		expect(second).not.toBe(first);
-		expect(second?.getAttribute("src")).toBe("https://example.test/b.png");
+		expect(background(second)).toBe('url("https://example.test/b.png")');
 
 		// Dropping Image entirely removes the layer.
 		session.patch(imageScene({}), iconLayout);
-		expect(mount.querySelector("img")).toBeNull();
+		expect(mount.querySelector(LAYER)).toBeNull();
 		session.dispose();
+	});
+
+	describe("with the source's own size known", () => {
+		// happy-dom never loads anything, so the decode step is the fake here —
+		// everything downstream of `naturalWidth` is the real renderer.
+		const SIZES: Record<string, { width: number; height: number }> = {
+			"https://example.test/sheet.png": { width: 100, height: 50 },
+			"https://example.test/panel.png": { width: 32, height: 32 },
+		};
+		beforeEach(() => {
+			vi.stubGlobal(
+				"Image",
+				class {
+					onload: (() => void) | null = null;
+					onerror: (() => void) | null = null;
+					naturalWidth = 0;
+					naturalHeight = 0;
+					set src(value: string) {
+						const size = SIZES[value];
+						queueMicrotask(() => {
+							if (size) {
+								this.naturalWidth = size.width;
+								this.naturalHeight = size.height;
+								this.onload?.();
+							} else this.onerror?.();
+						});
+					}
+				},
+			);
+		});
+		afterEach(() => {
+			vi.unstubAllGlobals();
+		});
+
+		/** Paint, then let the (faked) decode land and repaint. */
+		async function painted(
+			properties: SceneNode["properties"],
+			layout = iconLayout,
+		): Promise<HTMLElement> {
+			const layer = paint(properties, layout);
+			if (!layer) throw new Error("image layer not rendered");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			return layer;
+		}
+
+		/** The clip box a sprite window gets, and the sheet inside it. */
+		const windowOf = (
+			layer: HTMLElement,
+		): { box: HTMLElement; sheet: HTMLElement } => {
+			const box = layer.firstElementChild as HTMLElement | null;
+			const sheet = box?.firstElementChild as HTMLElement | null;
+			if (!box || !sheet) throw new Error("sprite window painted no child");
+			return { box, sheet };
+		};
+
+		it("windows a sprite out of a sheet", async () => {
+			// A 20x10 sprite at (40, 20) of a 100x50 sheet, stretched over a 64x64
+			// node: the sheet scales by 64/20 and 64/10, and slides so the sprite's
+			// own corner lands on the node's.
+			const layer = await painted({
+				Image: prop.string("https://example.test/sheet.png"),
+				ImageRectOffset: prop.vector2({ x: 40, y: 20 }),
+				ImageRectSize: prop.vector2({ x: 20, y: 10 }),
+			});
+			// A background alone would paint the sprites either side of this one all
+			// over the node; the clip box is what keeps them out.
+			expect(layer.style.backgroundImage).toBe("");
+			const { box, sheet } = windowOf(layer);
+			expect(box.style.overflow).toBe("hidden");
+			// Stretch gives the window the whole node.
+			expect([box.style.left, box.style.top]).toEqual(["0px", "0px"]);
+			expect([box.style.width, box.style.height]).toEqual(["64px", "64px"]);
+			expect(sheet.style.backgroundImage).toBe(
+				'url("https://example.test/sheet.png")',
+			);
+			expect([sheet.style.width, sheet.style.height]).toEqual([
+				"320px",
+				"320px",
+			]);
+			expect([sheet.style.left, sheet.style.top]).toEqual(["-128px", "-128px"]);
+		});
+
+		it("fits a sprite window inside the node, centred", async () => {
+			// 20x10 sprite, 64x64 node, Fit: scale 3.2 on both axes (the smaller),
+			// leaving (64 - 32) / 2 = 16px above and below.
+			const layer = await painted({
+				Image: prop.string("https://example.test/sheet.png"),
+				ScaleType: scaleType("Fit"),
+				ImageRectOffset: prop.vector2({ x: 40, y: 20 }),
+				ImageRectSize: prop.vector2({ x: 20, y: 10 }),
+			});
+			const { box, sheet } = windowOf(layer);
+			// The window is 64x32 and centred; the sheet inside it is the whole
+			// 100x50 source at the same scale.
+			expect([box.style.left, box.style.top]).toEqual(["0px", "16px"]);
+			expect([box.style.width, box.style.height]).toEqual(["64px", "32px"]);
+			expect([sheet.style.width, sheet.style.height]).toEqual([
+				"320px",
+				"160px",
+			]);
+			expect([sheet.style.left, sheet.style.top]).toEqual(["-128px", "-64px"]);
+		});
+
+		it("ignores a zero-sized sprite window, like the engine", async () => {
+			const layer = await painted({
+				Image: prop.string("https://example.test/sheet.png"),
+				ImageRectOffset: prop.vector2({ x: 40, y: 20 }),
+				ImageRectSize: prop.vector2({ x: 0, y: 0 }),
+			});
+			expect(layer.style.backgroundSize).toBe("100% 100%");
+			expect(layer.style.backgroundPosition).toBe("center center");
+		});
+
+		it("9-slices from SliceCenter, in source pixels", async () => {
+			// A 32x32 panel with an 8px border all round: the slice insets are the
+			// distances from each edge to SliceCenter, and SliceScale doubles the
+			// painted border without touching the source.
+			const layer = await painted({
+				Image: prop.string("https://example.test/panel.png"),
+				ScaleType: scaleType("Slice"),
+				SliceCenter: prop.rect({ min: { x: 8, y: 8 }, max: { x: 24, y: 24 } }),
+				SliceScale: prop.number(2),
+			});
+			expect(layer.style.borderImageSource).toBe(
+				'url("https://example.test/panel.png")',
+			);
+			expect(layer.style.borderImageSlice).toBe("8 fill");
+			expect(layer.style.borderImageWidth).toBe("16px"); // 8 * SliceScale
+			expect(layer.style.borderImageRepeat).toBe("stretch");
+			// The border image must not push the node's own box around.
+			expect(layer.style.borderWidth).toBe("0px");
+			expect(layer.style.backgroundImage).toBe("");
+		});
+
+		it("keeps each slice on its own side when they differ", async () => {
+			// Min (4, 8), Max (20, 28) of a 32x32 source: left 4, top 8, right 12,
+			// bottom 4 — in CSS's top/right/bottom/left order.
+			const layer = await painted({
+				Image: prop.string("https://example.test/panel.png"),
+				ScaleType: scaleType("Slice"),
+				SliceCenter: prop.rect({ min: { x: 4, y: 8 }, max: { x: 20, y: 28 } }),
+			});
+			expect(layer.style.borderImageWidth).toBe("8px 12px 4px 4px");
+		});
+
+		it("stretches instead when SliceCenter leaves no centre", async () => {
+			const layer = await painted({
+				Image: prop.string("https://example.test/panel.png"),
+				ScaleType: scaleType("Slice"),
+				SliceCenter: prop.rect({
+					min: { x: 16, y: 16 },
+					max: { x: 16, y: 16 },
+				}),
+			});
+			expect(layer.style.backgroundSize).toBe("100% 100%");
+			expect(layer.style.borderImageSource).toBe("");
+		});
+
+		it("re-paints a sprite window when the node is resized", async () => {
+			setImageResolver(undefined);
+			const mount = document.createElement("div");
+			const session = createDomSession(mount, {
+				resolveInstance: () => undefined,
+			});
+			const sprite = {
+				Image: prop.string("https://example.test/sheet.png"),
+				ImageRectOffset: prop.vector2({ x: 0, y: 0 }),
+				ImageRectSize: prop.vector2({ x: 50, y: 25 }),
+			};
+			const sheetWidth = () =>
+				mount.querySelector<HTMLElement>(`${LAYER} > div > div`)?.style.width;
+			session.patch(imageScene(sprite), iconLayout);
+			await vi.waitFor(() => expect(sheetWidth()).toBe("128px"));
+			session.patch(
+				imageScene(sprite),
+				layoutOf({ icon: { x: 0, y: 0, width: 100, height: 25 } }),
+			);
+			await vi.waitFor(() => expect(sheetWidth()).toBe("200px"));
+			session.dispose();
+		});
 	});
 });

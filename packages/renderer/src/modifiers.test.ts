@@ -259,7 +259,7 @@ describe("UIStroke", () => {
 describe("ImageColor3", () => {
 	function imageStyle(properties: SceneNode["properties"]): {
 		filter: string;
-		el: HTMLImageElement;
+		el: HTMLElement;
 	} {
 		const mount = document.createElement("div");
 		renderScene(
@@ -282,7 +282,7 @@ describe("ImageColor3", () => {
 			LAYOUT_WITH_ICON,
 			mount,
 		);
-		const el = mount.querySelector("img");
+		const el = mount.querySelector<HTMLElement>('[data-loom-layer="image"]');
 		if (!el) throw new Error("image layer not rendered");
 		return { filter: el.style.filter, el };
 	}

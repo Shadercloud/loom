@@ -40,6 +40,7 @@ import {
 	registerTextBoxAdapter,
 	setFocusedTextBox,
 	setMouseLocation,
+	setTextMeasurer,
 	unregisterTextBoxAdapter,
 	Vector2,
 	Vector3,
@@ -71,10 +72,14 @@ import {
 	getFontName,
 	getImage,
 	getImageColor3,
+	getImageRect,
 	getImageTransparency,
 	getLineHeight,
+	getResampleMode,
 	getRichText,
 	getScaleType,
+	getSliceCenter,
+	getSliceScale,
 	getText,
 	getTextColor3,
 	getTextSize,
@@ -82,6 +87,7 @@ import {
 	getTextWrapped,
 	getTextXAlignment,
 	getTextYAlignment,
+	getTileSize,
 	getVisible,
 	getZIndex,
 	isLayerCollector,
@@ -227,6 +233,78 @@ export function instanceFont(inst: {
 export function fontShorthand(font: ResolvedFont, sizePx: number): string {
 	return `${font.italic ? "italic " : ""}${font.weight} ${sizePx}px ${font.family}`;
 }
+
+// --- text measurement (TextService) ------------------------------------------
+
+let measureCanvas: CanvasRenderingContext2D | null | undefined;
+function measureContext(): CanvasRenderingContext2D | null {
+	if (measureCanvas === undefined) {
+		measureCanvas =
+			typeof document !== "undefined"
+				? document.createElement("canvas").getContext("2d")
+				: null;
+	}
+	return measureCanvas;
+}
+
+/**
+ * Measure a plain string the way the engine's `TextService` does — the same font
+ * resolution the renderer paints with, so what a component *reserves* for a
+ * label and what the label then *occupies* come from one place.
+ *
+ * Wrapping is greedy at word boundaries, as in the layout engine's own text
+ * path; `width` of 0 (Roblox's "no frame") means no wrapping at all. Rich-text
+ * markup is not read here: `GetTextSize` does not read it in the engine either.
+ */
+export function measureText(request: {
+	text: string;
+	size: number;
+	/** A legacy `Enum.Font` name (`"GothamBold"`), or nothing for the default. */
+	font?: string;
+	width?: number;
+}): { x: number; y: number } {
+	const size = request.size > 0 ? request.size : 0;
+	if (request.text === "" || size === 0) {
+		return { x: 0, y: request.text === "" ? 0 : size };
+	}
+	// Without a canvas (no DOM at all) the glyph widths are unknowable, but the
+	// line *count* still is — so the height stays right and only the width
+	// collapses, rather than the whole answer.
+	const ctx = measureContext();
+	if (ctx) ctx.font = fontShorthand(resolveFont(request.font, undefined), size);
+	const widthOf = (piece: string): number =>
+		ctx ? ctx.measureText(piece).width : 0;
+	const wrapAt =
+		request.width !== undefined && request.width > 0
+			? request.width
+			: undefined;
+	let widest = 0;
+	let lines = 0;
+	for (const paragraph of request.text.split("\n")) {
+		let line = 0;
+		lines += 1;
+		const pieces =
+			wrapAt === undefined ? [paragraph] : paragraph.split(/(\s+)/);
+		for (const piece of pieces) {
+			if (piece === "") continue;
+			const pieceWidth = widthOf(piece);
+			if (wrapAt !== undefined && line > 0 && line + pieceWidth > wrapAt) {
+				widest = Math.max(widest, line);
+				lines += 1;
+				line = piece.trim() === "" ? 0 : pieceWidth;
+				continue;
+			}
+			line += pieceWidth;
+		}
+		widest = Math.max(widest, line);
+	}
+	return { x: Math.ceil(widest), y: lines * size };
+}
+
+// Hand the measurement to the runtime, which owns `TextService` but has no
+// business knowing about canvases or font stacks. Both adapters load the
+// renderer, so `TextService:GetTextSize` works under either one.
+setTextMeasurer(measureText);
 const yAlignFlex = (a: string): string =>
 	a === "Top" ? "flex-start" : a === "Bottom" ? "flex-end" : "center";
 const xAlignText = (a: string): string =>
@@ -810,70 +888,351 @@ function tintFilterId(color: Color3): string {
 const isTinted = (color: Color3): boolean =>
 	color.r !== 1 || color.g !== 1 || color.b !== 1;
 
-/** `ScaleType` → the `object-fit` that reproduces it. */
-function objectFit(scaleType: string): string {
-	if (scaleType === "Fit") return "contain";
-	if (scaleType === "Crop") return "cover";
-	// Stretch, plus Slice/Tile until the renderer implements them.
-	return "fill";
+// --- natural size ------------------------------------------------------------
+
+interface ImageSize {
+	width: number;
+	height: number;
+}
+
+/** Resolved URL → the image's own pixel size, once the browser has decoded it. */
+const naturalSizes = new Map<string, ImageSize>();
+const pendingSizes = new Map<string, Promise<ImageSize | undefined>>();
+
+/**
+ * The source image's own pixel size, which a 9-slice and a sprite window are
+ * both expressed in: `SliceCenter` is a rectangle in image pixels, so the right
+ * and bottom slices are only knowable as `naturalWidth - SliceCenter.Max.X`.
+ *
+ * Loaded off-DOM, once per URL, and shared by every node using it. A cross-origin
+ * image gives up its dimensions without CORS (only its *pixels* are protected),
+ * so this works for a Roblox CDN URL exactly as it does for a local one.
+ */
+function measureImage(url: string): Promise<ImageSize | undefined> {
+	const cached = naturalSizes.get(url);
+	if (cached) return Promise.resolve(cached);
+	const inflight = pendingSizes.get(url);
+	if (inflight) return inflight;
+	const run = new Promise<ImageSize | undefined>((resolve) => {
+		const probe = new Image();
+		probe.onload = () => {
+			const size = { width: probe.naturalWidth, height: probe.naturalHeight };
+			if (size.width > 0 && size.height > 0) {
+				naturalSizes.set(url, size);
+				resolve(size);
+			} else resolve(undefined);
+		};
+		probe.onerror = () => resolve(undefined);
+		probe.src = url;
+	}).finally(() => {
+		pendingSizes.delete(url);
+	});
+	pendingSizes.set(url, run);
+	return run;
+}
+
+/** Exposed for tests; nothing in a running page needs to forget an image size. */
+export function clearImageSizeCache(): void {
+	naturalSizes.clear();
+	pendingSizes.clear();
+}
+
+// --- painting ----------------------------------------------------------------
+
+/** `url(...)` with the two characters that could break out of the quotes escaped. */
+const cssUrl = (url: string): string =>
+	`url("${url.replace(/["\\]/g, "\\$&")}")`;
+
+const px = (n: number): string => `${Math.round(n * 100) / 100}px`;
+
+/**
+ * A four-sided CSS value, collapsed to one when every side agrees — which is the
+ * usual shape of a 9-slice border, and what a uniform panel should read as.
+ */
+function sides<T>(top: T, right: T, bottom: T, left: T): string {
+	return top === right && right === bottom && bottom === left
+		? String(top)
+		: `${top} ${right} ${bottom} ${left}`;
+}
+
+/** Whether the paint needs the source image's own size before it can be exact. */
+function needsNaturalSize(node: SceneNode): boolean {
+	return getImageRect(node) !== undefined || getScaleType(node) === "Slice";
+}
+
+/** Whether the paint is computed against the node's own box. */
+function needsNodeRect(node: SceneNode): boolean {
+	return getImageRect(node) !== undefined;
+}
+
+let warnedTiledSprite = false;
+
+/**
+ * Paint `url` into an image layer: `ScaleType` and the `ImageRect` sprite window
+ * become `background-*`, and `Slice` becomes a `border-image`.
+ *
+ * A background rather than an `<img>` because the sprite window, the tiling and
+ * the 9-slice all need to place a *region* of the source, which `object-fit`
+ * cannot express — and because CSS then does the arithmetic for the simple
+ * cases: `100% 100%` / `contain` / `cover` are `Stretch` / `Fit` / `Crop`
+ * exactly, with no measurement needed.
+ *
+ * `natural` is the source's own size, absent until it has loaded; the caller
+ * repaints once it arrives. Without it a sliced or windowed image paints
+ * stretched, which is what it looked like before this function could do better.
+ */
+function paintImage(
+	el: HTMLElement,
+	node: SceneNode,
+	url: string,
+	rect: Rect,
+	natural: ImageSize | undefined,
+): void {
+	const s = el.style;
+	// Every branch below owns a different subset of these, so clear them all
+	// first: a repaint (a resolver answering, a natural size arriving) must not
+	// inherit the previous branch's background.
+	s.backgroundImage = "";
+	s.backgroundSize = "";
+	s.backgroundPosition = "";
+	s.backgroundRepeat = "";
+	s.borderStyle = "";
+	s.borderWidth = "";
+	s.borderImageSource = "";
+	s.borderImageSlice = "";
+	s.borderImageWidth = "";
+	s.borderImageRepeat = "";
+	s.overflow = "";
+	el.replaceChildren();
+
+	const scaleType = getScaleType(node);
+	const source = cssUrl(url);
+	const window = natural ? getImageRect(node) : undefined;
+
+	// 9-slice: the corners keep their own pixel size (times `SliceScale`), the
+	// edges stretch along one axis and the middle along both — which is precisely
+	// `border-image` with `fill`. `border-width: 0` keeps the slice out of the
+	// box model, and `border-image-width` in px then draws it over the padding
+	// box, so the node's own size is unchanged by having a border image at all.
+	const slice = natural ? sliceInsets(node, natural) : undefined;
+	if (scaleType === "Slice" && slice) {
+		const scale = Math.max(0, getSliceScale(node));
+		s.borderStyle = "solid";
+		s.borderWidth = "0";
+		s.borderImageSource = source;
+		// Unitless slice values are source pixels, which is the unit `SliceCenter`
+		// is already in. `fill` keeps the middle region painted — without it the
+		// centre of every sliced panel would be a hole.
+		s.borderImageSlice = `${sides(slice.top, slice.right, slice.bottom, slice.left)} fill`;
+		s.borderImageWidth = sides(
+			px(slice.top * scale),
+			px(slice.right * scale),
+			px(slice.bottom * scale),
+			px(slice.left * scale),
+		);
+		s.borderImageRepeat = "stretch";
+		return;
+	}
+
+	s.backgroundImage = source;
+	s.backgroundRepeat = "no-repeat";
+
+	if (scaleType === "Tile") {
+		const tile = getTileSize(node);
+		// A UDim per axis, against the node's own size — which CSS can resolve
+		// itself, so tiling needs no measurement of anything.
+		s.backgroundSize = `calc(${tile.x.scale * 100}% + ${px(tile.x.offset)}) calc(${tile.y.scale * 100}% + ${px(tile.y.offset)})`;
+		s.backgroundRepeat = "repeat";
+		if (window && !warnedTiledSprite) {
+			warnedTiledSprite = true;
+			console.warn(
+				`loom: ${node.className} "${node.name}" tiles an ImageRect window, ` +
+					"which CSS backgrounds cannot crop — the whole image is tiled instead.",
+			);
+		}
+		return;
+	}
+
+	if (!window || !natural) {
+		s.backgroundSize =
+			scaleType === "Fit"
+				? "contain"
+				: scaleType === "Crop"
+					? "cover"
+					: "100% 100%";
+		s.backgroundPosition = "center";
+		return;
+	}
+
+	// A sprite window, in two nested elements: an empty box the size the fit gives
+	// the window, and the whole scaled sheet inside it, slid so the window's own
+	// corner lands on that box's.
+	//
+	// A background cannot be cropped to a region — it paints the whole image
+	// wherever it is put — so the neighbours of a sprite in a sheet would spill
+	// across the node. The box clips them, and it has to be the *window's* box
+	// rather than the node's: under `Fit` the window covers only part of the node,
+	// and clipping to the node would leave the rest of the sheet on show.
+	const fit =
+		scaleType === "Fit"
+			? Math.min(rect.width / window.size.x, rect.height / window.size.y)
+			: scaleType === "Crop"
+				? Math.max(rect.width / window.size.x, rect.height / window.size.y)
+				: 0;
+	const [scaleX, scaleY] =
+		fit > 0
+			? [fit, fit]
+			: [rect.width / window.size.x, rect.height / window.size.y];
+	// Fit and Crop centre what they leave over, as `contain`/`cover` do.
+	const dx = (rect.width - window.size.x * scaleX) / 2;
+	const dy = (rect.height - window.size.y * scaleY) / 2;
+	s.backgroundImage = "";
+	const box = document.createElement("div");
+	const clip = box.style;
+	clip.position = "absolute";
+	clip.overflow = "hidden";
+	clip.left = px(dx);
+	clip.top = px(dy);
+	clip.width = px(window.size.x * scaleX);
+	clip.height = px(window.size.y * scaleY);
+	const sheet = document.createElement("div");
+	const inner = sheet.style;
+	inner.position = "absolute";
+	inner.backgroundImage = source;
+	inner.backgroundRepeat = "no-repeat";
+	inner.backgroundSize = "100% 100%";
+	inner.width = px(natural.width * scaleX);
+	inner.height = px(natural.height * scaleY);
+	inner.left = px(-window.offset.x * scaleX);
+	inner.top = px(-window.offset.y * scaleY);
+	box.appendChild(sheet);
+	el.appendChild(box);
+}
+
+/**
+ * `SliceCenter` → the four `border-image-slice` insets, in source pixels.
+ *
+ * `undefined` when the rectangle says nothing usable — the default
+ * `Rect.new(0, 0, 0, 0)` included. An empty centre would make the whole image a
+ * border, which is not what a tree that never set `SliceCenter` is asking for;
+ * the engine's own answer there is indistinguishable from a stretch.
+ */
+function sliceInsets(
+	node: SceneNode,
+	natural: ImageSize,
+): { top: number; right: number; bottom: number; left: number } | undefined {
+	const center = getSliceCenter(node);
+	if (!center) return undefined;
+	const left = Math.max(0, Math.min(center.min.x, natural.width));
+	const top = Math.max(0, Math.min(center.min.y, natural.height));
+	const right = Math.max(
+		0,
+		natural.width - Math.min(center.max.x, natural.width),
+	);
+	const bottom = Math.max(
+		0,
+		natural.height - Math.min(center.max.y, natural.height),
+	);
+	if (left + right >= natural.width || top + bottom >= natural.height) {
+		return undefined;
+	}
+	return { top, right, bottom, left };
 }
 
 /**
  * Build an image class's `Image` layer, or `undefined` when there is none.
  *
- * Deferred (documented): `Slice`/`Tile` scale types and
- * `ImageRectOffset`/`ImageRectSize` sprite windows — each needs more than one
- * `<img>` and a fit.
+ * Deferred (documented): tiling a sprite window (see the warning in
+ * {@link paintImage}), and `SliceCenter` measured against a sprite window rather
+ * than the whole image.
  */
-function createImageLayer(node: SceneNode): HTMLImageElement | undefined {
+function createImageLayer(
+	node: SceneNode,
+	rect: Rect,
+): HTMLElement | undefined {
 	if (!IMAGE_CLASSES.has(node.className)) return undefined;
 	const image = getImage(node);
 	if (image === undefined || image === "") return undefined;
 
-	const el = document.createElement("img");
-	el.alt = ""; // decorative: Roblox images carry no accessible name
-	el.draggable = false;
+	const el = document.createElement("div");
+	// A background-painted div rather than an `<img>`: it is decorative either
+	// way (a Roblox image carries no accessible name), and the marker keeps the
+	// layer findable now that it is no longer the only `<img>` in the tree.
+	el.setAttribute("aria-hidden", "true");
+	el.dataset.loomLayer = "image";
 	const s = el.style;
 	s.position = "absolute";
 	s.inset = "0";
-	s.width = "100%";
-	s.height = "100%";
-	s.objectFit = objectFit(getScaleType(node));
 	s.pointerEvents = "none";
 	s.zIndex = String(getZIndex(node)); // shares the unified ZIndex space
 	const transparency = getImageTransparency(node);
 	if (transparency > 0) s.opacity = String(Math.max(0, 1 - transparency));
 	const tint = getImageColor3(node);
 	if (isTinted(tint)) s.filter = `url(#${tintFilterId(tint)})`;
+	// `Pixelated` is the engine's own opt-out of smoothing when an image is
+	// scaled up — pixel art, and every UI built on a 1px-per-texel sheet.
+	if (getResampleMode(node) === "Pixelated") s.imageRendering = "pixelated";
 
 	const known = directImageUrl(image) ?? resolvedImages.get(image);
-	if (known !== undefined) {
-		el.src = known;
-		return el;
+	if (known !== undefined) startPaint(el, node, known, rect);
+	else {
+		// Unresolved: paint the empty layer now and fill it in when the resolver
+		// answers. The element may be detached by then, which is harmless.
+		void resolveImage(image).then((url) => {
+			if (url !== undefined) startPaint(el, node, url, rect);
+		});
 	}
-	// Unresolved: paint the empty layer now and fill in the src when the
-	// resolver answers. The element may be detached by then, which is harmless.
-	void resolveImage(image).then((url) => {
-		if (url !== undefined) el.src = url;
-	});
 	return el;
+}
+
+/** Paint now, and again once the source's own size is known (when it matters). */
+function startPaint(
+	el: HTMLElement,
+	node: SceneNode,
+	url: string,
+	rect: Rect,
+): void {
+	const natural = naturalSizes.get(url);
+	paintImage(el, node, url, rect, natural);
+	if (natural === undefined && needsNaturalSize(node)) {
+		void measureImage(url).then((size) => {
+			if (size) paintImage(el, node, url, rect, size);
+		});
+	}
 }
 
 /**
  * Fingerprint of every input `createImageLayer` reads, so the session rebuilds
  * the layer only when an image-affecting prop actually changed.
+ *
+ * The node's own size is part of it only for the paints that read it — a sprite
+ * window resolves against the box in pixels, while a plain stretch, a tile and a
+ * 9-slice are all expressed in CSS relative units and survive a resize untouched.
  */
-function imageLayerKey(node: SceneNode): string {
+function imageLayerKey(node: SceneNode, rect: Rect): string {
 	if (!IMAGE_CLASSES.has(node.className)) return "";
 	const image = getImage(node);
 	if (image === undefined || image === "") return "";
 	const tint = getImageColor3(node);
+	const window = getImageRect(node);
+	const center = getSliceCenter(node);
+	const tile = getTileSize(node);
 	return [
 		image,
 		getScaleType(node),
 		getImageTransparency(node),
 		getZIndex(node),
 		`${tint.r},${tint.g},${tint.b}`,
+		getResampleMode(node),
+		window
+			? `${window.offset.x},${window.offset.y},${window.size.x},${window.size.y}`
+			: "",
+		center
+			? `${center.min.x},${center.min.y},${center.max.x},${center.max.y}`
+			: "",
+		getSliceScale(node),
+		`${tile.x.scale},${tile.x.offset},${tile.y.scale},${tile.y.offset}`,
+		needsNodeRect(node) ? `${rect.width}x${rect.height}` : "",
 	].join(" ");
 }
 
@@ -1105,7 +1464,7 @@ function renderNode(
 	applyBoxStyle(el.style, node, rect, parentRect, isRoot);
 
 	// Image first: Roblox paints the image behind the label's own text.
-	const imageLayer = createImageLayer(node);
+	const imageLayer = createImageLayer(node, rect);
 	if (imageLayer) el.appendChild(imageLayer);
 
 	const textLayer = createTextLayer(node);
@@ -1169,7 +1528,7 @@ export interface DomSession {
 interface SessionEntry {
 	el: HTMLDivElement;
 	textEl: HTMLDivElement | undefined;
-	imageEl: HTMLImageElement | undefined;
+	imageEl: HTMLElement | undefined;
 	styleKey: string;
 	textKey: string;
 	imageKey: string;
@@ -1332,10 +1691,11 @@ export function createDomSession(
 			el.style.pointerEvents = pointerEvents;
 		}
 
-		const imageKey = imageLayerKey(node);
+		const imageKey = imageLayerKey(node, rect);
 		if (imageKey !== entry.imageKey) {
 			entry.imageEl?.remove();
-			entry.imageEl = imageKey === "" ? undefined : createImageLayer(node);
+			entry.imageEl =
+				imageKey === "" ? undefined : createImageLayer(node, rect);
 			entry.imageKey = imageKey;
 		}
 

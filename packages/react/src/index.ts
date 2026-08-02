@@ -33,6 +33,7 @@ import type {
 	Font,
 	LoomConnection,
 	LoomInstance,
+	Rect,
 	UDim,
 	UDim2,
 } from "@loom-dev/runtime";
@@ -1536,19 +1537,31 @@ export interface TextGuiProps extends GuiProps {
 	FontSize?: Bindable<EnumItem<"FontSize">>;
 }
 
-/** `ImageLabel`/`ImageButton` add the image props the `<img>` layer maps. */
+/** `ImageLabel`/`ImageButton` add the image props the image layer maps. */
 export interface ImageGuiProps extends GuiProps {
 	/**
-	 * `rbxassetid://<id>`, or any URL an `<img>` can load. Asset ids need a
+	 * `rbxassetid://<id>`, or any URL a browser can load. Asset ids need a
 	 * resolver installed by the host — `@loom-dev/preview` ships one, so they
 	 * paint under `loom preview` and stay blank elsewhere until one is set.
 	 */
 	Image?: Bindable<string>;
 	ImageTransparency?: Bindable<number>;
-	/** `Slice` and `Tile` are accepted but paint as `Stretch` for now. */
+	/** All five: `Stretch`, `Fit`, `Crop`, `Slice` and `Tile`. */
 	ScaleType?: Bindable<EnumItem<"ScaleType">>;
-	/** Accepted but unpainted: tinting needs more than one `<img>`. */
+	/** Multiplies the image per channel; white (the default) is no tint. */
 	ImageColor3?: Bindable<Color3>;
+	/** The 9-slice centre, in the source image's own pixels. */
+	SliceCenter?: Bindable<Rect>;
+	/** Scales the sliced borders without touching the source. Default 1. */
+	SliceScale?: Bindable<number>;
+	/** One tile's size for `ScaleType.Tile`, against the node. Default `{1,0},{1,0}`. */
+	TileSize?: Bindable<UDim2>;
+	/** Sprite-sheet window: where it starts, and how big it is, in image pixels. */
+	ImageRectOffset?: Bindable<Vector2>;
+	/** A zero size (the default) means the whole image, as in Roblox. */
+	ImageRectSize?: Bindable<Vector2>;
+	/** `Pixelated` turns off smoothing when the image is scaled up. */
+	ResampleMode?: Bindable<EnumItem<"ResamplerMode">>;
 }
 
 /** `TextBox` adds the editable-text props the DOM input maps. */
@@ -1604,6 +1617,68 @@ export interface UIGridLayoutProps {
 	FillDirection?: Bindable<EnumItem<"FillDirection">>;
 	FillDirectionMaxCells?: Bindable<number>;
 	StartCorner?: Bindable<EnumItem<"StartCorner">>;
+	HorizontalAlignment?: Bindable<EnumItem<"HorizontalAlignment">>;
+	VerticalAlignment?: Bindable<EnumItem<"VerticalAlignment">>;
+	SortOrder?: Bindable<EnumItem<"SortOrder">>;
+	key?: Key;
+}
+
+/**
+ * `UIPageLayout` props.
+ *
+ * The pages themselves are the layout's siblings: each keeps its own `Size` and
+ * is displaced by a whole container-plus-`Padding` from its neighbour, so a
+ * parent with `ClipsDescendants` shows exactly one. Which one is *state*, not a
+ * prop — call `JumpToIndex` / `JumpTo` / `Next` / `Previous` on a ref, and read
+ * it back as `CurrentPage`, exactly as in Roblox.
+ */
+export interface UIPageLayoutProps {
+	FillDirection?: Bindable<EnumItem<"FillDirection">>;
+	HorizontalAlignment?: Bindable<EnumItem<"HorizontalAlignment">>;
+	VerticalAlignment?: Bindable<EnumItem<"VerticalAlignment">>;
+	SortOrder?: Bindable<EnumItem<"SortOrder">>;
+	/** The gap between one page and the next, along `FillDirection`. */
+	Padding?: Bindable<UDim>;
+	/** `Next`/`Previous` wrap around the ends instead of stopping at them. */
+	Circular?: Bindable<boolean>;
+	/**
+	 * Accepted, and geometry-free: a loom preview shows the settled layout, so
+	 * page changes are instant. Same for `TweenTime`/`EasingStyle`/
+	 * `EasingDirection`, and for the gamepad/touch/scroll input flags, which a
+	 * preview does not route.
+	 */
+	Animated?: Bindable<boolean>;
+	TweenTime?: Bindable<number>;
+	EasingStyle?: Bindable<EnumItem<"EasingStyle">>;
+	EasingDirection?: Bindable<EnumItem<"EasingDirection">>;
+	GamepadInputEnabled?: Bindable<boolean>;
+	ScrollWheelInputEnabled?: Bindable<boolean>;
+	TouchInputEnabled?: Bindable<boolean>;
+	/**
+	 * The only modifier that needs one: turning a page is a *method call*, so a
+	 * pager is driven through a ref exactly as it is in Roblox.
+	 */
+	ref?: Ref<LoomInstance>;
+	Name?: Bindable<string>;
+	key?: Key;
+}
+
+/**
+ * `UITableLayout` props. The layout's siblings are the table's *lines* — rows,
+ * or columns under `MajorAxis.ColumnMajor` — and each line's own children are
+ * the cells. A column is as wide as its widest cell and a row as tall as its
+ * tallest, both measured against the table's own content box.
+ */
+export interface UITableLayoutProps {
+	/** Are the direct children rows (the default) or columns? */
+	MajorAxis?: Bindable<EnumItem<"TableMajorAxis">>;
+	/** `X` is the gap between columns, `Y` the gap between rows. */
+	Padding?: Bindable<UDim2>;
+	/** Scale the columns proportionally so the table spans its container. */
+	FillEmptySpaceColumns?: Bindable<boolean>;
+	/** Same, for rows. */
+	FillEmptySpaceRows?: Bindable<boolean>;
+	FillDirection?: Bindable<EnumItem<"FillDirection">>;
 	HorizontalAlignment?: Bindable<EnumItem<"HorizontalAlignment">>;
 	VerticalAlignment?: Bindable<EnumItem<"VerticalAlignment">>;
 	SortOrder?: Bindable<EnumItem<"SortOrder">>;
@@ -1713,6 +1788,8 @@ declare global {
 			imagebutton: ImageGuiProps;
 			uilistlayout: UIListLayoutProps;
 			uigridlayout: UIGridLayoutProps;
+			uipagelayout: UIPageLayoutProps;
+			uitablelayout: UITableLayoutProps;
 			uipadding: UIPaddingProps;
 			uiaspectratioconstraint: UIAspectRatioConstraintProps;
 			uisizeconstraint: UISizeConstraintProps;
