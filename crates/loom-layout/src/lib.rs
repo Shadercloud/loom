@@ -7,13 +7,14 @@
 //! Roblox semantics implemented here:
 //! - Own size: `Size` UDim2 -> resolve -> `UIAspectRatioConstraint` -> `UISizeConstraint`
 //!   clamp -> `AutomaticSize` grow-to-content. Then `AnchorPoint`/`Position` place it.
-//! - `UIPadding` insets the content box; `UIListLayout`/`UIGridLayout` flow children
-//!   (ignoring their Position/AnchorPoint); `ScrollingFrame` lays children out against
-//!   its `CanvasSize`.
+//! - `UIPadding` insets the content box; `UIListLayout`/`UIGridLayout`/`UITableLayout`/
+//!   `UIPageLayout` flow children (ignoring their Position/AnchorPoint);
+//!   `ScrollingFrame` lays children out against its `CanvasSize`.
 //! - The TOP node always fills the viewport, regardless of className.
 //! - Non-layout modifier children get no rect and do not advance the positional id.
 //!
-//! Deferred (documented): text measurement (needs font metrics — lands with M4 text),
+//! Deferred (documented): `UIPageLayout` animation (`Animated`/`TweenTime`/`Circular`
+//! wrap-around placement — the layout is always the settled state),
 //! f32 pixel-snapping parity, `SizeConstraint` axis modes, grid `StartCorner` variants,
 //! `AspectType: ScaleWithParentSize`, `CanvasPosition`/scroll offset, `ScrollBarThickness`
 //! (the scrollbar-reserved `AbsoluteWindowSize`), `AutomaticSize` combined with an explicit
@@ -317,6 +318,20 @@ fn measure_content(node: &SceneNode, content_w: f64, content_h: f64, limit: Limi
     } else if let Some(grid) = find_modifier(node, "UIGridLayout") {
         let g = grid_metrics(content, grid, children.len());
         (g.block_w, g.block_h)
+    } else if let Some(table) = find_modifier(node, "UITableLayout") {
+        // The table's natural extent — `FillEmptySpace*` fills a container that
+        // has a size, and this is the pass that decides what that size is.
+        let lines = table_lines(table, &children);
+        table_metrics(content, table, &lines, limit).block()
+    } else if let Some(page) = find_modifier(node, "UIPageLayout") {
+        // Pages are stacked one container apart, so the strip's extent is not a
+        // content size anybody could hug: an auto-sized pager takes the current
+        // page, which is the only one the container is meant to show.
+        let order = flow_order(&children, page);
+        match order.get(page_index(page, order.len())) {
+            Some(&(_, current)) => resolve_size(current, content, limit),
+            None => (0.0, 0.0),
+        }
     } else {
         // Free children: bounding box via the SAME placement math as child_rect (so
         // AnchorPoint is honored and the measured extent matches where children land).
@@ -381,12 +396,19 @@ fn layout_children(node: &SceneNode) -> Vec<(usize, &SceneNode)> {
 }
 
 /// Flow order (stable; equal keys keep source order), preserving positional ids.
+///
+/// `SortOrder` defaults to `Name`, which is the engine's own default on every
+/// `UIGridStyleLayout` (verified in Studio: a fresh `UIListLayout`, `UIGridLayout`,
+/// `UIPageLayout` and `UITableLayout` all read `Enum.SortOrder.Name`). Children
+/// with equal names then keep source order, since the sort is stable — which is
+/// what the engine does too, and why a tree that never sets `Name` (every node
+/// named after its class) flows in source order either way.
 fn flow_order<'a>(
     children: &[(usize, &'a SceneNode)],
     modifier: &SceneNode,
 ) -> Vec<(usize, &'a SceneNode)> {
     let mut order = children.to_vec();
-    if enum_name(modifier, "SortOrder").unwrap_or("LayoutOrder") == "Name" {
+    if enum_name(modifier, "SortOrder").unwrap_or("Name") == "Name" {
         order.sort_by(|a, b| a.1.name.cmp(&b.1.name));
     } else {
         order.sort_by_key(|(_, c)| {
@@ -858,6 +880,336 @@ fn place_with_grid(
     Ok(())
 }
 
+// --- UIPageLayout ------------------------------------------------------------
+
+/// The page a `UIPageLayout` shows, as an index into its flow order.
+///
+/// The engine's own `CurrentPage` is a **GuiObject reference**, and a Scene IR
+/// property is a datatype — never a node — so it cannot cross the boundary. loom
+/// reads `CurrentPageIndex` instead: a plain 0-based int the frontend writes.
+/// `@loom-dev/runtime`'s `UIPageLayout` sets it from `JumpToIndex`/`JumpTo`/
+/// `Next`/`Previous` and keeps `CurrentPage` pointing at the instance, so app
+/// code that reads the Roblox property still gets the Roblox answer.
+///
+/// Out of range clamps rather than wraps, matching `JumpToIndex`.
+fn page_index(page: &SceneNode, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let raw = page
+        .properties
+        .get("CurrentPageIndex")
+        .and_then(PropertyValue::as_int)
+        .unwrap_or(0);
+    raw.clamp(0, count as i64 - 1) as usize
+}
+
+/// `UIPageLayout` places each child at its own size, aligned inside the
+/// container, then displaces it along the fill direction by whole pages — one
+/// page being the container extent plus `Padding`. The current page lands in the
+/// container and its neighbours sit one page out either side, so a parent with
+/// `ClipsDescendants` shows exactly one, which is the point of the class.
+///
+/// Verified against the engine (Studio, Edit datamodel): pages keep their own
+/// `Size` rather than being stretched to the container, the stride is
+/// `container + Padding`, `FillDirection` defaults to `Horizontal` (unlike
+/// `UIListLayout`), and both alignment properties apply — a centered page is
+/// centered on the main axis too, not just the cross one.
+///
+/// `Animated`/`TweenTime`/`EasingStyle`/`EasingDirection` are animation rather
+/// than geometry, so this is always the settled state. `Circular` only decides
+/// which page `Next`/`Previous` reach (see `@loom-dev/runtime`): the engine's own
+/// circular placement leaves the strip translated by a whole lap mid-wrap, which
+/// is a scrolling artifact, not a layout loom should reproduce.
+fn place_with_page(
+    content: Rect,
+    page: &SceneNode,
+    children: &[(usize, &SceneNode)],
+    parent_path: &str,
+    out: &mut BTreeMap<String, LayoutNode>,
+) -> Result<(), LayoutError> {
+    let order = flow_order(children, page);
+    let limit = Limits::definite(content.width, content.height);
+    let vertical = enum_name(page, "FillDirection") == Some("Vertical");
+    let main_content = if vertical {
+        content.height
+    } else {
+        content.width
+    };
+    let stride =
+        main_content + udim_prop(page, "Padding").map_or(0.0, |u| resolve_axis(u, main_content));
+    let current = page_index(page, order.len());
+    let h_align = enum_name(page, "HorizontalAlignment").unwrap_or("Left");
+    let v_align = enum_name(page, "VerticalAlignment").unwrap_or("Top");
+
+    for (i, &(idx, child)) in order.iter().enumerate() {
+        let (w, h) = resolve_size(child, content, limit);
+        let offset = (i as f64 - current as f64) * stride;
+        let x = content.x
+            + align_offset(content.width, w, h_align)
+            + if vertical { 0.0 } else { offset };
+        let y = content.y
+            + align_offset(content.height, h, v_align)
+            + if vertical { offset } else { 0.0 };
+        place_node(
+            child,
+            Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            format!("{parent_path}/{idx}"),
+            out,
+        )?;
+    }
+    Ok(())
+}
+
+// --- UITableLayout -----------------------------------------------------------
+
+/// A `UITableLayout`'s tracks. Its direct children are *lines* — rows under
+/// `MajorAxis = RowMajor` (the default), columns under `ColumnMajor` — and their
+/// own children are the cells.
+struct TableMetrics {
+    column_major: bool,
+    /// Width of each column, in column order.
+    columns: Vec<f64>,
+    /// Height of each row, in row order.
+    rows: Vec<f64>,
+    pad_x: f64,
+    pad_y: f64,
+}
+
+impl TableMetrics {
+    /// Extent of the whole table: every track plus the gaps between them.
+    fn block(&self) -> (f64, f64) {
+        (
+            span(&self.columns, self.pad_x),
+            span(&self.rows, self.pad_y),
+        )
+    }
+
+    /// `(row, col)` of the cell at position `cell` in line `line`.
+    fn track_of(&self, line: usize, cell: usize) -> (usize, usize) {
+        if self.column_major {
+            (cell, line)
+        } else {
+            (line, cell)
+        }
+    }
+
+    /// Grow (or shrink) the tracks so the table spans the container, as
+    /// `FillEmptySpaceColumns`/`FillEmptySpaceRows` ask.
+    ///
+    /// The engine scales tracks **proportionally** to their natural size, and it
+    /// does so in both directions — a table whose natural width overruns the
+    /// container is squeezed down by the same rule (verified in Studio: two
+    /// 120px cells in a 100px box with 10px padding came out 45px each). Tracks
+    /// that are all zero stay zero: there is no proportion to distribute by, and
+    /// inventing an equal split would size cells the engine leaves empty.
+    fn fill(&mut self, content: Rect, table: &SceneNode) {
+        let fill_columns = bool_prop(table, "FillEmptySpaceColumns");
+        let fill_rows = bool_prop(table, "FillEmptySpaceRows");
+        if fill_columns {
+            scale_tracks(&mut self.columns, content.width, self.pad_x);
+        }
+        if fill_rows {
+            scale_tracks(&mut self.rows, content.height, self.pad_y);
+        }
+    }
+}
+
+/// Total extent of `tracks` laid end to end with `gap` between them.
+fn span(tracks: &[f64], gap: f64) -> f64 {
+    tracks.iter().sum::<f64>() + gap * (tracks.len().saturating_sub(1) as f64)
+}
+
+/// Start offset of every track, in order (the running sum plus gaps).
+fn track_offsets(tracks: &[f64], gap: f64) -> Vec<f64> {
+    let mut offsets = Vec::with_capacity(tracks.len());
+    let mut cursor = 0.0;
+    for size in tracks {
+        offsets.push(cursor);
+        cursor += size + gap;
+    }
+    offsets
+}
+
+fn scale_tracks(tracks: &mut [f64], available: f64, gap: f64) {
+    let natural: f64 = tracks.iter().sum();
+    let room = available - gap * (tracks.len().saturating_sub(1) as f64);
+    if natural <= 0.0 || room <= 0.0 {
+        return;
+    }
+    let scale = room / natural;
+    for size in tracks.iter_mut() {
+        *size *= scale;
+    }
+}
+
+fn bool_prop(node: &SceneNode, key: &str) -> bool {
+    node.properties
+        .get(key)
+        .and_then(PropertyValue::as_bool)
+        .unwrap_or(false)
+}
+
+/// One line of a table (a row, or a column under `ColumnMajor`) with the cells
+/// that flow inside it. Both carry the positional index their id is built from.
+struct TableLine<'a> {
+    index: usize,
+    node: &'a SceneNode,
+    cells: Vec<(usize, &'a SceneNode)>,
+}
+
+/// The table's flow: its visible lines, each with its own visible cells, both in
+/// `SortOrder`. Invisible nodes are left out — the engine gives them neither a
+/// track nor a gap (verified: an invisible middle cell collapsed both its column
+/// and one padding gap) — and are placed from their own `Position` instead.
+fn table_lines<'a>(table: &SceneNode, children: &[(usize, &'a SceneNode)]) -> Vec<TableLine<'a>> {
+    flow_order(children, table)
+        .into_iter()
+        .filter(|(_, line)| line.visible())
+        .map(|(index, node)| TableLine {
+            index,
+            node,
+            cells: flow_order(&layout_children(node), table)
+                .into_iter()
+                .filter(|(_, cell)| cell.visible())
+                .collect(),
+        })
+        .collect()
+}
+
+/// Column widths and row heights: a column is as wide as its widest cell, a row
+/// as tall as its tallest — the cells' own `Size`, resolved against the *table's*
+/// content box (verified: a `0.25` scale cell measured a quarter of the table,
+/// not of its row).
+fn table_metrics(
+    content: Rect,
+    table: &SceneNode,
+    lines: &[TableLine<'_>],
+    limit: Limits,
+) -> TableMetrics {
+    let column_major = enum_name(table, "MajorAxis") == Some("ColumnMajor");
+    let padding = table
+        .properties
+        .get("Padding")
+        .and_then(PropertyValue::as_udim2);
+    let pad_x = padding.map_or(0.0, |p| resolve_axis(p.x, content.width));
+    let pad_y = padding.map_or(0.0, |p| resolve_axis(p.y, content.height));
+
+    let across = lines.iter().map(|l| l.cells.len()).max().unwrap_or(0);
+    let (n_rows, n_cols) = if column_major {
+        (across, lines.len())
+    } else {
+        (lines.len(), across)
+    };
+    let mut m = TableMetrics {
+        column_major,
+        columns: vec![0.0; n_cols],
+        rows: vec![0.0; n_rows],
+        pad_x,
+        pad_y,
+    };
+    for (line, entry) in lines.iter().enumerate() {
+        for (cell, &(_, node)) in entry.cells.iter().enumerate() {
+            let (w, h) = resolve_size(node, content, limit);
+            let (row, col) = m.track_of(line, cell);
+            m.columns[col] = m.columns[col].max(w);
+            m.rows[row] = m.rows[row].max(h);
+        }
+    }
+    m
+}
+
+/// Place a `UITableLayout`'s lines and cells.
+///
+/// A line spans the whole table on its minor axis and its own track on the major
+/// one — a row is table-wide and row-tall — which is what the engine reports for
+/// the line frames themselves. Cells then land on the track intersections. The
+/// line's own `Size` is ignored (the table sizes it), and so is any `UIPadding`
+/// on it: the tracks are measured against the table's content box, so insetting
+/// each line separately would slide its cells off the columns they define.
+fn place_with_table(
+    content: Rect,
+    table: &SceneNode,
+    children: &[(usize, &SceneNode)],
+    parent_path: &str,
+    out: &mut BTreeMap<String, LayoutNode>,
+) -> Result<(), LayoutError> {
+    let limit = Limits::definite(content.width, content.height);
+    let lines = table_lines(table, children);
+    let mut m = table_metrics(content, table, &lines, limit);
+    m.fill(content, table);
+    let (block_w, block_h) = m.block();
+    let start_x = content.x
+        + align_offset(
+            content.width,
+            block_w,
+            enum_name(table, "HorizontalAlignment").unwrap_or("Left"),
+        );
+    let start_y = content.y
+        + align_offset(
+            content.height,
+            block_h,
+            enum_name(table, "VerticalAlignment").unwrap_or("Top"),
+        );
+    let col_x = track_offsets(&m.columns, m.pad_x);
+    let row_y = track_offsets(&m.rows, m.pad_y);
+
+    for (index, line) in lines.iter().enumerate() {
+        let line_rect = if m.column_major {
+            Rect {
+                x: start_x + col_x[index],
+                y: start_y,
+                width: m.columns[index],
+                height: block_h,
+            }
+        } else {
+            Rect {
+                x: start_x,
+                y: start_y + row_y[index],
+                width: block_w,
+                height: m.rows[index],
+            }
+        };
+        let line_path = format!("{parent_path}/{}", line.index);
+        record(line.node, line_rect, &line_path, out)?;
+        for (cell, &(cell_idx, node)) in line.cells.iter().enumerate() {
+            let (row, col) = m.track_of(index, cell);
+            place_node(
+                node,
+                Rect {
+                    x: start_x + col_x[col],
+                    y: start_y + row_y[row],
+                    width: m.columns[col],
+                    height: m.rows[row],
+                },
+                format!("{line_path}/{cell_idx}"),
+                out,
+            )?;
+        }
+        // Hidden cells take no track, so they keep their own Position inside the
+        // line — the same rect the engine leaves them at.
+        let line_limit = Limits::definite(line_rect.width, line_rect.height);
+        for &(cell_idx, node) in layout_children(line.node)
+            .iter()
+            .filter(|(_, c)| !c.visible())
+        {
+            let rect = child_rect(node, line_rect, line_limit);
+            place_node(node, rect, format!("{line_path}/{cell_idx}"), out)?;
+        }
+    }
+    // Same for a hidden line: out of the flow, placed from its own Position.
+    for &(idx, line) in children.iter().filter(|(_, c)| !c.visible()) {
+        let rect = child_rect(line, content, limit);
+        place_node(line, rect, format!("{parent_path}/{idx}"), out)?;
+    }
+    Ok(())
+}
+
 // --- placement ---------------------------------------------------------------
 
 /// Resolve a free-positioned child's rect (size + anchor/position).
@@ -873,6 +1225,25 @@ fn child_rect(node: &SceneNode, parent_content: Rect, limit: Limits) -> Rect {
     }
 }
 
+/// Record `node`'s rect under its id (its own, or the positional path).
+///
+/// Split out of [`place_node`] because `UITableLayout` places its lines itself:
+/// a line's rect comes from the table's tracks, and its children are the table's
+/// cells rather than its own free-positioned content.
+fn record(
+    node: &SceneNode,
+    rect: Rect,
+    path: &str,
+    out: &mut BTreeMap<String, LayoutNode>,
+) -> Result<(), LayoutError> {
+    let id = node.id.clone().unwrap_or_else(|| path.to_string());
+    if out.contains_key(&id) {
+        return Err(LayoutError::DuplicateId(id));
+    }
+    out.insert(id, LayoutNode { rect });
+    Ok(())
+}
+
 /// Place `node` at the already-resolved `rect`, store it, then lay out children.
 fn place_node(
     node: &SceneNode,
@@ -880,11 +1251,7 @@ fn place_node(
     path: String,
     out: &mut BTreeMap<String, LayoutNode>,
 ) -> Result<(), LayoutError> {
-    let id = node.id.clone().unwrap_or_else(|| path.clone());
-    if out.contains_key(&id) {
-        return Err(LayoutError::DuplicateId(id));
-    }
-    out.insert(id, LayoutNode { rect });
+    record(node, rect, &path, out)?;
 
     let content = content_box(node, rect);
     let children = layout_children(node);
@@ -893,6 +1260,10 @@ fn place_node(
         place_with_list(content, list, &children, &path, out)?;
     } else if let Some(grid) = find_modifier(node, "UIGridLayout") {
         place_with_grid(content, grid, &children, &path, out)?;
+    } else if let Some(table) = find_modifier(node, "UITableLayout") {
+        place_with_table(content, table, &children, &path, out)?;
+    } else if let Some(page) = find_modifier(node, "UIPageLayout") {
+        place_with_page(content, page, &children, &path, out)?;
     } else {
         let limit = Limits::definite(content.width, content.height);
         for &(idx, child) in &children {
@@ -1288,6 +1659,8 @@ mod tests {
                     "HorizontalAlignment",
                     enum_item("HorizontalAlignment", "Center"),
                 ),
+                // The engine's default is `Name`; this test is about the other one.
+                ("SortOrder", enum_item("SortOrder", "LayoutOrder")),
             ],
         );
         let mut container = with("Frame", "Container", &[("Size", udim2(1.0, 0.0, 1.0, 0.0))]);
@@ -2059,6 +2432,9 @@ mod tests {
             &[
                 ("FillDirection", enum_item("FillDirection", "Horizontal")),
                 ("Wraps", PropertyValue::Known(KnownProperty::Bool(true))),
+                // Source order, so the positional ids below are the flow order —
+                // under the engine's `Name` default "Caret" would lead "Label".
+                ("SortOrder", enum_item("SortOrder", "LayoutOrder")),
             ],
         );
         // Scale width against a parent that has none: 0 wide, height from content.
@@ -2287,5 +2663,484 @@ mod tests {
         let r = compute_layout(&screen(vec![label]), VP).unwrap();
         assert_eq!(r.rects["0/0"].rect.width, 118.0);
         assert_eq!(r.rects["0/0"].rect.height, 18.0);
+    }
+
+    // --- UITableLayout -------------------------------------------------------
+    //
+    // Every number below was read off the engine (Studio, Edit datamodel): a
+    // 400x300 frame holding a UITableLayout with Padding {0,10},{0,5} and the
+    // cell sizes each test names.
+
+    fn table(props: &[(&str, PropertyValue)]) -> SceneNode {
+        let mut t = with(
+            "UITableLayout",
+            "Table",
+            &[
+                ("Padding", udim2(0.0, 10.0, 0.0, 5.0)),
+                ("SortOrder", enum_item("SortOrder", "LayoutOrder")),
+            ],
+        );
+        for (k, v) in props {
+            t.properties.insert((*k).into(), v.clone());
+        }
+        t
+    }
+
+    /// A table container holding `rows` of cell sizes, in source order.
+    fn table_of(t: SceneNode, rows: &[&[(f64, f64)]]) -> SceneNode {
+        let mut container = with("Frame", "Table", &[("Size", udim2(0.0, 400.0, 0.0, 300.0))]);
+        container.children.push(t);
+        for (r, cells) in rows.iter().enumerate() {
+            let mut line = with("Frame", &format!("L{r}"), &[("LayoutOrder", int(r as i64))]);
+            for (c, &(w, h)) in cells.iter().enumerate() {
+                line.children.push(with(
+                    "Frame",
+                    &format!("L{r}C{c}"),
+                    &[
+                        ("Size", udim2(0.0, w, 0.0, h)),
+                        ("LayoutOrder", int(c as i64)),
+                    ],
+                ));
+            }
+            container.children.push(line);
+        }
+        container
+    }
+
+    const TABLE_CELLS: [&[(f64, f64)]; 2] = [
+        &[(50.0, 20.0), (80.0, 40.0), (30.0, 10.0)],
+        &[(70.0, 30.0), (40.0, 25.0), (60.0, 15.0)],
+    ];
+
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "expected {b}, got {a}");
+    }
+
+    #[test]
+    fn table_columns_take_the_widest_cell_and_rows_the_tallest() {
+        let r = compute_layout(&screen(vec![table_of(table(&[]), &TABLE_CELLS)]), VP).unwrap();
+        // Columns max(50,70)=70, max(80,40)=80, max(30,60)=60; rows 40 and 30.
+        // A row frame spans the whole table (70+80+60 + 2 gaps = 230) and its
+        // own height, which is what the engine reports for it.
+        assert_eq!(
+            r.rects["0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 230.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/1"].rect,
+            Rect {
+                x: 0.0,
+                y: 45.0,
+                width: 230.0,
+                height: 30.0
+            }
+        );
+        // Cells land on the track intersections, not at their own size.
+        assert_eq!(
+            r.rects["0/0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 70.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/0/1"].rect,
+            Rect {
+                x: 80.0,
+                y: 0.0,
+                width: 80.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/0/2"].rect,
+            Rect {
+                x: 170.0,
+                y: 0.0,
+                width: 60.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/1/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 45.0,
+                width: 70.0,
+                height: 30.0
+            }
+        );
+    }
+
+    #[test]
+    fn table_column_major_reads_children_as_columns() {
+        let t = table(&[("MajorAxis", enum_item("TableMajorAxis", "ColumnMajor"))]);
+        let r = compute_layout(&screen(vec![table_of(t, &TABLE_CELLS)]), VP).unwrap();
+        // Now child 0 is a column: 80 wide (its widest cell), full table height.
+        assert_eq!(
+            r.rects["0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 95.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/1"].rect,
+            Rect {
+                x: 90.0,
+                y: 0.0,
+                width: 70.0,
+                height: 95.0
+            }
+        );
+        // Row heights are the max across columns: 30, 40, 15.
+        assert_eq!(
+            r.rects["0/0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 30.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/0/1"].rect,
+            Rect {
+                x: 0.0,
+                y: 35.0,
+                width: 80.0,
+                height: 40.0
+            }
+        );
+        assert_eq!(
+            r.rects["0/0/1/2"].rect,
+            Rect {
+                x: 90.0,
+                y: 80.0,
+                width: 70.0,
+                height: 15.0
+            }
+        );
+    }
+
+    #[test]
+    fn table_fill_scales_tracks_proportionally() {
+        let t = table(&[
+            (
+                "FillEmptySpaceColumns",
+                PropertyValue::Known(KnownProperty::Bool(true)),
+            ),
+            (
+                "FillEmptySpaceRows",
+                PropertyValue::Known(KnownProperty::Bool(true)),
+            ),
+        ]);
+        let r = compute_layout(&screen(vec![table_of(t, &TABLE_CELLS)]), VP).unwrap();
+        // 400 wide less two 10px gaps = 380, split in the 70:80:60 proportion.
+        close(r.rects["0/0/0/0"].rect.width, 70.0 * 380.0 / 210.0);
+        close(r.rects["0/0/0/1"].rect.width, 80.0 * 380.0 / 210.0);
+        close(r.rects["0/0/0/2"].rect.width, 60.0 * 380.0 / 210.0);
+        // 300 tall less one 5px gap = 295, split 40:30.
+        close(r.rects["0/0/0/0"].rect.height, 40.0 * 295.0 / 70.0);
+        close(r.rects["0/0/1/0"].rect.height, 30.0 * 295.0 / 70.0);
+        // The filled table spans the container exactly.
+        close(
+            r.rects["0/0/0/2"].rect.x + r.rects["0/0/0/2"].rect.width,
+            400.0,
+        );
+    }
+
+    #[test]
+    fn table_fill_also_shrinks_a_table_that_overruns() {
+        // Two 120px cells in a 100px box with a 10px gap came out 45px each.
+        let t = table(&[(
+            "FillEmptySpaceColumns",
+            PropertyValue::Known(KnownProperty::Bool(true)),
+        )]);
+        let mut container = with("Frame", "Table", &[("Size", udim2(0.0, 100.0, 0.0, 60.0))]);
+        container.children.push(t);
+        let mut line = with("Frame", "R", &[]);
+        for c in 0..2 {
+            line.children.push(with(
+                "Frame",
+                &format!("C{c}"),
+                &[
+                    ("Size", udim2(0.0, 120.0, 0.0, 80.0)),
+                    ("LayoutOrder", int(c)),
+                ],
+            ));
+        }
+        container.children.push(line);
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        close(r.rects["0/0/0/0"].rect.width, 45.0);
+        close(r.rects["0/0/0/1"].rect.x, 55.0);
+        close(r.rects["0/0/0/1"].rect.width, 45.0);
+    }
+
+    #[test]
+    fn table_hidden_cell_collapses_its_column_and_gap() {
+        // Cells 40/80/120 wide with the middle one hidden: the engine gives the
+        // visible pair one gap between them, not two, and no column at all for
+        // the hidden cell — which keeps its own Position inside the row.
+        let mut container = with("Frame", "Table", &[("Size", udim2(0.0, 400.0, 0.0, 200.0))]);
+        container.children.push(table(&[]));
+        let mut line = with("Frame", "R", &[]);
+        for c in 0..3 {
+            let mut cell = with(
+                "Frame",
+                &format!("C{c}"),
+                &[
+                    ("Size", udim2(0.0, 40.0 * (c + 1) as f64, 0.0, 20.0)),
+                    ("LayoutOrder", int(c)),
+                ],
+            );
+            if c == 1 {
+                cell.properties.insert(
+                    "Visible".into(),
+                    PropertyValue::Known(KnownProperty::Bool(false)),
+                );
+            }
+            line.children.push(cell);
+        }
+        container.children.push(line);
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.width, 170.0); // 40 + 10 + 120
+        assert_eq!(r.rects["0/0/0/0"].rect.width, 40.0);
+        assert_eq!(r.rects["0/0/0/2"].rect.x, 50.0);
+        assert_eq!(r.rects["0/0/0/2"].rect.width, 120.0);
+        // The hidden cell still gets a rect (the renderer hides it), at its own size.
+        assert_eq!(
+            r.rects["0/0/0/1"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 20.0
+            }
+        );
+    }
+
+    #[test]
+    fn table_scale_cells_resolve_against_the_table_and_empty_rows_keep_a_gap() {
+        let mut container = with("Frame", "Table", &[("Size", udim2(0.0, 400.0, 0.0, 200.0))]);
+        container.children.push(table(&[]));
+        let mut row_a = with("Frame", "A", &[("LayoutOrder", int(0))]);
+        row_a.children.push(with(
+            "Frame",
+            "AC0",
+            &[
+                ("Size", udim2(0.25, 0.0, 0.0, 30.0)),
+                ("LayoutOrder", int(0)),
+            ],
+        ));
+        row_a.children.push(with(
+            "Frame",
+            "AC1",
+            &[
+                ("Size", udim2(0.0, 60.0, 0.5, 0.0)),
+                ("LayoutOrder", int(1)),
+            ],
+        ));
+        container.children.push(row_a);
+        container
+            .children
+            .push(with("Frame", "B", &[("LayoutOrder", int(1))])); // empty row
+        let mut row_c = with("Frame", "C", &[("LayoutOrder", int(2))]);
+        row_c.children.push(with(
+            "Frame",
+            "CC0",
+            &[
+                ("Size", udim2(0.0, 40.0, 0.0, 20.0)),
+                ("LayoutOrder", int(0)),
+            ],
+        ));
+        container.children.push(row_c);
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        // 0.25 of the TABLE's width (not the row's) = 100; 0.5 of its height = 100.
+        assert_eq!(r.rects["0/0/0/0"].rect.width, 100.0);
+        assert_eq!(r.rects["0/0/0"].rect.height, 100.0);
+        // The empty row is 0 tall but still takes a gap on each side.
+        assert_eq!(r.rects["0/0/1"].rect.height, 0.0);
+        assert_eq!(r.rects["0/0/1"].rect.y, 105.0);
+        assert_eq!(r.rects["0/0/2"].rect.y, 110.0);
+        // …and column 0 is still the widest cell anywhere in it.
+        assert_eq!(r.rects["0/0/2/0"].rect.width, 100.0);
+    }
+
+    #[test]
+    fn table_grows_an_automatic_size_parent_to_its_natural_extent() {
+        let mut container = with(
+            "Frame",
+            "Table",
+            &[
+                ("Size", udim2(0.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "XY")),
+            ],
+        );
+        let mut inner = table_of(table(&[]), &TABLE_CELLS);
+        inner.properties.remove("Size");
+        for child in inner.children.drain(..) {
+            container.children.push(child);
+        }
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(r.rects["0/0"].rect.width, 230.0);
+        assert_eq!(r.rects["0/0"].rect.height, 75.0); // 40 + 5 + 30
+    }
+
+    // --- UIPageLayout --------------------------------------------------------
+
+    fn pager(props: &[(&str, PropertyValue)], pages: &[(f64, f64)]) -> SceneNode {
+        let mut layout = with(
+            "UIPageLayout",
+            "Pages",
+            &[("SortOrder", enum_item("SortOrder", "LayoutOrder"))],
+        );
+        for (k, v) in props {
+            layout.properties.insert((*k).into(), v.clone());
+        }
+        let mut container = with(
+            "Frame",
+            "Pager",
+            &[
+                ("Size", udim2(0.0, 400.0, 0.0, 300.0)),
+                (
+                    "ClipsDescendants",
+                    PropertyValue::Known(KnownProperty::Bool(true)),
+                ),
+            ],
+        );
+        container.children.push(layout);
+        for (i, &(w, h)) in pages.iter().enumerate() {
+            container.children.push(with(
+                "Frame",
+                &format!("P{i}"),
+                &[
+                    ("Size", udim2(0.0, w, 0.0, h)),
+                    ("LayoutOrder", int(i as i64)),
+                ],
+            ));
+        }
+        container
+    }
+
+    #[test]
+    fn page_layout_strides_by_the_container_plus_padding() {
+        // Studio: a 400x300 pager with Padding {0,20} put page 2 a full 420 out,
+        // and left each page at its own size rather than stretching it.
+        let r = compute_layout(
+            &screen(vec![pager(
+                &[("Padding", udim(0.0, 20.0))],
+                &[(10.0, 10.0), (10.0, 10.0), (10.0, 10.0)],
+            )]),
+            VP,
+        )
+        .unwrap();
+        assert_eq!(
+            r.rects["0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0
+            }
+        );
+        assert_eq!(r.rects["0/0/1"].rect.x, 420.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 840.0);
+    }
+
+    #[test]
+    fn page_layout_puts_the_current_page_in_the_container() {
+        let r = compute_layout(
+            &screen(vec![pager(
+                &[("Padding", udim(0.0, 20.0)), ("CurrentPageIndex", int(1))],
+                &[(10.0, 10.0), (10.0, 10.0), (10.0, 10.0)],
+            )]),
+            VP,
+        )
+        .unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.x, -420.0);
+        assert_eq!(r.rects["0/0/1"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/2"].rect.x, 420.0);
+    }
+
+    #[test]
+    fn page_layout_fills_vertically_and_aligns_on_both_axes() {
+        // Studio: centered 100x50 pages in a 400x300 container sat at +150/+125,
+        // and a vertical fill strode down by 320 with x left alone.
+        let r = compute_layout(
+            &screen(vec![pager(
+                &[
+                    ("Padding", udim(0.0, 20.0)),
+                    ("FillDirection", enum_item("FillDirection", "Vertical")),
+                    (
+                        "HorizontalAlignment",
+                        enum_item("HorizontalAlignment", "Center"),
+                    ),
+                    (
+                        "VerticalAlignment",
+                        enum_item("VerticalAlignment", "Center"),
+                    ),
+                    ("CurrentPageIndex", int(1)),
+                ],
+                &[(100.0, 50.0), (100.0, 50.0)],
+            )]),
+            VP,
+        )
+        .unwrap();
+        assert_eq!(
+            r.rects["0/0/1"].rect,
+            Rect {
+                x: 150.0,
+                y: 125.0,
+                width: 100.0,
+                height: 50.0
+            }
+        );
+        assert_eq!(r.rects["0/0/0"].rect.x, 150.0);
+        assert_eq!(r.rects["0/0/0"].rect.y, 125.0 - 320.0);
+    }
+
+    #[test]
+    fn page_layout_clamps_an_out_of_range_page() {
+        let r = compute_layout(
+            &screen(vec![pager(
+                &[("CurrentPageIndex", int(9))],
+                &[(10.0, 10.0), (10.0, 10.0)],
+            )]),
+            VP,
+        )
+        .unwrap();
+        // Clamped to the last page, which is the one in the container.
+        assert_eq!(r.rects["0/0/1"].rect.x, 0.0);
+        assert_eq!(r.rects["0/0/0"].rect.x, -400.0);
+    }
+
+    #[test]
+    fn sort_order_defaults_to_name_like_the_engine() {
+        // A fresh UIListLayout reads Enum.SortOrder.Name in Studio, so children
+        // flow alphabetically until the tree says otherwise.
+        let list = with("UIListLayout", "List", &[]);
+        let mut container = with("Frame", "Container", &[("Size", udim2(1.0, 0.0, 1.0, 0.0))]);
+        container.children.push(list);
+        for name in ["Bee", "Ant", "Cat"] {
+            container.children.push(with(
+                "Frame",
+                name,
+                &[("Size", udim2(0.0, 50.0, 0.0, 20.0))],
+            ));
+        }
+        let r = compute_layout(&screen(vec![container]), VP).unwrap();
+        assert_eq!(r.rects["0/0/1"].rect.y, 0.0); // Ant
+        assert_eq!(r.rects["0/0/0"].rect.y, 20.0); // Bee
+        assert_eq!(r.rects["0/0/2"].rect.y, 40.0); // Cat
     }
 }
