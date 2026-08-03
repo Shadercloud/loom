@@ -1,5 +1,89 @@
 # @loom-dev/renderer
 
+## 0.9.3
+
+### Patch Changes
+
+- [`dc2757d`](https://github.com/astra-void/loom/commit/dc2757d80383f09db0002e4ac8a1aa7ccce6dd94) Thanks [@astra-void](https://github.com/astra-void)! - Draw text at the size the engine draws it. `TextSize` is not a font size:
+  Roblox fits the _whole face_ into it — ascender to descender, which is why a
+  one-line label measures exactly `TextSize` tall — while CSS `font-size` sets the
+  em square, and a face's ascent + descent runs well past 1em. Painting
+  `font-size: TextSize` therefore drew every glyph too big by that font's own
+  ratio: 17% for Roboto, 18% for Jura, 25% for Merriweather, 47% for Oswald.
+
+  Everything downstream inherited it. Text measured that much wider than the
+  engine's, so it wrapped that much earlier, so `AutomaticSize` boxes came out
+  taller and wider, and a card sized to its text overran the column that was
+  meant to hold it — all of it looking like a wrap bug, none of it being one.
+
+  Measured against Studio (`TextService:GetTextBoundsAsync`, Roboto, `TextSize`
+  18): `Player Profile` 93 units in the engine and 105 here, the whole body
+  string 797 against 910. The paragraph from [#11](https://github.com/astra-void/loom/issues/11) laid out at eleven widths, in
+  lines:
+
+  | width | engine | before |  after |
+  | ----: | -----: | -----: | -----: |
+  |   300 |     29 |     33 |     27 |
+  |   400 |     21 |     24 |     20 |
+  |   500 |     17 |     19 | **17** |
+  |   586 |     14 |     17 | **14** |
+  |   700 |     12 |     14 | **12** |
+  |   800 |     10 |     12 | **10** |
+  |   900 |      9 |     11 |  **9** |
+  |  1000 |      9 |     10 |      8 |
+  |  1099 |      8 |      9 |  **8** |
+  |  1200 |      7 |      8 |  **7** |
+
+  Wrong at every width before; matching at eight of ten now. The rest is the
+  engine rendering ~3% wider than its own metrics at small sizes, where it
+  advances glyphs in whole pixels and a browser does not — loom now sits a hair
+  narrow rather than a seventh wide.
+
+  The ratio is read off the face the browser will actually paint with, so it
+  follows a registered typeface, and is re-read when one finishes loading. A
+  browser that reports no `fontBoundingBox*` metrics keeps the old 1:1 mapping
+  rather than guessing. `LineHeight` now sets the line box in pixels off
+  `TextSize`, since the pitch the engine spends is `TextSize`-relative and no
+  longer follows the font size; `<font size="…">` in `RichText` converts through
+  the metrics of the face that run lands in.
+
+- [`a1bbf8d`](https://github.com/astra-void/loom/commit/a1bbf8d7b03f2e9caf37bf1819f3df752095c64e) Thanks [@astra-void](https://github.com/astra-void)! - Paint the string the engine paints. A newline in `Text` breaks the line in
+  Roblox — wrapped or not, `RichText` or not, exactly as `<br/>` does — and a run
+  of spaces stays a run of spaces. Loom measured it that way (every measurer here
+  splits on `\n`) but painted through HTML's defaults, `white-space: normal` and
+  `nowrap`, which fold both away. So a label written with line breaks in it
+  measured as, say, twenty-three lines and painted as seventeen: a box a hundred
+  pixels taller than the text inside it, and every sibling below pushed down by
+  room nothing occupies.
+
+  It is now `pre-wrap` when the label wraps and `pre` when it does not, so the
+  paint has the line breaks the measurement counted. Text with no newlines and no
+  double spaces — most text — is unaffected.
+
+- [`9574052`](https://github.com/astra-void/loom/commit/9574052ae9edec22d2c46843fefe13133c78554c) Thanks [@astra-void](https://github.com/astra-void)! - Make `ScrollingFrame` scroll, and draw the bar that says so.
+
+  A scrolling list in Roblox is an `AutomaticSize` column inside an
+  `AutomaticCanvasSize` frame, and loom capped every child's automatic growth at
+  its parent's box — a rule that is right for a `45%` column and wrong for a
+  canvas, where outgrowing the window is the entire point. The column came out
+  exactly the window's height, so the canvas equalled the window, nothing ever
+  overflowed, and nothing ever scrolled. A `ScrollingFrame` now leaves its
+  children no ceiling on an axis whose canvas is free to grow (`AutomaticCanvasSize`,
+  or a `CanvasSize` of 0 on that axis); a `CanvasSize` that gives the axis a real
+  extent is still the ceiling it always was.
+
+  And loom drew no scroll bar at all, so a frame that did have something to scroll
+  looked like a static, clipped box. It now paints the engine's bar: a rounded
+  thumb in `ScrollBarImageColor3`, `ScrollBarThickness` px down the right edge (or
+  along the bottom), sized to the window's share of the canvas and draggable, over
+  the canvas rather than inset into it. Bars appear only on an axis with something
+  to scroll, and not at all under `ScrollingEnabled = false`, a zero thickness, or
+  a `ScrollingDirection` that rules the axis out.
+
+- Updated dependencies [[`9574052`](https://github.com/astra-void/loom/commit/9574052ae9edec22d2c46843fefe13133c78554c)]:
+  - @loom-dev/scene@0.9.3
+  - @loom-dev/runtime@0.9.3
+
 ## 0.9.2
 
 ### Patch Changes
