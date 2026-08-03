@@ -4,6 +4,17 @@
  * ambient types. The Vite plugin injects this before the app entry so a real
  * roblox-ts source tree runs unmodified.
  */
+// The engine's own typefaces, for every family that may be redistributed.
+// Without them each Roblox family falls through to `system-ui` — SF Pro on
+// macOS, Segoe UI on Windows, Roboto on Linux — and since `AutomaticSize` and
+// `TextWrapped` are driven by *measuring* the face, the same scene lays out
+// differently on each machine. Showing what the engine will is the preview's
+// whole job, so it loads them rather than leaving it to whoever embeds it.
+//
+// Here rather than in `./client.ts` because that is the react adapter's entry:
+// this module is injected ahead of the app entry whichever frontend it uses, so
+// a vide preview gets the same faces.
+import "@loom-dev/renderer/fonts";
 import { setImageResolver } from "@loom-dev/renderer";
 import type * as runtime from "@loom-dev/runtime";
 import { installGlobals } from "@loom-dev/runtime";

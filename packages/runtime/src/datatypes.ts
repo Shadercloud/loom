@@ -324,7 +324,7 @@ export class Font {
 	 */
 	static fromEnum(item: EnumItem<"Font">): Font {
 		return new Font(
-			`rbxasset://fonts/families/${LEGACY_FONT_FAMILIES[item.Name] ?? "SourceSansPro"}.json`,
+			`rbxasset://fonts/families/${legacyFontFamily(item.Name)}.json`,
 			legacyFontWeight(item.Name),
 			item.Name.includes("Italic")
 				? Enum.FontStyle.Italic
@@ -342,7 +342,14 @@ export class Font {
 	}
 }
 
-/** Legacy `Enum.Font` name → the family the modern datatype names it by. */
+/**
+ * Legacy `Enum.Font` name → the family the modern datatype names it by.
+ *
+ * Most of the list names its own family (`Jura` is `Jura`), so only the ones
+ * that rename are listed and {@link legacyFontFamily} falls through to the enum
+ * name. The weight suffixes collapse onto one family — `GothamBold` is
+ * `GothamSSm` at 700, which is what {@link legacyFontWeight} peels off.
+ */
 const LEGACY_FONT_FAMILIES: Record<string, string> = {
 	SourceSans: "SourceSansPro",
 	SourceSansBold: "SourceSansPro",
@@ -353,14 +360,20 @@ const LEGACY_FONT_FAMILIES: Record<string, string> = {
 	GothamMedium: "GothamSSm",
 	GothamBold: "GothamSSm",
 	GothamBlack: "GothamSSm",
-	Arial: "Arial",
 	ArialBold: "Arial",
+	ArimoBold: "Arimo",
+	BuilderSansMedium: "BuilderSans",
+	BuilderSansBold: "BuilderSans",
+	BuilderSansExtraBold: "BuilderSans",
 	Highway: "HighwayGothic",
 	Code: "Inconsolata",
-	RobotoMono: "RobotoMono",
-	Roboto: "Roboto",
 	Legacy: "LegacyArial",
 };
+
+/** The `FontFace` family a legacy `Enum.Font` item resolves to. */
+function legacyFontFamily(name: string): string {
+	return LEGACY_FONT_FAMILIES[name] ?? name;
+}
 
 function legacyFontWeight(name: string): EnumItem<"FontWeight"> {
 	if (name.includes("Black")) return Enum.FontWeight.Heavy;

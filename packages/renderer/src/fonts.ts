@@ -11,10 +11,11 @@
  * driven by that measurement) laid out differently with it.
  *
  * So the host installs the faces it has, with {@link registerFont}, the same way
- * it installs an image resolver. Two of Roblox's families are openly licensed
- * and ship ready to register from `@loom-dev/renderer/fonts`; `Gotham` (and the
- * Builder family behind it today) is proprietary and cannot be redistributed, so
- * a project that wants it exact registers its own copy.
+ * it installs an image resolver. Most of Roblox's list is openly licensed and
+ * ships ready to register from `@loom-dev/renderer/fonts` — which the preview
+ * loads for you. `Gotham` (and the Builder family behind it today) is
+ * proprietary and cannot be redistributed, so a project that wants it exact
+ * registers its own copy.
  *
  * Nothing here is required: with no registration the stacks below still resolve,
  * and {@link warnMissingFace} says once per family what the drift is.
@@ -24,51 +25,103 @@
 const SANS =
 	'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
 const MONO = 'ui-monospace, "Roboto Mono", "SF Mono", Menlo, monospace';
+const SERIF = 'Georgia, "Times New Roman", Times, serif';
 
 /**
- * Roblox names a family several ways — the legacy `Enum.Font` item folds the
- * weight in (`GothamBold`), and `FontFace` carries the asset's own family
- * (`GothamSSm`, `SourceSansPro`). Both identify the family by prefix, so one
- * key per family covers every spelling. Longest prefix first: `RobotoMono` must
- * not be read as `Roboto`.
+ * Every family the engine can name, and the stack its text falls back to.
+ *
+ * `aliases` are the *other* spellings that mean the same family. Roblox names
+ * one family several ways: the legacy `Enum.Font` item folds the weight in
+ * (`GothamBold`, `ArimoBold`, `BuilderSansMedium`) and `FontFace` carries the
+ * asset's own family, which is sometimes a different word entirely
+ * (`Enum.Font.Code` is the `Inconsolata` family). Every spelling is matched by
+ * prefix, so the weight suffixes come along for free.
+ *
+ * A family's own name always heads its stack: on a machine that happens to have
+ * the real font installed that is the right answer, and it costs nothing where
+ * it is missing. `@loom-dev/renderer/fonts` puts a real face in front of it for
+ * the families that may be redistributed.
  */
-const FAMILY_KEYS = [
-	"RobotoMono",
-	"Roboto",
-	"GothamSSm",
-	"Gotham",
-	"SourceSansPro",
-	"SourceSans",
-	"Inconsolata",
-	"Arial",
-	"Code",
-] as const;
+const FAMILIES: Record<string, { aliases?: readonly string[]; stack: string }> =
+	{
+		// --- the engine's defaults ------------------------------------------------
+		Gotham: { aliases: ["GothamSSm"], stack: `"Gotham", ${SANS}` },
+		BuilderSans: { stack: `"Builder Sans", ${SANS}` },
+		SourceSans: {
+			aliases: ["SourceSansPro"],
+			stack: `"Source Sans 3", "Source Sans Pro", ${SANS}`,
+		},
+		Arial: { stack: `Arial, Arimo, Helvetica, ${SANS}` },
+		Legacy: { aliases: ["LegacyArial"], stack: `Arial, Arimo, ${SANS}` },
+		Arimo: { stack: `Arimo, Arial, ${SANS}` },
+		// --- the Google families the engine ships ---------------------------------
+		AmaticSC: { stack: `"Amatic SC", ${SANS}` },
+		Bangers: { stack: `Bangers, ${SANS}` },
+		Creepster: { stack: `Creepster, ${SANS}` },
+		DenkOne: { stack: `"Denk One", ${SANS}` },
+		Fondamento: { stack: `Fondamento, cursive, ${SERIF}` },
+		FredokaOne: {
+			aliases: ["Fredoka"],
+			stack: `Fredoka, "Fredoka One", ${SANS}`,
+		},
+		GrenzeGotisch: { stack: `"Grenze Gotisch", ${SERIF}` },
+		IndieFlower: { stack: `"Indie Flower", cursive, ${SANS}` },
+		JosefinSans: { stack: `"Josefin Sans", ${SANS}` },
+		Jura: { stack: `Jura, ${SANS}` },
+		Kalam: { stack: `Kalam, cursive, ${SANS}` },
+		LuckiestGuy: { stack: `"Luckiest Guy", ${SANS}` },
+		Merriweather: { stack: `Merriweather, ${SERIF}` },
+		Michroma: { stack: `Michroma, ${SANS}` },
+		Nunito: { stack: `Nunito, ${SANS}` },
+		Oswald: { stack: `Oswald, ${SANS}` },
+		PatrickHand: { stack: `"Patrick Hand", cursive, ${SANS}` },
+		PermanentMarker: { stack: `"Permanent Marker", cursive, ${SANS}` },
+		RobotoCondensed: { stack: `"Roboto Condensed", ${SANS}` },
+		RobotoMono: { stack: MONO },
+		Roboto: { stack: `Roboto, ${SANS}` },
+		Sarpanch: { stack: `Sarpanch, ${SANS}` },
+		SpecialElite: { stack: `"Special Elite", ${MONO}` },
+		TitilliumWeb: { stack: `"Titillium Web", ${SANS}` },
+		Ubuntu: { stack: `Ubuntu, ${SANS}` },
+		Inconsolata: { aliases: ["Code"], stack: `Inconsolata, ${MONO}` },
+		// --- the rest: named, so they resolve and warn, but not redistributable ----
+		Highway: { aliases: ["HighwayGothic"], stack: `"Highway Gothic", ${SANS}` },
+		Bodoni: { stack: `"Bodoni MT", Didot, ${SERIF}` },
+		Garamond: { stack: `Garamond, "EB Garamond", ${SERIF}` },
+		Cartoon: { stack: `"Comic Neue", "Comic Sans MS", cursive, ${SANS}` },
+		SciFi: { stack: `Zekton, ${SANS}` },
+		Arcade: { stack: `"Press Start 2P", ${MONO}` },
+		Fantasy: { stack: `Balthazar, ${SERIF}` },
+		Antique: { stack: `"Sawarabi Mincho", ${SERIF}` },
+	};
+
+/**
+ * Every spelling that reaches a family, longest first so a prefix match cannot
+ * take `RobotoMono` for `Roboto` or `SourceSansPro` for `SourceSans`.
+ */
+const FAMILY_KEYS: ReadonlyArray<readonly [string, string]> = Object.entries(
+	FAMILIES,
+)
+	.flatMap(([family, entry]) =>
+		[family, ...(entry.aliases ?? [])].map(
+			(spelling) => [spelling, family] as const,
+		),
+	)
+	.sort(([a], [b]) => b.length - a.length);
 
 /** The family a Roblox font name belongs to, or undefined for an unknown one. */
 export function familyKey(name: string | undefined): string | undefined {
 	if (!name) return undefined;
-	const key = FAMILY_KEYS.find((candidate) => name.startsWith(candidate));
-	// The two-spelling families collapse onto one key, so a registration for
-	// `Gotham` covers a `GothamSSm` FontFace and vice versa.
-	if (key === "GothamSSm") return "Gotham";
-	if (key === "SourceSansPro") return "SourceSans";
-	return key;
+	return FAMILY_KEYS.find(([spelling]) => name.startsWith(spelling))?.[1];
 }
 
-/**
- * What each family falls back to unregistered. The Roblox name is still first:
- * on a machine that happens to have the real font installed it is the right
- * answer, and it costs nothing where it is missing.
- */
-const DEFAULT_STACKS: Record<string, string> = {
-	Gotham: `"Gotham", ${SANS}`,
-	SourceSans: `"Source Sans 3", "Source Sans Pro", ${SANS}`,
-	Roboto: `"Roboto", ${SANS}`,
-	RobotoMono: MONO,
-	Inconsolata: `"Inconsolata", ${MONO}`,
-	Code: MONO,
-	Arial: `Arial, ${SANS}`,
-};
+/** Families that resolve to a font every machine already has. */
+const SYSTEM_FAMILIES = new Set(["Arial", "Legacy"]);
+
+/** What a family falls back to with no face registered for it. */
+function defaultStack(key: string): string {
+	return FAMILIES[key]?.stack ?? SANS;
+}
 
 /** One `@font-face` the host can point loom at. */
 export interface FontFaceSource {
@@ -109,8 +162,8 @@ export function familyStack(name: string | undefined): string {
 	const key = familyKey(name);
 	if (!key) return SANS;
 	const registered = registrations.get(key);
-	if (!registered) return DEFAULT_STACKS[key] ?? SANS;
-	const fallback = registered.fallback ?? DEFAULT_STACKS[key] ?? SANS;
+	if (!registered) return defaultStack(key);
+	const fallback = registered.fallback ?? defaultStack(key);
 	return `${quoteFamily(registered.family)}, ${fallback}`;
 }
 
@@ -235,8 +288,10 @@ let auditQueued = false;
  */
 export function warnMissingFace(name: string | undefined): void {
 	const key = familyKey(name);
-	// `Arial` is a system font everywhere; nothing to load and nothing to warn.
-	if (!key || key === "Arial" || warned.has(key) || seen.has(key)) return;
+	// Both of these are Arial, which every machine has: nothing to load and so
+	// nothing to warn about.
+	if (!key || SYSTEM_FAMILIES.has(key) || warned.has(key) || seen.has(key))
+		return;
 	seen.add(key);
 	scheduleAudit();
 }
@@ -287,7 +342,7 @@ function scheduleAudit(): void {
 			if (warned.has(key) || registrations.has(key)) continue;
 			// The family's own name heads every default stack; if the browser can
 			// serve it, nothing is missing.
-			const own = (DEFAULT_STACKS[key] ?? SANS).split(",")[0]?.trim();
+			const own = defaultStack(key).split(",")[0]?.trim();
 			if (!own || familyIsAvailable(own)) continue;
 			warned.add(key);
 			console.warn(

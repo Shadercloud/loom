@@ -43,8 +43,19 @@ describe("familyKey", () => {
 		expect(familyKey("Roboto")).toBe("Roboto");
 	});
 
+	it("knows every family the engine can name", () => {
+		// `Antique` and friends have no face to ship, but they are still the
+		// engine's, and a name loom does not know falls to the generic stack with
+		// no warning — which is the silence this table exists to end.
+		expect(familyKey("Antique")).toBe("Antique");
+		expect(familyKey("Jura")).toBe("Jura");
+		expect(familyKey("BuilderSansExtraBold")).toBe("BuilderSans");
+		expect(familyKey("ArimoBold")).toBe("Arimo");
+		expect(familyKey("Code")).toBe("Inconsolata");
+	});
+
 	it("is undefined for a name it does not know", () => {
-		expect(familyKey("Antique")).toBeUndefined();
+		expect(familyKey("Wingdings")).toBeUndefined();
 		expect(familyKey(undefined)).toBeUndefined();
 	});
 });
@@ -76,11 +87,16 @@ describe("fontFamily", () => {
 		);
 	});
 
-	it("leaves an unknown family on the generic stack", () => {
+	it("leaves a family it does not know on the generic stack", () => {
 		// Nothing Roblox-specific to lead with, so it starts at the system font.
-		expect(fontFamily("Antique")).toBe(fontFamily(undefined));
-		expect(fontFamily("Antique")).toMatch(/^system-ui, /);
+		expect(fontFamily("Wingdings")).toBe(fontFamily(undefined));
+		expect(fontFamily("Wingdings")).toMatch(/^system-ui, /);
 		expect(fontFamily(undefined)).toContain("sans-serif");
+	});
+
+	it("leads with the engine's font for a family it ships no face for", () => {
+		expect(fontFamily("Antique")).toMatch(/^"Sawarabi Mincho", /);
+		expect(fontFamily("Arcade")).toMatch(/^"Press Start 2P", /);
 	});
 });
 

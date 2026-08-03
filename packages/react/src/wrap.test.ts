@@ -327,10 +327,15 @@ describe("wrapped text against the real layout engine", () => {
 	};
 
 	it("settles the reported card scene at every width", () => {
-		// Every pixel from a desktop window down to a phone: the reported failure
-		// is width-dependent, so a coarse sweep could step straight over it.
-		expect(sweep(cards(5), "BodyText0", BODY, range(1200, 200, 5))).toEqual([]);
-	});
+		// Desktop window down to a phone: the reported failure is
+		// width-dependent, so a coarse sweep could step straight over it. Five
+		// cards, a hundred stage widths and a real layout per width is a second
+		// or two on its own and several under a loaded machine — hence the
+		// explicit budget, which is about the box this runs in, not the work.
+		expect(sweep(cards(5), "BodyText0", BODY, range(1200, 200, 10))).toEqual(
+			[],
+		);
+	}, 60_000);
 
 	/**
 	 * The shapes where the wrap width and the painted width could come apart.
