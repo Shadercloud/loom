@@ -1,5 +1,12 @@
 # @loom-dev/runtime
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.8.1
+
 ## 0.8.0
 
 ### Minor Changes
