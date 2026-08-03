@@ -508,15 +508,25 @@ function autoOnX(inst: LoomInstance): boolean {
 
 /**
  * Horizontal `UIPadding` on `inst`, in pixels — the room it takes away from
- * whatever it holds. Offsets only, which is what the layout engine resolves a
- * scale inset to on an automatic axis.
+ * whatever it holds.
+ *
+ * `widthRef` is what a scale inset resolves against, and it is the layout
+ * engine's `padding_insets` rule that decides it: the node's own width when its
+ * X axis is a real one, and **zero** when the axis is automatic, where a scale
+ * inset would otherwise be circular (the width sets the padding sets the
+ * width). Reading offsets only — as this did — is right for the automatic case
+ * and wrong for the other: the engine takes the scale off, the measurement does
+ * not, and the label is then measured against a width it never gets and painted
+ * with more lines than the box it was given.
  */
-function horizontalPadding(inst: LoomInstance): number {
+function horizontalPadding(inst: LoomInstance, widthRef: number): number {
 	const pad = inst.FindFirstChildOfClass("UIPadding");
 	if (!pad) return 0;
 	const side = (name: string): number => {
-		const udim = pad[name] as { Offset?: unknown } | undefined;
-		return typeof udim?.Offset === "number" ? udim.Offset : 0;
+		const udim = pad[name] as { Offset?: unknown; Scale?: unknown } | undefined;
+		const offset = typeof udim?.Offset === "number" ? udim.Offset : 0;
+		const scale = typeof udim?.Scale === "number" ? udim.Scale : 0;
+		return offset + scale * widthRef;
 	};
 	return side("PaddingLeft") + side("PaddingRight");
 }
@@ -558,9 +568,16 @@ function wrapWidth(inst: LoomInstance, autoName: string): number | undefined {
 	let available = 0;
 	let inset = 0;
 	for (let node = inst.Parent; node; node = node.Parent) {
-		inset += horizontalPadding(node);
-		if (!autoOnX(node)) {
-			available = (node.AbsoluteSize as { X?: number } | undefined)?.X ?? 0;
+		// An automatic axis has no width for a scale inset to resolve against —
+		// see `horizontalPadding` — and it is also the case where the walk keeps
+		// climbing, so the two questions share the one answer.
+		const auto = autoOnX(node);
+		const own = auto
+			? 0
+			: ((node.AbsoluteSize as { X?: number } | undefined)?.X ?? 0);
+		inset += horizontalPadding(node, own);
+		if (!auto) {
+			available = own;
 			break;
 		}
 	}
