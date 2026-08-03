@@ -163,6 +163,54 @@ describe("registerFont", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(seen).not.toHaveBeenCalled();
 	});
+
+	it("notifies for a face that loads after the document settled", async () => {
+		// #11: the registration itself never finds the face loaded — nothing has
+		// asked for it, and the canvas that measures never will — so the layout
+		// that comes out is the fallback's until the load is reported. Waiting on
+		// `document.fonts.ready` only reports it when the read lands inside the
+		// cycle that loads it, which a static build manages and a dev server,
+		// booting long after the document is done, does not: there the promise is
+		// already resolved and the face downloads unannounced.
+		const fonts = Object.assign(new EventTarget(), {
+			// Already resolved, the state a settled document leaves behind.
+			ready: Promise.resolve(),
+			status: "loaded",
+		});
+		Object.defineProperty(document, "fonts", {
+			value: fonts,
+			configurable: true,
+		});
+		vi.resetModules();
+		const late = await import("./fonts.ts");
+		try {
+			const seen = vi.fn();
+			late.onFontsChanged(seen);
+			late.registerFont("Roboto", {
+				family: "Roboto Variable",
+				faces: [{ src: "/fonts/roboto.woff2" }],
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(seen).toHaveBeenCalled(); // the stack change
+
+			// The download only begins when the text first paints in it, which is
+			// a cycle later — and the layout standing on screen was measured
+			// before it.
+			seen.mockClear();
+			fonts.dispatchEvent(new Event("loadingdone"));
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(seen).toHaveBeenCalledTimes(1);
+
+			// And again the next time, however many cycles later.
+			seen.mockClear();
+			fonts.dispatchEvent(new Event("loadingdone"));
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(seen).toHaveBeenCalledTimes(1);
+		} finally {
+			late.clearRegisteredFonts();
+			Reflect.deleteProperty(document, "fonts");
+		}
+	});
 });
 
 describe("clearRegisteredFonts", () => {

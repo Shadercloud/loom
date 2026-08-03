@@ -244,6 +244,10 @@ function injectFaces(family: string, faces: readonly FontFaceSource[]): void {
  * faces available at the time. Returns an unsubscribe.
  */
 export function onFontsChanged(listener: () => void): () => void {
+	// Not only from `registerFont`: a page that declares its own `@font-face`
+	// for a family loom already names has nothing to register, and its faces
+	// land just as late.
+	watchFontLoads();
 	listeners.add(listener);
 	return () => {
 		listeners.delete(listener);
@@ -251,26 +255,77 @@ export function onFontsChanged(listener: () => void): () => void {
 }
 
 let notifyQueued = false;
+function fireNotify(): void {
+	notifyQueued = false;
+	for (const listener of [...listeners]) {
+		try {
+			listener();
+		} catch (err) {
+			console.error("loom: font change listener failed:", err);
+		}
+	}
+}
+
 function scheduleNotify(): void {
+	watchFontLoads();
 	if (notifyQueued) return;
 	notifyQueued = true;
-	const fire = (): void => {
-		notifyQueued = false;
-		for (const listener of [...listeners]) {
-			try {
-				listener();
-			} catch (err) {
-				console.error("loom: font change listener failed:", err);
-			}
-		}
-	};
-	// Once for the stack change, and again when the faces have actually loaded —
-	// a swap-displayed face paints (and measures) as the fallback until then.
-	queueMicrotask(fire);
+	// For the stack change. The face itself is almost certainly not loaded yet:
+	// nothing has asked the browser for it, and the canvas loom measures with
+	// never will — `measureText` paints nothing, so it silently takes the
+	// fallback rather than starting the download that rendering the text would.
+	// {@link watchFontLoads} is what covers the load when it does happen.
+	queueMicrotask(fireNotify);
+}
+
+/** Attached once, for as long as the page lives. See {@link watchFontLoads}. */
+let watchingLoads = false;
+
+/**
+ * Re-notify at the end of every font loading cycle.
+ *
+ * This is the difference between a layout that settles on the registered face
+ * and one left frozen in the fallback, and it is not the same as waiting on
+ * `document.fonts.ready`. That property is one promise for the cycle *in flight
+ * when it is read*. Read it while the document is still loading and it resolves
+ * after the faces land — which is why a static build, where one bundle and one
+ * stylesheet register everything before the document is done, has always come
+ * out right. Read it a moment later, once the document has settled and no face
+ * has been asked for yet, and it is already resolved: the listeners fire at
+ * once, against the fallback, and the face that downloads seconds afterwards
+ * notifies nobody. A dev server puts loom squarely on that side — the app boots
+ * through a graph of separate module requests, long after the document
+ * finished — and a lazily loaded scene, or a target switched in the gallery,
+ * is on it whatever the build.
+ *
+ * `loadingdone` has no such window: it fires at the end of *each* cycle, so a
+ * face that only starts downloading when text first paints in it is still
+ * reported.
+ */
+function watchFontLoads(): void {
+	if (watchingLoads) return;
 	const fonts = (
-		globalThis as { document?: { fonts?: { ready?: Promise<unknown> } } }
+		globalThis as {
+			document?: {
+				fonts?: {
+					addEventListener?: (type: string, listener: () => void) => void;
+				};
+			};
+		}
 	).document?.fonts;
-	if (fonts?.ready) void fonts.ready.then(fire);
+	if (!fonts?.addEventListener) return;
+	watchingLoads = true;
+	// Coalesced through the same microtask, so a cycle finishing several faces
+	// re-lays-out once. `loadingerror` too: a face that failed is a family that
+	// will be measured in the fallback from here on, and the layout still on
+	// screen may have been measured expecting otherwise.
+	const notify = (): void => {
+		if (notifyQueued) return;
+		notifyQueued = true;
+		queueMicrotask(fireNotify);
+	};
+	fonts.addEventListener("loadingdone", notify);
+	fonts.addEventListener("loadingerror", notify);
 }
 
 /** Families some text has actually asked for, pending the check below. */
@@ -329,14 +384,25 @@ function familyIsAvailable(family: string): boolean {
 
 function scheduleAudit(): void {
 	if (auditQueued) return;
-	const ready = (
-		globalThis as { document?: { fonts?: { ready?: Promise<unknown> } } }
-	).document?.fonts?.ready;
+	const fonts = (
+		globalThis as {
+			document?: { fonts?: { ready?: Promise<unknown>; status?: string } };
+		}
+	).document?.fonts;
+	const ready = fonts?.ready;
 	if (!ready) return;
 	auditQueued = true;
 	// A face still downloading is not missing, only late.
 	void ready.then(() => {
 		auditQueued = false;
+		// `warnMissingFace` is called while the text is being encoded, so the
+		// paint that asks the browser for the face may only just have started —
+		// after the cycle this promise belongs to. Warning now would name a
+		// family that is loading as we speak; wait for the cycle it is in.
+		if (fonts?.status === "loading") {
+			scheduleAudit();
+			return;
+		}
 		for (const key of [...seen]) {
 			seen.delete(key);
 			if (warned.has(key) || registrations.has(key)) continue;
