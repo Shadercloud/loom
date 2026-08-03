@@ -21,7 +21,8 @@
 		"changeset": "changeset",
 		"version-packages": "changeset version",
 		"publish:packages": "pnpm -r --filter \"./packages/*\" publish --no-git-checks",
-		"release": "pnpm build:native:release && pnpm build:packages && pnpm publish:packages"
+		"release": "pnpm build:native:release && pnpm build:packages && pnpm publish:packages",
+		"test:packed-dev": "node scripts/packed-dev-test.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "catalog:",
