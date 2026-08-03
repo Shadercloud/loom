@@ -434,10 +434,10 @@ describe("TextWrap", () => {
 		// a tree that sets only the old spelling wraps in the engine. Reading the
 		// new spelling alone ran the text off the edge of its container.
 		expect(wrapOf({ Text: prop.string("x"), TextWrap: prop.bool(true) })).toBe(
-			"normal",
+			"pre-wrap",
 		);
 		expect(wrapOf({ Text: prop.string("x"), TextWrap: prop.bool(false) })).toBe(
-			"nowrap",
+			"pre",
 		);
 	});
 
@@ -448,10 +448,24 @@ describe("TextWrap", () => {
 				TextWrapped: prop.bool(false),
 				TextWrap: prop.bool(true),
 			}),
-		).toBe("nowrap");
+		).toBe("pre");
 	});
 
-	it("defaults to nowrap", () => {
-		expect(wrapOf({ Text: prop.string("x") })).toBe("nowrap");
+	it("defaults to not wrapping", () => {
+		expect(wrapOf({ Text: prop.string("x") })).toBe("pre");
+	});
+
+	it("keeps the whitespace the engine keeps", () => {
+		// The engine renders the string literally: a newline breaks the line
+		// whether or not the label wraps, and spaces are never folded together.
+		// HTML collapses both by default, which left text that *measured* as
+		// several lines painting as one — a box built for a line count that was
+		// never drawn.
+		expect(
+			wrapOf({ Text: prop.string("a\nb"), TextWrapped: prop.bool(true) }),
+		).toBe("pre-wrap");
+		expect(
+			wrapOf({ Text: prop.string("a\nb"), TextWrapped: prop.bool(false) }),
+		).toBe("pre");
 	});
 });

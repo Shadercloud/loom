@@ -700,7 +700,13 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 		inner.style.marginBottom = `${-leading}px`;
 	}
 	inner.style.textAlign = xAlignText(getTextXAlignment(node));
-	inner.style.whiteSpace = getTextWrapped(node) ? "normal" : "nowrap";
+	// `pre-wrap`/`pre` rather than `normal`/`nowrap`: the engine renders a string
+	// literally. A newline in `Text` breaks the line — wrapped or not, `RichText`
+	// or not, exactly as `<br/>` does — and a run of spaces is a run of spaces.
+	// HTML's default collapses both, so text loom *measured* as several lines
+	// (every measurer here splits on "\n") painted as one long run, leaving a box
+	// built for a line count the paint never produced.
+	inner.style.whiteSpace = getTextWrapped(node) ? "pre-wrap" : "pre";
 	if (getRichText(node)) {
 		paintRichText(inner, text, node);
 	} else {
