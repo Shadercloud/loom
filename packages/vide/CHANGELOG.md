@@ -1,5 +1,38 @@
 # @loom-dev/vide
 
+## 0.9.1
+
+### Patch Changes
+
+- [`75f6d5b`](https://github.com/astra-void/loom/commit/75f6d5b5818c8f9f8267564e7269830d90b194b5) Thanks [@astra-void](https://github.com/astra-void)! - Read an enum property off a live instance whichever way it was written. The
+  engine takes the bare string wherever it takes the item — `AutomaticSize = "XY"`
+  _is_ `Enum.AutomaticSize.XY`, and roblox-ts's own React typings offer both — and
+  `@loom-dev/scene` has always encoded either. The adapters did not: every place
+  they read one back off an instance insisted on an `EnumItem` and treated a
+  string as absent.
+
+  So a label written `AutomaticSize="XY"` was auto-sized by the layout, which took
+  the string happily, and measured by nobody: no `TextBounds` was emitted for it,
+  so it collapsed to zero and its text spilled out of a box with no height. The
+  same blind spot ran through the wrap machinery — the ancestor walk that finds
+  the width `TextWrapped` wraps at could not tell such a frame was automatic, so
+  it stopped there and wrapped against a width that frame had been given _by the
+  label_, which is a circle that leaves text frozen at whatever width it first
+  got; and the staleness check skipped the label, so nothing re-measured it.
+  `FontSize` written as a string was ignored the same way, falling back to 14.
+
+  `enumName` in `@loom-dev/runtime` is now the one reader for all of it, and both
+  adapters go through it.
+
+  The regression test drives it through the real layout engine across forty-one
+  stage widths: before, the label measured `0` wide at every one of them.
+
+- Updated dependencies [[`75f6d5b`](https://github.com/astra-void/loom/commit/75f6d5b5818c8f9f8267564e7269830d90b194b5)]:
+  - @loom-dev/runtime@0.9.1
+  - @loom-dev/renderer@0.9.1
+  - @loom-dev/scene@0.9.1
+  - @loom-dev/layout@0.9.1
+
 ## 0.9.0
 
 ### Patch Changes
