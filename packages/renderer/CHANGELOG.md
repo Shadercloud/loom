@@ -8,7 +8,7 @@
   (reported in [#11](https://github.com/astra-void/loom/issues/11)).
 
   **The preview now loads the faces.** `@loom-dev/renderer/fonts` has shipped real
-  font files since 0.7.0 — Fontsource `woff2` in the bundle, no CDN and nothing
+  font files since 0.6.4 — Fontsource `woff2` in the bundle, no CDN and nothing
   installed on the machine — but it was an opt-in import and the preview never
   made it, so out of the box every Roblox family fell through to `system-ui`: SF
   Pro on macOS, Segoe UI on Windows, Roboto on Linux. `AutomaticSize` and
