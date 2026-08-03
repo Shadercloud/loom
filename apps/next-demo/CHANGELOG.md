@@ -1,5 +1,12 @@
 # @loom-dev/next-demo
 
+## 0.0.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - loom-dev@0.9.0
+
 ## 0.0.18
 
 ### Patch Changes
