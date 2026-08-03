@@ -43,6 +43,23 @@ describe("familyKey", () => {
 		expect(familyKey("Roboto")).toBe("Roboto");
 	});
 
+	it("lets no family shadow another it is a prefix of", () => {
+		// The table is matched by prefix, so a shorter name sitting in front of a
+		// longer one would quietly swallow it — `Roboto` taking `RobotoCondensed`
+		// paints a condensed face proportional and measures every line short.
+		// These are every pair in the table where one name starts with another.
+		expect(familyKey("RobotoCondensed")).toBe("RobotoCondensed");
+		expect(familyKey("SourceSansPro")).toBe("SourceSans");
+		expect(familyKey("SourceSansSemibold")).toBe("SourceSans");
+		expect(familyKey("GothamSSm")).toBe("Gotham");
+		expect(familyKey("LegacyArial")).toBe("Legacy");
+		expect(familyKey("ArialBold")).toBe("Arial");
+		expect(familyKey("FredokaOne")).toBe("FredokaOne");
+		expect(familyKey("Fredoka")).toBe("FredokaOne");
+		expect(familyKey("HighwayGothic")).toBe("Highway");
+		expect(familyKey("BuilderSansMedium")).toBe("BuilderSans");
+	});
+
 	it("knows every family the engine can name", () => {
 		// `Antique` and friends have no face to ship, but they are still the
 		// engine's, and a name loom does not know falls to the generic stack with
