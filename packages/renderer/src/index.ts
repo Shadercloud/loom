@@ -92,6 +92,8 @@ import {
 	getZIndex,
 	isLayerCollector,
 	participatesInLayout,
+	type ScrollMetrics,
+	scrollMetrics,
 } from "@loom-dev/scene";
 import { familyStack, onFontsChanged, warnMissingFace } from "./fonts.ts";
 import { parseRichText } from "./richtext.ts";
@@ -644,6 +646,228 @@ function canvasTransform(node: SceneNode): string {
 	const x = canvasPosition?.x ?? 0;
 	const y = canvasPosition?.y ?? 0;
 	return x === 0 && y === 0 ? "" : `translate(${-x}px, ${-y}px)`;
+}
+
+// --- ScrollingFrame scroll bars ----------------------------------------------
+
+/** Roblox's `ScrollBarThickness` default. */
+const DEFAULT_SCROLL_BAR_THICKNESS = 12;
+/**
+ * The stand-in for Roblox's default bar sprites.
+ *
+ * The engine paints `TopImage`/`MidImage`/`BottomImage` — grey `rbxasset`
+ * textures — tinted by `ScrollBarImageColor3`, whose own default is white. Loom
+ * draws the bar rather than fetching those textures, so an untinted bar takes
+ * the sprites' own grey (white would be an invisible bar on most backgrounds,
+ * which is not what the engine shows); a frame that sets `ScrollBarImageColor3`
+ * gets exactly the colour it asked for.
+ */
+const DEFAULT_SCROLL_BAR_COLOR: Color3 = { r: 0.6, g: 0.6, b: 0.6 };
+/**
+ * Roblox's maximum `ZIndex`. The engine draws a frame's scroll bars over its
+ * canvas whatever the content's own ZIndex is, and this is the only value no
+ * child can be painted above.
+ */
+const SCROLL_BAR_Z_INDEX = 2147483647;
+
+/** One axis of a frame's scroll bar, in the frame's own pixel space. */
+interface ScrollBar {
+	axis: "X" | "Y";
+	thickness: number;
+	/** The bar's offset on the cross axis: left for "Y", top for "X". */
+	cross: number;
+	/** The track the thumb runs along — the window, less the other bar's corner. */
+	length: number;
+	/** Thumb offset from the track's start, and its length. */
+	thumbAt: number;
+	thumbLength: number;
+	/** Canvas pixels one thumb pixel is worth — what a drag scrolls by. */
+	ratio: number;
+}
+
+/**
+ * The scroll bars a frame shows, laid out the way the engine lays its own out:
+ * one per axis with more canvas than window, along the right/bottom edge,
+ * `ScrollBarThickness` wide, running the length of the window less the corner
+ * the other bar takes. The thumb is the window's share of that track — the
+ * engine's rounded grey bar, no end buttons.
+ *
+ * Roblox hides a bar with nothing to scroll, and shows none at all when the
+ * frame is `ScrollingEnabled = false` or its `ScrollBarThickness` is 0.
+ * `ScrollingDirection` decides which axes can scroll, so it decides which bars
+ * can appear.
+ *
+ * The bar is painted *over* the canvas (Roblox's `ScrollBarInset.None`), which
+ * is why {@link scrollMetrics} reserves no thickness for it.
+ */
+function scrollBars(
+	node: SceneNode,
+	rect: Rect,
+	metrics: ScrollMetrics,
+): ScrollBar[] {
+	if (asBool(node.properties?.ScrollingEnabled) === false) return [];
+	const thickness =
+		asNumber(node.properties?.ScrollBarThickness) ??
+		DEFAULT_SCROLL_BAR_THICKNESS;
+	if (!(thickness > 0)) return [];
+	const direction = asEnum(node.properties?.ScrollingDirection)?.name ?? "XY";
+	const scrollableX =
+		direction === "Y" ? 0 : Math.max(0, metrics.canvas.x - metrics.window.x);
+	const scrollableY =
+		direction === "X" ? 0 : Math.max(0, metrics.canvas.y - metrics.window.y);
+	const showX = scrollableX > 0;
+	const showY = scrollableY > 0;
+
+	const bar = (
+		axis: "X" | "Y",
+		cross: number,
+		length: number,
+		scrollable: number,
+		visible: number,
+		canvas: number,
+	): ScrollBar => {
+		// The thumb is the window's share of the canvas, never shorter than the
+		// bar is wide — the engine keeps it grabbable however long the canvas gets.
+		const thumbLength = Math.min(
+			length,
+			Math.max(thickness, length * (visible / canvas)),
+		);
+		const travel = length - thumbLength;
+		const at = asVector2(node.properties?.CanvasPosition);
+		const position = (axis === "Y" ? at?.y : at?.x) ?? 0;
+		const progress =
+			scrollable > 0 ? Math.min(1, Math.max(0, position / scrollable)) : 0;
+		return {
+			axis,
+			thickness,
+			cross,
+			length,
+			thumbAt: progress * travel,
+			thumbLength,
+			ratio: travel > 0 ? scrollable / travel : 0,
+		};
+	};
+
+	const bars: ScrollBar[] = [];
+	if (showY) {
+		bars.push(
+			bar(
+				"Y",
+				rect.width - thickness,
+				Math.max(0, rect.height - (showX ? thickness : 0)),
+				scrollableY,
+				metrics.window.y,
+				metrics.canvas.y,
+			),
+		);
+	}
+	if (showX) {
+		bars.push(
+			bar(
+				"X",
+				rect.height - thickness,
+				Math.max(0, rect.width - (showY ? thickness : 0)),
+				scrollableX,
+				metrics.window.x,
+				metrics.canvas.x,
+			),
+		);
+	}
+	return bars;
+}
+
+/**
+ * The scroll-bar layer for a ScrollingFrame: a pointer-transparent overlay that
+ * does NOT live in the canvas wrapper (the bars stay put while the canvas moves)
+ * holding one grabbable thumb per visible bar.
+ *
+ * Returns `undefined` when nothing scrolls, which is also how the session knows
+ * to drop the layer again.
+ */
+function createScrollBarLayer(
+	node: SceneNode,
+	rect: Rect,
+	metrics: ScrollMetrics,
+): HTMLDivElement | undefined {
+	const bars = scrollBars(node, rect, metrics);
+	if (bars.length === 0) return undefined;
+	const layer = document.createElement("div");
+	const s = layer.style;
+	s.position = "absolute";
+	s.inset = "0";
+	s.pointerEvents = "none";
+	s.zIndex = String(SCROLL_BAR_Z_INDEX);
+	const color = cssColor(
+		asColor3(node.properties?.ScrollBarImageColor3) ?? DEFAULT_SCROLL_BAR_COLOR,
+		asNumber(node.properties?.ScrollBarImageTransparency) ?? 0,
+	);
+	for (const bar of bars) {
+		const thumb = document.createElement("div");
+		const t = thumb.style;
+		const vertical = bar.axis === "Y";
+		t.position = "absolute";
+		t.left = `${vertical ? bar.cross : bar.thumbAt}px`;
+		t.top = `${vertical ? bar.thumbAt : bar.cross}px`;
+		t.width = `${vertical ? bar.thickness : bar.thumbLength}px`;
+		t.height = `${vertical ? bar.thumbLength : bar.thickness}px`;
+		t.background = color;
+		// The engine's bar is a capsule: fully rounded ends, whatever the thickness.
+		t.borderRadius = `${bar.thickness / 2}px`;
+		// The thumb is the one part of the overlay that takes input, and the
+		// browser must not turn a drag on it into a page pan (same reason the
+		// frame itself opts out).
+		t.pointerEvents = "auto";
+		t.touchAction = "none";
+		thumb.dataset.loomScrollbar = bar.axis;
+		// The drag reads its scale straight off the thumb it grabbed rather than
+		// re-deriving the track geometry from the DOM.
+		thumb.dataset.loomScrollRatio = String(bar.ratio);
+		layer.appendChild(thumb);
+	}
+	return layer;
+}
+
+/**
+ * A ScrollingFrame's metrics from the layout that just ran, resolving its
+ * children by the id scheme both tree walks share (an explicit `node.id`, else
+ * the layout-positional path).
+ */
+function frameMetrics(
+	node: SceneNode,
+	rect: Rect,
+	positionalPath: string,
+	layout: LayoutResult,
+): ScrollMetrics {
+	return scrollMetrics(
+		node,
+		rect,
+		(child, index) =>
+			layout.rects[child.id ?? `${positionalPath}/${index}`]?.rect,
+	);
+}
+
+/**
+ * Change key for the scroll-bar layer: everything {@link createScrollBarLayer}
+ * paints from, so the session rebuilds the bars on a real change only.
+ */
+function scrollBarKey(
+	node: SceneNode,
+	rect: Rect,
+	metrics: ScrollMetrics,
+): string {
+	const bars = scrollBars(node, rect, metrics);
+	if (bars.length === 0) return "";
+	const color = cssColor(
+		asColor3(node.properties?.ScrollBarImageColor3) ?? DEFAULT_SCROLL_BAR_COLOR,
+		asNumber(node.properties?.ScrollBarImageTransparency) ?? 0,
+	);
+	const key = bars
+		.map(
+			(bar) =>
+				`${bar.axis}:${bar.cross},${bar.thickness},${bar.thumbAt},${bar.thumbLength}`,
+		)
+		.join("|");
+	return `${key}|${color}`;
 }
 
 /** Build a text class's `Text` overlay layer, or `undefined` when empty. */
@@ -1572,6 +1796,16 @@ function renderNode(
 		if (childEl) childHost.appendChild(childEl);
 		i += 1;
 	}
+
+	// Scroll bars last: they sit over the canvas, not inside it.
+	if (node.className === "ScrollingFrame") {
+		const bars = createScrollBarLayer(
+			node,
+			rect,
+			frameMetrics(node, rect, positionalPath, layout),
+		);
+		if (bars) el.appendChild(bars);
+	}
 	return el;
 }
 
@@ -1615,6 +1849,9 @@ interface SessionEntry {
 	input: TextBoxBinding | undefined;
 	/** Present only on ScrollingFrame nodes: the -CanvasPosition child wrapper. */
 	canvas: HTMLDivElement | undefined;
+	/** Present only on a ScrollingFrame that has something to scroll. */
+	scrollBars: HTMLDivElement | undefined;
+	scrollBarKey: string;
 }
 
 /** Reorder `el`'s children to exactly `desired`, touching only mismatches. */
@@ -1737,6 +1974,8 @@ export function createDomSession(
 				imageKey: "",
 				input: undefined,
 				canvas: undefined,
+				scrollBars: undefined,
+				scrollBarKey: "",
 			};
 			entries.set(id, entry);
 		}
@@ -1801,9 +2040,22 @@ export function createDomSession(
 			if (entry.canvas.style.transform !== transform) {
 				entry.canvas.style.transform = transform;
 			}
+			// The bars are geometry, not identity: rebuilt (cheaply, two divs at
+			// most) whenever the thumb they describe moved or resized.
+			const metrics = frameMetrics(node, rect, positionalPath, layout);
+			const barKey = scrollBarKey(node, rect, metrics);
+			if (barKey !== entry.scrollBarKey) {
+				entry.scrollBars?.remove();
+				entry.scrollBars =
+					barKey === "" ? undefined : createScrollBarLayer(node, rect, metrics);
+				entry.scrollBarKey = barKey;
+			}
 		} else if (entry.canvas) {
 			entry.canvas.remove();
 			entry.canvas = undefined;
+			entry.scrollBars?.remove();
+			entry.scrollBars = undefined;
+			entry.scrollBarKey = "";
 		}
 
 		// Image first so it sits behind the text, matching renderNode.
@@ -1828,7 +2080,12 @@ export function createDomSession(
 		}
 		if (entry.canvas) {
 			syncChildren(entry.canvas, children);
-			syncChildren(el, [...overlays, entry.canvas]);
+			syncChildren(
+				el,
+				entry.scrollBars
+					? [...overlays, entry.canvas, entry.scrollBars]
+					: [...overlays, entry.canvas],
+			);
 		} else {
 			syncChildren(el, [...overlays, ...children]);
 		}
@@ -1923,6 +2180,9 @@ export function createDomSession(
 		}
 		getEventSignal(userInputService(), "InputBegan").fire(input, false);
 		pressed = chain[0];
+		// A press that landed on a scroll bar thumb is that thumb's drag, never
+		// also the canvas's: the two would scroll the same frame opposite ways.
+		if (beginThumbDrag(e, chain)) return;
 		beginDragScroll(e, chain);
 	}
 
@@ -1934,9 +2194,13 @@ export function createDomSession(
 		}
 		// Only a primary press activates a GuiButton in Roblox; a right-click
 		// raises InputBegan/InputEnded and nothing else. A touch that turned into
-		// a scroll gesture is not a press either — the finger left the control.
-		const scrolled = drag?.pointerId === e.pointerId && drag.dragged;
+		// a scroll gesture is not a press either — the finger left the control —
+		// and neither is a drag of the scroll bar thumb.
+		const scrolled =
+			(drag?.pointerId === e.pointerId && drag.dragged) ||
+			(thumb?.pointerId === e.pointerId && thumb.moved);
 		if (drag?.pointerId === e.pointerId) drag = undefined;
+		if (thumb?.pointerId === e.pointerId) thumb = undefined;
 		const activates =
 			!scrolled &&
 			(input.UserInputType === Enum.UserInputType.MouseButton1 ||
@@ -1962,6 +2226,7 @@ export function createDomSession(
 	function onPointerMove(e: PointerEvent): void {
 		const { x, y } = relPoint(e);
 		dragScroll(e, x, y);
+		dragThumb(e, x, y);
 		setMouseLocation(Vector2.new(x, y));
 		// `movementX/Y` are on-screen pixels like `clientX/Y`; Delta is reported
 		// in the same space as Position.
@@ -2122,6 +2387,80 @@ export function createDomSession(
 		scrollFrameBy(drag.frame, dx, dy);
 	}
 
+	// --- scroll bar thumb drag ---------------------------------------------------
+
+	/**
+	 * A grab on a scroll bar thumb (`data-loom-scrollbar`, painted by
+	 * {@link createScrollBarLayer}). The canvas follows the thumb, not the
+	 * pointer: the ratio is how many canvas pixels one thumb pixel is worth, and
+	 * the position is mapped from where the grab started rather than accumulated
+	 * per move, so a pointer that runs off the end of the track and comes back
+	 * lands where the thumb would be.
+	 */
+	interface ThumbDrag {
+		pointerId: number;
+		frame: LoomInstance;
+		axis: "X" | "Y";
+		/** Pointer coordinate on the dragged axis when the thumb was grabbed. */
+		origin: number;
+		/** `CanvasPosition` on that axis at the same moment. */
+		originCanvas: number;
+		/** Canvas pixels per thumb pixel. */
+		ratio: number;
+		moved: boolean;
+	}
+	let thumb: ThumbDrag | undefined;
+
+	function beginThumbDrag(e: PointerEvent, chain: LoomInstance[]): boolean {
+		const target = e.target;
+		if (!(target instanceof HTMLElement)) return false;
+		const el = target.closest<HTMLElement>("[data-loom-scrollbar]");
+		const axis = el?.dataset.loomScrollbar;
+		if (!el || (axis !== "X" && axis !== "Y")) return false;
+		const frame = chain.find((inst) => inst.IsA("ScrollingFrame"));
+		if (!frame || frame.ScrollingEnabled === false) return false;
+		const current = frame.CanvasPosition;
+		if (!(current instanceof Vector2)) return false;
+		const vertical = axis === "Y";
+		const { x, y } = relPoint(e);
+		thumb = {
+			pointerId: e.pointerId,
+			frame,
+			axis,
+			origin: vertical ? y : x,
+			originCanvas: vertical ? current.Y : current.X,
+			ratio: Number(el.dataset.loomScrollRatio) || 0,
+			moved: false,
+		};
+		// Keep the moves coming once the pointer leaves the thumb — a drag that
+		// slips sideways off a 12px bar must not stop scrolling. The capture goes
+		// on the frame's element, not the thumb: every scroll repaints the bar,
+		// and capture dies with the element it was taken on.
+		const frameEl = el.closest<HTMLElement>("[data-loom-id]");
+		frameEl?.setPointerCapture?.(e.pointerId);
+		// A press that starts a drag is not the start of a text selection — the
+		// engine has no such thing, and the browser would otherwise paint the
+		// canvas blue as the pointer sweeps over it.
+		e.preventDefault();
+		return true;
+	}
+
+	function dragThumb(e: PointerEvent, x: number, y: number): void {
+		if (!thumb || thumb.pointerId !== e.pointerId) return;
+		const vertical = thumb.axis === "Y";
+		const current = thumb.frame.CanvasPosition;
+		if (!(current instanceof Vector2)) return;
+		const target =
+			thumb.originCanvas + ((vertical ? y : x) - thumb.origin) * thumb.ratio;
+		const delta = target - (vertical ? current.Y : current.X);
+		if (delta === 0) return;
+		if (
+			scrollFrameBy(thumb.frame, vertical ? 0 : delta, vertical ? delta : 0)
+		) {
+			thumb.moved = true;
+		}
+	}
+
 	// --- keyboard delegation ---------------------------------------------------
 	// Key events are global (window), mirroring Roblox: UserInputService fires
 	// for every key with `gameProcessedEvent = true` while a TextBox is focused.
@@ -2188,6 +2527,7 @@ export function createDomSession(
 	/** A cancelled gesture (browser took it over, finger left the surface). */
 	function onPointerCancel(e: PointerEvent): void {
 		if (drag?.pointerId === e.pointerId) drag = undefined;
+		if (thumb?.pointerId === e.pointerId) thumb = undefined;
 		if (pressed) pressed = undefined;
 	}
 
@@ -2220,6 +2560,7 @@ export function createDomSession(
 		entries.clear();
 		pressed = undefined;
 		drag = undefined;
+		thumb = undefined;
 		hoverChain = [];
 	}
 

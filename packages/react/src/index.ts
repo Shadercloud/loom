@@ -61,14 +61,13 @@ import {
 import type { LayoutResult, Viewport } from "@loom-dev/scene";
 import {
 	asBool,
-	asEnum,
-	asUDim2,
 	childrenOf,
 	fontSizeToPx,
 	type PropertyValue,
 	participatesInLayout,
 	prop,
 	type SceneNode,
+	scrollMetrics,
 } from "@loom-dev/scene";
 import type { Key, ReactElement, ReactNode, ReactPortal, Ref } from "react";
 import Reconciler from "react-reconciler";
@@ -1019,9 +1018,9 @@ class WorldImpl implements World {
 	/**
 	 * Post-layout ScrollingFrame metrics feedback, walked over the scene tree
 	 * just laid out:
-	 * - `AbsoluteWindowSize` = the frame's own laid-out rect (w, h). Loom draws
-	 *   no native scrollbars (lattice paints its own thumb), so the window is
-	 *   never reduced by `ScrollBarThickness`.
+	 * - `AbsoluteWindowSize` = the frame's own laid-out rect (w, h). The renderer
+	 *   paints the scroll bar over the canvas (Roblox's `ScrollBarInset.None`),
+	 *   so the window is never reduced by `ScrollBarThickness`.
 	 * - `AbsoluteCanvasSize`: `CanvasSize` (UDim2) resolved against the window
 	 *   rect per axis; when `AutomaticCanvasSize` is X/Y/XY the affected axis
 	 *   grows to the union bounding box of the laid-out direct children
@@ -1036,44 +1035,22 @@ class WorldImpl implements World {
 		if (node.className === "ScrollingFrame" && node.id && rect) {
 			const inst = this.byId.get(node.id);
 			if (inst) {
-				const canvasSize = asUDim2(node.properties?.CanvasSize);
-				const resolvedX = canvasSize
-					? canvasSize.x.scale * rect.width + canvasSize.x.offset
-					: 0;
-				const resolvedY = canvasSize
-					? canvasSize.y.scale * rect.height + canvasSize.y.offset
-					: 0;
-				let childMaxX = 0;
-				let childMaxY = 0;
-				for (const child of childrenOf(node)) {
-					if (!participatesInLayout(child.className) || !child.id) continue;
-					const childRect = layout.rects[child.id]?.rect;
-					if (!childRect) continue;
-					childMaxX = Math.max(
-						childMaxX,
-						childRect.x + childRect.width - rect.x,
-					);
-					childMaxY = Math.max(
-						childMaxY,
-						childRect.y + childRect.height - rect.y,
-					);
-				}
-				const auto =
-					asEnum(node.properties?.AutomaticCanvasSize)?.name ?? "None";
-				const autoX = auto === "X" || auto === "XY";
-				const autoY = auto === "Y" || auto === "XY";
+				// The renderer paints the scroll bar from these same numbers, so
+				// both read them out of one place (see `scrollMetrics`). Every node
+				// this adapter encodes carries an explicit id, so the positional
+				// fallback is never needed here.
+				const metrics = scrollMetrics(node, rect, (child) =>
+					child.id ? layout.rects[child.id]?.rect : undefined,
+				);
 				setFeedbackProperty(
 					inst,
 					"AbsoluteWindowSize",
-					Vector2.new(rect.width, rect.height),
+					Vector2.new(metrics.window.x, metrics.window.y),
 				);
 				setFeedbackProperty(
 					inst,
 					"AbsoluteCanvasSize",
-					Vector2.new(
-						autoX ? Math.max(resolvedX, childMaxX) : resolvedX,
-						autoY ? Math.max(resolvedY, childMaxY) : resolvedY,
-					),
+					Vector2.new(metrics.canvas.x, metrics.canvas.y),
 				);
 			}
 		}
@@ -1599,8 +1576,16 @@ export interface ScrollingFrameProps extends GuiProps {
 	AutomaticCanvasSize?: Bindable<EnumItem<"AutomaticSize">>;
 	ScrollingDirection?: Bindable<EnumItem<"ScrollingDirection">>;
 	ScrollingEnabled?: Bindable<boolean>;
-	/** Accepted but unrendered: lattice paints its own scrollbar thumb. */
+	/**
+	 * Scroll bar chrome. The renderer paints the bar itself — arrows at the ends
+	 * and a draggable thumb between them, `ScrollBarThickness` px along the
+	 * frame's edge, in `ScrollBarImageColor3` — over the canvas, so the window it
+	 * reports is never reduced by the bar (Roblox's `ScrollBarInset.None`).
+	 * Setting `TopImage`/`BottomImage` drops the arrows: loom cannot paint an
+	 * `rbxasset` sprite in their place.
+	 */
 	ScrollBarThickness?: Bindable<number>;
+	ScrollBarImageColor3?: Bindable<Color3>;
 	ScrollBarImageTransparency?: Bindable<number>;
 }
 

@@ -424,6 +424,71 @@ export const getTileSize = (n: SceneNode): UDim2 =>
 export const getResampleMode = (n: SceneNode): string =>
 	asEnum(props(n).ResampleMode)?.name ?? "Default";
 
+// --- ScrollingFrame metrics ------------------------------------------------
+
+/** A `ScrollingFrame`'s post-layout metrics — Roblox's two `Absolute*` readouts. */
+export interface ScrollMetrics {
+	/** `AbsoluteWindowSize`: the viewable area. */
+	window: Vector2;
+	/** `AbsoluteCanvasSize`: the scrollable extent the window looks at. */
+	canvas: Vector2;
+}
+
+/**
+ * A `ScrollingFrame`'s window/canvas metrics from its laid-out rect.
+ *
+ * The single source for the numbers both the react adapter (which feeds them
+ * back to app code as `AbsoluteWindowSize`/`AbsoluteCanvasSize`) and the DOM
+ * renderer (which sizes the scroll bar thumb from them) need — two readings of
+ * the same frame would show a bar that does not agree with the metrics the
+ * component sizing itself against them saw.
+ *
+ * - The window is the frame's own rect. Loom paints its scroll bars *over* the
+ *   canvas, Roblox's `ScrollBarInset.None`, so no thickness is reserved.
+ * - The canvas is `CanvasSize` resolved against that window per axis; where
+ *   `AutomaticCanvasSize` covers an axis it grows to the union bounding box of
+ *   the laid-out children, i.e. `max(resolved, children)`.
+ *
+ * `childRect` resolves a layout child to its rect (the caller owns the id
+ * scheme: an explicit `node.id`, or the layout-positional path).
+ */
+export function scrollMetrics(
+	node: SceneNode,
+	rect: Rect,
+	childRect: (child: SceneNode, index: number) => Rect | undefined,
+): ScrollMetrics {
+	const canvasSize = asUDim2(props(node).CanvasSize);
+	const resolvedX = canvasSize
+		? canvasSize.x.scale * rect.width + canvasSize.x.offset
+		: 0;
+	const resolvedY = canvasSize
+		? canvasSize.y.scale * rect.height + canvasSize.y.offset
+		: 0;
+	const auto = asEnum(props(node).AutomaticCanvasSize)?.name ?? "None";
+	const autoX = auto === "X" || auto === "XY";
+	const autoY = auto === "Y" || auto === "XY";
+	let childMaxX = 0;
+	let childMaxY = 0;
+	if (autoX || autoY) {
+		let index = 0;
+		for (const child of childrenOf(node)) {
+			if (!participatesInLayout(child.className)) continue;
+			const r = childRect(child, index);
+			index += 1;
+			if (!r) continue;
+			childMaxX = Math.max(childMaxX, r.x + r.width - rect.x);
+			childMaxY = Math.max(childMaxY, r.y + r.height - rect.y);
+		}
+	}
+	return {
+		window: { x: rect.width, y: rect.height },
+		canvas: {
+			x: autoX ? Math.max(resolvedX, childMaxX) : resolvedX,
+			y: autoY ? Math.max(resolvedY, childMaxY) : resolvedY,
+		},
+	};
+}
+
 /** First child of the given Roblox class (e.g. a `UICorner`/`UIStroke` modifier). */
 export const findModifier = (
 	n: SceneNode,

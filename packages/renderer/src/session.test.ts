@@ -13,7 +13,12 @@ import {
 	getService,
 	Vector2,
 } from "@loom-dev/runtime";
-import type { LayoutResult, Rect, SceneNode } from "@loom-dev/scene";
+import type {
+	LayoutResult,
+	PropertyValue,
+	Rect,
+	SceneNode,
+} from "@loom-dev/scene";
 import { color3FromRGB, prop, udim2 } from "@loom-dev/scene";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -645,6 +650,210 @@ describe("createDomSession", () => {
 		expect(overshoot.defaultPrevented).toBe(false);
 
 		expect(positions).toEqual([60, 200]); // change signal per actual change only
+		session.dispose();
+	});
+
+	// --- ScrollingFrame scroll bars ----------------------------------------------
+
+	/** The frame's scroll-bar overlay: its last layer, when it has one. */
+	function barLayer(frameEl: Element): HTMLElement | null {
+		const last = frameEl.lastElementChild as HTMLElement | null;
+		return last?.querySelector("[data-loom-scrollbar]") ? last : null;
+	}
+
+	/**
+	 * A frame with `canvasY` px of canvas in a 100px window — enough to scroll
+	 * (and therefore to show a bar) whenever `canvasY > 100`.
+	 */
+	function overflowScene(
+		canvasY: number,
+		properties: SceneNode["properties"] = {},
+	): SceneNode {
+		return {
+			className: "ScreenGui",
+			name: "Gui",
+			id: "gui",
+			children: [
+				{
+					className: "ScrollingFrame",
+					name: "Scroll",
+					id: "scroll",
+					properties: {
+						CanvasSize: prop.udim2(udim2(0, 100, 0, canvasY)),
+						...properties,
+					},
+					children: [{ className: "Frame", name: "Item", id: "item" }],
+				},
+			],
+		};
+	}
+	const overflowLayout = () =>
+		layoutOf({
+			gui: { x: 0, y: 0, width: 300, height: 200 },
+			scroll: { x: 0, y: 0, width: 100, height: 100 },
+			item: { x: 0, y: 0, width: 100, height: 300 },
+		});
+
+	it("paints a Roblox-shaped scroll bar over the canvas when it overflows", () => {
+		const session = makeSession(new Map());
+		session.patch(overflowScene(300), overflowLayout());
+		const frameEl = mount.querySelector(
+			'[data-loom-id="scroll"]',
+		) as HTMLElement;
+		const layer = barLayer(frameEl) as HTMLElement;
+		// The bar layer is a sibling of the canvas wrapper, so it stays put while
+		// the canvas moves, and paints above every possible child ZIndex.
+		expect(layer.style.zIndex).toBe("2147483647");
+		expect(layer.style.pointerEvents).toBe("none");
+		const thumb = layer.querySelector(
+			'[data-loom-scrollbar="Y"]',
+		) as HTMLElement;
+		// One rounded thumb, 12px default thickness, down the right edge — the
+		// engine's bar has no end buttons.
+		expect(layer.children.length).toBe(1);
+		expect(thumb.style.left).toBe("88px");
+		expect(thumb.style.width).toBe("12px");
+		expect(thumb.style.borderRadius).toBe("6px");
+		// Track = the 100px window; thumb = its share of the 300px canvas.
+		expect(thumb.style.top).toBe("0px");
+		expect(Number.parseFloat(thumb.style.height)).toBeCloseTo(100 / 3, 4);
+		expect(thumb.style.pointerEvents).toBe("auto");
+		expect(thumb.style.background).toBe("rgba(153, 153, 153, 1)"); // untinted grey
+		session.dispose();
+	});
+
+	it("leaves the corner free when both bars are up", () => {
+		const session = makeSession(new Map());
+		session.patch(
+			overflowScene(300, { CanvasSize: prop.udim2(udim2(0, 400, 0, 300)) }),
+			overflowLayout(),
+		);
+		const vertical = mount.querySelector(
+			'[data-loom-scrollbar="Y"]',
+		) as HTMLElement;
+		const horizontal = mount.querySelector(
+			'[data-loom-scrollbar="X"]',
+		) as HTMLElement;
+		// Each bar's track stops a thickness short, so neither runs under the
+		// other: 100 - 12 = 88 of track apiece.
+		expect(Number.parseFloat(vertical.style.height)).toBeCloseTo(
+			(88 * 100) / 300,
+			4,
+		);
+		expect(Number.parseFloat(horizontal.style.width)).toBeCloseTo(
+			(88 * 100) / 400,
+			4,
+		);
+		expect(horizontal.style.top).toBe("88px");
+		expect(vertical.style.left).toBe("88px");
+		session.dispose();
+	});
+
+	it("has no bar without overflow, and drops it again when the canvas shrinks", () => {
+		const session = makeSession(new Map());
+		session.patch(overflowScene(100), overflowLayout());
+		const frameEl = mount.querySelector(
+			'[data-loom-id="scroll"]',
+		) as HTMLElement;
+		expect(frameEl.querySelector("[data-loom-scrollbar]")).toBe(null);
+
+		session.patch(overflowScene(300), overflowLayout());
+		expect(frameEl.querySelector("[data-loom-scrollbar]")).not.toBe(null);
+
+		session.patch(overflowScene(100), overflowLayout());
+		expect(frameEl.querySelector("[data-loom-scrollbar]")).toBe(null);
+		session.dispose();
+	});
+
+	it("hides the bar for ScrollingEnabled=false, a zero thickness, or the other axis", () => {
+		const session = makeSession(new Map());
+		const frameEl = () =>
+			mount.querySelector('[data-loom-id="scroll"]') as HTMLElement;
+		const cases: Record<string, PropertyValue>[] = [
+			{ ScrollingEnabled: prop.bool(false) },
+			{ ScrollBarThickness: prop.int(0) },
+			{
+				ScrollingDirection: prop.enum({
+					enumType: "ScrollingDirection",
+					name: "X",
+					value: 1,
+				}),
+			},
+		];
+		for (const properties of cases) {
+			session.patch(overflowScene(300, properties), overflowLayout());
+			expect(frameEl().querySelector("[data-loom-scrollbar]")).toBe(null);
+		}
+		session.dispose();
+	});
+
+	it("moves the thumb with CanvasPosition and colors it from ScrollBarImageColor3", () => {
+		const session = makeSession(new Map());
+		const scene = overflowScene(300, {
+			CanvasPosition: prop.vector2({ x: 0, y: 200 }),
+			ScrollBarImageColor3: prop.color3(color3FromRGB(255, 0, 0)),
+		});
+		session.patch(scene, overflowLayout());
+		const thumb = mount.querySelector(
+			'[data-loom-scrollbar="Y"]',
+		) as HTMLElement;
+		// Fully scrolled (canvas 300 - window 100 = 200): the thumb sits at the far
+		// end of its travel, flush with the bottom of the track.
+		expect(Number.parseFloat(thumb.style.top)).toBeCloseTo(100 - 100 / 3, 4);
+		expect(thumb.style.background).toBe("rgba(255, 0, 0, 1)");
+		session.dispose();
+	});
+
+	it("scrolls the frame by dragging the thumb", () => {
+		const frame = createInstance("ScrollingFrame", "Scroll");
+		const frameId = getInternalId(frame);
+		const scene: SceneNode = {
+			className: "ScrollingFrame",
+			name: "Scroll",
+			id: frameId,
+			properties: { CanvasSize: prop.udim2(udim2(0, 100, 0, 300)) },
+		};
+		const layout = layoutOf({
+			[frameId]: { x: 0, y: 0, width: 100, height: 100 },
+		});
+		const session = makeSession(new Map([[frameId, frame]]));
+		session.patch(scene, layout);
+		frame.AbsoluteWindowSize = Vector2.new(100, 100);
+		frame.AbsoluteCanvasSize = Vector2.new(100, 300);
+		const thumb = mount.querySelector(
+			'[data-loom-scrollbar="Y"]',
+		) as HTMLElement;
+
+		// Track 100, thumb 100/3 -> the ~66.7px of travel is worth the whole
+		// 200px of canvas.
+		const ratio = Number(thumb.dataset.loomScrollRatio);
+		expect(ratio).toBeCloseTo(200 / (100 - 100 / 3), 5);
+
+		firePointer(thumb, "pointerdown", { clientX: 94, clientY: 20 });
+		firePointer(thumb, "pointermove", { clientX: 94, clientY: 30 });
+		expect((frame.CanvasPosition as Vector2).Y).toBeCloseTo(10 * ratio, 5);
+
+		// Mapped from where the grab started, not accumulated: a pointer that runs
+		// past the end and comes back lands where the thumb would be.
+		firePointer(thumb, "pointermove", { clientX: 94, clientY: 500 });
+		expect((frame.CanvasPosition as Vector2).Y).toBe(200); // clamped
+		firePointer(thumb, "pointermove", { clientX: 94, clientY: 25 });
+		expect((frame.CanvasPosition as Vector2).Y).toBeCloseTo(5 * ratio, 5);
+		firePointer(thumb, "pointerup", { clientX: 94, clientY: 25 });
+
+		// The drag is over: a later move must not keep scrolling.
+		firePointer(thumb, "pointermove", { clientX: 94, clientY: 60 });
+		expect((frame.CanvasPosition as Vector2).Y).toBeCloseTo(5 * ratio, 5);
+		session.dispose();
+	});
+
+	it("renderScene paints the same bars as the session", () => {
+		const session = makeSession(new Map());
+		session.patch(overflowScene(300), overflowLayout());
+		const sessionHtml = withoutIds(mount.innerHTML);
+		const oneShot = document.createElement("div");
+		renderScene(overflowScene(300), overflowLayout(), oneShot);
+		expect(oneShot.innerHTML).toBe(sessionHtml);
 		session.dispose();
 	});
 

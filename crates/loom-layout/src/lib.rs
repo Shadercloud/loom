@@ -9,7 +9,9 @@
 //!   clamp -> `AutomaticSize` grow-to-content. Then `AnchorPoint`/`Position` place it.
 //! - `UIPadding` insets the content box; `UIListLayout`/`UIGridLayout`/`UITableLayout`/
 //!   `UIPageLayout` flow children (ignoring their Position/AnchorPoint);
-//!   `ScrollingFrame` lays children out against its `CanvasSize`.
+//!   `ScrollingFrame` lays children out against its `CanvasSize`, and is the one
+//!   container that does not cap their `AutomaticSize` at its own box — content
+//!   taller (or wider) than the window is what there is to scroll.
 //! - The TOP node always fills the viewport, regardless of className.
 //! - Non-layout modifier children get no rect and do not advance the positional id.
 //!
@@ -171,6 +173,56 @@ fn automatic_axes(node: &SceneNode) -> (bool, bool) {
         Some("Y") => (false, true),
         Some("XY") => (true, true),
         _ => (false, false),
+    }
+}
+
+/// `(auto_x, auto_y)` from a `ScrollingFrame`'s `AutomaticCanvasSize` — the axes
+/// on which the canvas grows to whatever the content turns out to be.
+fn automatic_canvas_axes(node: &SceneNode) -> (bool, bool) {
+    match enum_name(node, "AutomaticCanvasSize") {
+        Some("X") => (true, false),
+        Some("Y") => (false, true),
+        Some("XY") => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// The ceiling a container's content box puts on its children (see [`Limits`]).
+///
+/// Every container is that ceiling — except a `ScrollingFrame` on an axis whose
+/// canvas is not a fixed extent, where outgrowing the window is the entire
+/// point. The Roblox idiom for a scrolling list is an `AutomaticSize` column
+/// inside an `AutomaticCanvasSize` frame; capping the column at the window makes
+/// the canvas exactly the window, so nothing ever overflows, nothing scrolls,
+/// and no scroll bar is ever drawn — a scrolling frame that silently stops
+/// being one.
+///
+/// An axis is capped only when `CanvasSize` gives it an extent of its own that
+/// `AutomaticCanvasSize` is not free to grow. A zero `CanvasSize` axis is not a
+/// zero-high box to squeeze the content into — [`content_box`] already reads it
+/// as "no canvas, fall back to the window" — so it leaves no ceiling either.
+fn content_limits(node: &SceneNode, rect: Rect, content: Rect) -> Limits {
+    if node.class_name != "ScrollingFrame" {
+        return Limits::definite(content.width, content.height);
+    }
+    let canvas = node
+        .properties
+        .get("CanvasSize")
+        .and_then(PropertyValue::as_udim2);
+    let (auto_x, auto_y) = automatic_canvas_axes(node);
+    let canvas_w = canvas.map_or(0.0, |cs| resolve_axis(cs.x, rect.width));
+    let canvas_h = canvas.map_or(0.0, |cs| resolve_axis(cs.y, rect.height));
+    Limits {
+        x: if auto_x || canvas_w <= 0.0 {
+            None
+        } else {
+            Limits::room(content.width)
+        },
+        y: if auto_y || canvas_h <= 0.0 {
+            None
+        } else {
+            Limits::room(content.height)
+        },
     }
 }
 
@@ -616,14 +668,11 @@ fn place_with_list(
     content: Rect,
     list: &SceneNode,
     children: &[(usize, &SceneNode)],
+    limit: Limits,
     parent_path: &str,
     out: &mut BTreeMap<String, LayoutNode>,
 ) -> Result<(), LayoutError> {
     let order = flow_order(children, list);
-    // Placement runs against the node's final rect, so both axes are definite by
-    // now — whatever `AutomaticSize` asked for has already been resolved into it,
-    // and the content box is a real ceiling for the children.
-    let limit = Limits::definite(content.width, content.height);
     let m = list_metrics(content, list, &order, (false, false), limit);
     let vertical = m.vertical;
     let main_content = if vertical {
@@ -925,11 +974,11 @@ fn place_with_page(
     content: Rect,
     page: &SceneNode,
     children: &[(usize, &SceneNode)],
+    limit: Limits,
     parent_path: &str,
     out: &mut BTreeMap<String, LayoutNode>,
 ) -> Result<(), LayoutError> {
     let order = flow_order(children, page);
-    let limit = Limits::definite(content.width, content.height);
     let vertical = enum_name(page, "FillDirection") == Some("Vertical");
     let main_content = if vertical {
         content.height
@@ -1136,10 +1185,10 @@ fn place_with_table(
     content: Rect,
     table: &SceneNode,
     children: &[(usize, &SceneNode)],
+    limit: Limits,
     parent_path: &str,
     out: &mut BTreeMap<String, LayoutNode>,
 ) -> Result<(), LayoutError> {
-    let limit = Limits::definite(content.width, content.height);
     let lines = table_lines(table, children);
     let mut m = table_metrics(content, table, &lines, limit);
     m.fill(content, table);
@@ -1255,17 +1304,21 @@ fn place_node(
 
     let content = content_box(node, rect);
     let children = layout_children(node);
+    // Placement runs against the node's final rect, so its content box is a real
+    // ceiling for the children — whatever `AutomaticSize` asked for has already
+    // been resolved into it. The one container that is not its children's
+    // ceiling is a scrolling canvas (see [`content_limits`]).
+    let limit = content_limits(node, rect, content);
 
     if let Some(list) = find_modifier(node, "UIListLayout") {
-        place_with_list(content, list, &children, &path, out)?;
+        place_with_list(content, list, &children, limit, &path, out)?;
     } else if let Some(grid) = find_modifier(node, "UIGridLayout") {
         place_with_grid(content, grid, &children, &path, out)?;
     } else if let Some(table) = find_modifier(node, "UITableLayout") {
-        place_with_table(content, table, &children, &path, out)?;
+        place_with_table(content, table, &children, limit, &path, out)?;
     } else if let Some(page) = find_modifier(node, "UIPageLayout") {
-        place_with_page(content, page, &children, &path, out)?;
+        place_with_page(content, page, &children, limit, &path, out)?;
     } else {
-        let limit = Limits::definite(content.width, content.height);
         for &(idx, child) in &children {
             let r = child_rect(child, content, limit);
             place_node(child, r, format!("{path}/{idx}"), out)?;
@@ -1933,6 +1986,86 @@ mod tests {
                 height: 1200.0
             }
         );
+    }
+
+    /// The clean-ui `Scroller` shape from issue #12: a `fromScale(1, 0)` column
+    /// with `AutomaticSize = Y` inside an `AutomaticCanvasSize = Y` frame, the
+    /// idiom every scrolling list in Roblox is built from. Capping the column at
+    /// the window made the canvas exactly the window — nothing overflowed,
+    /// nothing scrolled, and no scroll bar was ever drawn.
+    #[test]
+    fn automatic_canvas_size_leaves_children_no_ceiling() {
+        let mut column = with(
+            "Frame",
+            "Column",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        column.children.push(with(
+            "Frame",
+            "Tall",
+            &[("Size", udim2(1.0, 0.0, 0.0, 500.0))],
+        ));
+        let mut scroll = with(
+            "ScrollingFrame",
+            "Scroll",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 200.0)),
+                ("CanvasSize", udim2(1.0, 0.0, 0.0, 0.0)),
+                ("AutomaticCanvasSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        // The horizontal `UIListLayout` the component uses — placement through a
+        // list has to honor the same ceiling the free path does.
+        scroll.children.push(with(
+            "UIListLayout",
+            "List",
+            &[("FillDirection", enum_item("FillDirection", "Horizontal"))],
+        ));
+        scroll.children.push(column);
+        let r = compute_layout(&screen(vec![scroll]), VP).unwrap();
+        assert_eq!(
+            r.rects["0/0/0"].rect,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 500.0
+            }
+        );
+    }
+
+    /// A `CanvasSize` that gives an axis a real extent is still the ceiling: the
+    /// exception is "the canvas grows to the content", not "no ceiling inside a
+    /// ScrollingFrame".
+    #[test]
+    fn a_fixed_canvas_still_caps_automatic_size_children() {
+        let mut column = with(
+            "Frame",
+            "Column",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 0.0)),
+                ("AutomaticSize", enum_item("AutomaticSize", "Y")),
+            ],
+        );
+        column.children.push(with(
+            "Frame",
+            "Tall",
+            &[("Size", udim2(1.0, 0.0, 0.0, 500.0))],
+        ));
+        let mut scroll = with(
+            "ScrollingFrame",
+            "Scroll",
+            &[
+                ("Size", udim2(1.0, 0.0, 0.0, 200.0)),
+                ("CanvasSize", udim2(0.0, 800.0, 0.0, 300.0)),
+            ],
+        );
+        scroll.children.push(column);
+        let r = compute_layout(&screen(vec![scroll]), VP).unwrap();
+        assert_eq!(r.rects["0/0/0"].rect.height, 300.0);
     }
 
     #[test]
