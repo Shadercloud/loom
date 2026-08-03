@@ -18,6 +18,7 @@ import { color3FromRGB, prop, udim2 } from "@loom-dev/scene";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	clearImageSizeCache,
+	clearRegisteredFonts,
 	createDomSession,
 	type DomSession,
 	renderScene,
@@ -38,6 +39,43 @@ function layoutOf(entries: Record<string, Rect>): LayoutResult {
 function withoutIds(html: string): string {
 	return html.replace(/ data-loom-id="[^"]*"/g, "");
 }
+
+/**
+ * `(ascent + descent) / em` for the stub face below — 0 for "this browser has
+ * no font metrics", which is happy-dom's real answer and the default every test
+ * but the clipping ones wants.
+ */
+let stubFaceRatio = 0;
+
+/**
+ * happy-dom has no 2d context at all, so the renderer measures nothing and the
+ * text-clipping geometry (which is driven by the face's own box) can never come
+ * up. Installing a metrics-only context here, at import time, is what lets it:
+ * the renderer caches the first context it is handed for the life of the
+ * module, so this cannot be done from inside a test.
+ */
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+	configurable: true,
+	value(this: HTMLCanvasElement, kind: string) {
+		if (kind !== "2d") return null;
+		return {
+			font: "",
+			measureText(): TextMetrics {
+				const em = Number.parseFloat(
+					/(\d+(?:\.\d+)?)px/.exec(this.font as string)?.[1] ?? "0",
+				);
+				const box = em * stubFaceRatio;
+				return {
+					width: 0,
+					// Undefined metrics read as NaN, which is what a browser that
+					// cannot answer gives the renderer.
+					fontBoundingBoxAscent: box > 0 ? box * 0.8 : Number.NaN,
+					fontBoundingBoxDescent: box > 0 ? box * 0.2 : Number.NaN,
+				} as TextMetrics;
+			},
+		};
+	},
+});
 
 // happy-dom ships PointerEvent; fall back to MouseEvent defensively.
 const PointerEventCtor: typeof MouseEvent =
@@ -803,6 +841,120 @@ describe("text sizing", () => {
 
 	it("falls back to the Roblox default for an unparseable FontSize", () => {
 		expect(paint({ FontSize: fontSize("Nonsense") })).toBe("14px");
+	});
+});
+
+describe("text clipping", () => {
+	// The renderer keeps the face box it measured per font-and-size, so the ratio
+	// each test sets only reaches it once that is dropped — which is exactly what
+	// a face finishing its download does, through the same notification.
+	beforeEach(async () => {
+		clearRegisteredFonts();
+		await Promise.resolve();
+	});
+
+	afterEach(async () => {
+		stubFaceRatio = 0;
+		clearRegisteredFonts();
+		await Promise.resolve();
+	});
+
+	/** The text overlay of a painted label. */
+	function layerOf(properties: SceneNode["properties"]): HTMLElement {
+		const host = document.createElement("div");
+		renderScene(
+			{
+				className: "TextLabel",
+				name: "Label",
+				id: "label",
+				properties: { Text: prop.string("activity"), ...properties },
+			},
+			layoutOf({ label: { x: 0, y: 0, width: 100, height: 40 } }),
+			host,
+		);
+		const layer = [...host.querySelectorAll("div")].find(
+			(el) => el.style.fontSize !== "",
+		);
+		if (!layer) throw new Error("no text layer painted");
+		return layer;
+	}
+
+	it("grows the clip rect by the face's overhang, at both edges", () => {
+		// A 1.2 face at TextSize 20 needs 24px of line box against a 20px label
+		// box: 2px over each edge, plus the renderer's pixel of slack. Without the
+		// room the last line's descenders were cut off — issue #11.
+		stubFaceRatio = 1.2;
+		const layer = layerOf({ TextSize: prop.number(20) });
+		expect([layer.style.top, layer.style.bottom]).toEqual(["-3px", "-3px"]);
+		// Padding hands the content box its original height straight back, so the
+		// text sits exactly where it did before; only the clip moved.
+		expect([layer.style.paddingTop, layer.style.paddingBottom]).toEqual([
+			"3px",
+			"3px",
+		]);
+		expect(layer.style.boxSizing).toBe("border-box");
+		expect(layer.style.overflow).toBe("hidden");
+	});
+
+	it("leaves the layer flush when the face fits inside TextSize", () => {
+		stubFaceRatio = 1;
+		const layer = layerOf({ TextSize: prop.number(21) });
+		expect([layer.style.top, layer.style.bottom]).toEqual(["", ""]);
+		expect(layer.style.boxSizing).toBe("");
+	});
+
+	it("needs the same room whatever LineHeight asks for", () => {
+		// The lines after the first are spaced `TextSize * LineHeight` apart in
+		// both renderers, so they cancel: what overhangs is one face box against
+		// one TextSize, however the rest of the block is spread out.
+		stubFaceRatio = 1.2;
+		const single = layerOf({ TextSize: prop.number(22) });
+		const spaced = layerOf({
+			TextSize: prop.number(22),
+			LineHeight: prop.number(2.4),
+		});
+		expect(spaced.style.top).toBe(single.style.top);
+		expect(spaced.style.paddingTop).toBe(single.style.paddingTop);
+	});
+
+	it("repaints a label whose LineHeight is all that changed", () => {
+		const mount = document.createElement("div");
+		document.body.appendChild(mount);
+		const session = createDomSession(mount, {
+			resolveInstance: () => undefined,
+		});
+		const scene = (lineHeight: number): SceneNode => ({
+			className: "ScreenGui",
+			name: "Gui",
+			id: "gui",
+			children: [
+				{
+					className: "TextLabel",
+					name: "Label",
+					id: "label",
+					properties: {
+						Text: prop.string("activity"),
+						TextSize: prop.number(18),
+						LineHeight: prop.number(lineHeight),
+					},
+				},
+			],
+		});
+		const layout = layoutOf({
+			gui: { x: 0, y: 0, width: 200, height: 100 },
+			label: { x: 0, y: 0, width: 100, height: 40 },
+		});
+		const lineHeightOf = (): string => {
+			const el = mount.querySelector('[data-loom-id="label"]');
+			const layer = el?.firstElementChild as HTMLElement | null;
+			return layer?.style.lineHeight ?? "";
+		};
+
+		session.patch(scene(1), layout);
+		expect(lineHeightOf()).toBe("1");
+		session.patch(scene(2), layout);
+		expect(lineHeightOf()).toBe("2");
+		session.dispose();
 	});
 });
 

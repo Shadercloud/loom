@@ -93,7 +93,7 @@ import {
 	isLayerCollector,
 	participatesInLayout,
 } from "@loom-dev/scene";
-import { familyStack, warnMissingFace } from "./fonts.ts";
+import { familyStack, onFontsChanged, warnMissingFace } from "./fonts.ts";
 import { parseRichText } from "./richtext.ts";
 
 // Font registration is part of the public surface: a browser has none of the
@@ -232,6 +232,59 @@ export function instanceFont(inst: {
 /** CSS `font` shorthand for canvas measurement. */
 export function fontShorthand(font: ResolvedFont, sizePx: number): string {
 	return `${font.italic ? "italic " : ""}${font.weight} ${sizePx}px ${font.family}`;
+}
+
+/**
+ * How far the painted glyphs can fall outside the box the layout gave a label,
+ * per vertical edge, for one font at one size.
+ *
+ * `TextSize` means different things to the two renderers. Roblox fits the whole
+ * face into it — a one-line label measures exactly `TextSize` tall and nothing
+ * pokes out — while CSS spends it on the em, and a face's own ascent + descent
+ * runs to ~1.2em on top of that. The label's box is the engine's height
+ * (`TextSize + (n - 1) * TextSize * LineHeight`), so the browser's taller line
+ * boxes have to go somewhere, and with the overlay clipped to that box they were
+ * going under the knife: the last line lost its descenders (`activity` painted
+ * as `activitv`) and, at a large enough `TextSize`, the first line lost the tops
+ * of its ascenders.
+ *
+ * The amount is the same at both edges and — the pleasant part — independent of
+ * both `LineHeight` and the number of lines. Lines 2..n sit on `TextSize *
+ * LineHeight` of pitch in either renderer, so every line but the first cancels;
+ * what is left over is one face box against one `TextSize`, split evenly above
+ * and below. {@link createTextLayer} grows the clip rect by it.
+ */
+const bleedCache = new Map<string, number>();
+// A face arriving after first paint changes the metrics behind an unchanged
+// font stack, so the measurements keyed on that stack no longer describe it.
+onFontsChanged(() => bleedCache.clear());
+
+function textBleed(font: ResolvedFont, sizePx: number): number {
+	if (!(sizePx > 0)) return 0;
+	const key = fontShorthand(font, sizePx);
+	const cached = bleedCache.get(key);
+	if (cached !== undefined) return cached;
+	const ctx = measureContext();
+	let bleed = 0;
+	if (ctx) {
+		ctx.font = key;
+		// Any string does: these are the *face's* metrics, not the glyphs'.
+		const metrics = ctx.measureText("Hg");
+		const faceBox =
+			metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+		// A browser without the metrics (or a stub canvas) reports NaN; no bleed is
+		// the pre-existing behaviour, which is the right thing to fall back to.
+		if (Number.isFinite(faceBox) && faceBox > sizePx) {
+			// A whole pixel over, at least: browsers report this box rounded while
+			// laying the line out with the fractional original, so the overhang can
+			// run a shade past what it says. Rounding rather than ceiling keeps the
+			// answer off the float dust in `size * ratio`; a clip rect costs nothing
+			// by being a pixel generous either way.
+			bleed = Math.round((faceBox - sizePx) / 2) + 1;
+		}
+	}
+	bleedCache.set(key, bleed);
+	return bleed;
 }
 
 // --- text measurement (TextService) ------------------------------------------
@@ -604,13 +657,14 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	const layer = document.createElement("div");
 	const s = layer.style;
 	const font = nodeFont(node);
+	const textSize = getTextSize(node);
 	s.position = "absolute";
 	s.inset = "0";
 	s.display = "flex";
 	s.flexDirection = "column";
 	s.justifyContent = yAlignFlex(getTextYAlignment(node));
 	s.color = cssColor(getTextColor3(node), getTextTransparency(node));
-	s.fontSize = `${getTextSize(node)}px`;
+	s.fontSize = `${textSize}px`;
 	s.fontFamily = font.family;
 	s.fontWeight = font.weight;
 	if (font.italic) s.fontStyle = "italic";
@@ -619,6 +673,19 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	s.overflow = "hidden";
 	s.pointerEvents = "none";
 	s.zIndex = String(getZIndex(node)); // share the unified ZIndex space with children
+	// The clip rect is the label's box grown by however far the face overhangs it
+	// (see `textBleed`), and the padding hands the content box its original height
+	// straight back — so the flex alignment above places the text exactly where it
+	// did before, and the only thing that changed is what survives the clip.
+	// Horizontally nothing moves: a label still clips its own text at its edges.
+	const bleed = textBleed(font, textSize);
+	if (bleed > 0) {
+		s.boxSizing = "border-box";
+		s.top = px(-bleed);
+		s.bottom = px(-bleed);
+		s.paddingTop = px(bleed);
+		s.paddingBottom = px(bleed);
+	}
 
 	const inner = document.createElement("div");
 	inner.style.width = "100%";
@@ -628,7 +695,7 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	// height the engine measures — a one-line label stays exactly `TextSize` tall
 	// however high its `LineHeight` is.
 	if (lineHeight !== 1) {
-		const leading = ((lineHeight - 1) * getTextSize(node)) / 2;
+		const leading = ((lineHeight - 1) * textSize) / 2;
 		inner.style.marginTop = `${-leading}px`;
 		inner.style.marginBottom = `${-leading}px`;
 	}
@@ -745,6 +812,12 @@ function textLayerKey(node: SceneNode): string {
 		font.weight,
 		font.italic ? 1 : 0,
 		getTextSize(node),
+		// `LineHeight` drives the layer's line spacing and the leading it crops off
+		// the outer edges, so a scene that changes only that has to be repainted.
+		getLineHeight(node),
+		// Metrics, not a property: a face finishing its download changes what the
+		// clip rect has to make room for while every prop above stays as it was.
+		textBleed(font, getTextSize(node)),
 		cssColor(getTextColor3(node), getTextTransparency(node)),
 		getTextWrapped(node) ? 1 : 0,
 		getRichText(node) ? 1 : 0,
