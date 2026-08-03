@@ -1,5 +1,15 @@
 # @loom-dev/react
 
+## 0.9.2
+
+### Patch Changes
+
+- Updated dependencies [[`62cec5f`](https://github.com/astra-void/loom/commit/62cec5f362c483f54da49f7fe26b90c1e2548ff1)]:
+  - @loom-dev/renderer@0.9.2
+  - @loom-dev/scene@0.9.2
+  - @loom-dev/layout@0.9.2
+  - @loom-dev/runtime@0.9.2
+
 ## 0.9.1
 
 ### Patch Changes
