@@ -24,6 +24,25 @@ export class EnumItem<T extends string = string> {
 	}
 }
 
+/**
+ * The item name behind an enum-valued property, however it was written.
+ *
+ * The engine takes the bare string wherever it takes the item —
+ * `AutomaticSize = "XY"` is `Enum.AutomaticSize.XY`, and roblox-ts's own React
+ * typings offer both — so a reader that insists on an `EnumItem` silently drops
+ * half the ways the property is spelled. `@loom-dev/scene` has always accepted
+ * either; this is the same courtesy for code reading a *live instance*, where
+ * the value has not been through the encoder yet.
+ *
+ * Anything else — a Binding, a number, undefined — is `undefined`, which is
+ * what "this property does not name an item" was before.
+ */
+export function enumName(value: unknown): string | undefined {
+	if (value instanceof EnumItem) return value.Name;
+	if (typeof value === "string" && value !== "") return value;
+	return undefined;
+}
+
 function makeEnum<E extends string, T extends readonly string[]>(
 	enumType: E,
 	names: T,

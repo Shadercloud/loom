@@ -18,7 +18,7 @@ import {
 	onFontsChanged,
 	renderScene,
 } from "@loom-dev/renderer";
-import { EnumItem, toPropertyValue } from "@loom-dev/runtime";
+import { enumName, toPropertyValue } from "@loom-dev/runtime";
 import {
 	fontSizeToPx,
 	type LayoutResult,
@@ -168,7 +168,7 @@ function getMeasureCtx(): CanvasRenderingContext2D | null {
 /** Is `AutomaticSize` covering the X axis, so the width is content-derived? */
 function autoOnX(live: LiveNode): boolean {
 	const auto = live.props.get("AutomaticSize");
-	const name = auto instanceof EnumItem ? auto.Name : undefined;
+	const name = enumName(auto);
 	return name === "X" || name === "XY";
 }
 
@@ -234,7 +234,7 @@ function measureTextBounds(
 ): PropertyValue | undefined {
 	if (!TEXT_CLASSES.has(live.className)) return undefined;
 	const auto = live.props.get("AutomaticSize");
-	const autoName = auto instanceof EnumItem ? auto.Name : undefined;
+	const autoName = enumName(auto);
 	if (autoName !== "X" && autoName !== "Y" && autoName !== "XY")
 		return undefined;
 	const text = live.props.get("Text");
@@ -249,9 +249,7 @@ function measureTextBounds(
 	const size =
 		typeof rawSize === "number"
 			? rawSize
-			: (fontSizeToPx(
-					rawFontSize instanceof EnumItem ? rawFontSize.Name : undefined,
-				) ?? 14);
+			: (fontSizeToPx(enumName(rawFontSize)) ?? 14);
 	ctx.font = fontShorthand(
 		instanceFont({
 			Font: live.props.get("Font"),

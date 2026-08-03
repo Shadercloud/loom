@@ -284,8 +284,19 @@ describe("wrapped text against the real layout engine", () => {
 		};
 	}
 
+	/** One settled reading of the label under test. */
+	function readLabel(labelName: string, text: string) {
+		const box = measure(labelName);
+		return {
+			labelWidth: box.width,
+			labelHeight: box.height,
+			painted: wrapLines(text, box.width),
+			encoded: linesFromHeight(box.height, BODY_SIZE, BODY_LINE_HEIGHT),
+		};
+	}
+
 	/**
-	 * A settled sweep: mount `tree`, then walk the stage down a width at a time,
+	 * A settled sweep: mount `tree`, then walk the stage a width at a time,
 	 * settling each one, and report every width where the label's box disagrees
 	 * with the wrap its own laid-out width produces.
 	 */
@@ -302,22 +313,63 @@ describe("wrapped text against the real layout engine", () => {
 		for (const width of widths) {
 			setStage(width);
 			const frames = reflow(root);
-			const box = measure(labelName);
-			const painted = wrapLines(text, box.width);
-			const encoded = linesFromHeight(box.height, BODY_SIZE, BODY_LINE_HEIGHT);
-			if (Math.abs(encoded - painted) > 0.01 || getDirtyCount() > 0) {
+			const r = readLabel(labelName, text);
+			if (Math.abs(r.encoded - r.painted) > 0.01 || getDirtyCount() > 0) {
 				mismatches.push({
 					stage: width,
-					labelWidth: box.width,
-					labelHeight: box.height,
-					painted,
-					encoded: Math.round(encoded * 100) / 100,
+					labelWidth: r.labelWidth,
+					labelHeight: r.labelHeight,
+					painted: r.painted,
+					encoded: Math.round(r.encoded * 100) / 100,
 					frames,
 					stillDirty: getDirtyCount(),
 				});
 			}
 		}
 		return mismatches;
+	}
+
+	/**
+	 * The same sweep read for *path independence*: a stage width has one right
+	 * layout, and which widths it was dragged through on the way there cannot
+	 * change it.
+	 */
+	function sweepBothWays(
+		tree: ReactElement,
+		labelName: string,
+		text: string,
+		widths: readonly number[],
+	): Array<Record<string, number>> {
+		setStage(widths[0] as number);
+		root = mountSync(tree, mount, { computeLayout: realLayout });
+		settle();
+		const down = new Map<number, ReturnType<typeof readLabel>>();
+		for (const width of widths) {
+			setStage(width);
+			reflow(root);
+			down.set(width, readLabel(labelName, text));
+		}
+		const drifted: Array<Record<string, number>> = [];
+		for (const width of [...widths].reverse()) {
+			setStage(width);
+			reflow(root);
+			const back = readLabel(labelName, text);
+			const first = down.get(width);
+			if (!first) continue;
+			if (
+				Math.abs(back.labelWidth - first.labelWidth) > 0.01 ||
+				Math.abs(back.labelHeight - first.labelHeight) > 0.01
+			) {
+				drifted.push({
+					stage: width,
+					widthNarrowing: first.labelWidth,
+					widthWidening: back.labelWidth,
+					linesNarrowing: first.painted,
+					linesWidening: back.painted,
+				});
+			}
+		}
+		return drifted;
 	}
 
 	const range = (from: number, to: number, step = 10): number[] => {
@@ -336,6 +388,49 @@ describe("wrapped text against the real layout engine", () => {
 			[],
 		);
 	}, 60_000);
+
+	it("lays the card scene out the same whichever way the stage was dragged", () => {
+		// Narrow to 200 and back out to 1200. A width has one right layout;
+		// which widths it was dragged through cannot change it. Consistency
+		// alone does not catch a wrap that never comes back out — the box
+		// freezes with it, so the label stays internally agreed and simply
+		// stops using the room it has.
+		expect(
+			sweepBothWays(cards(5), "BodyText0", BODY, range(1200, 200, 10)),
+		).toEqual([]);
+	}, 60_000);
+
+	it("measures and wraps a label sized by a plain-string AutomaticSize", () => {
+		// The engine takes the bare string wherever it takes the item, and
+		// `@loom-dev/scene` has always encoded either — so the layout auto-sized
+		// the label while the adapter, which insisted on an `EnumItem`, measured
+		// no `TextBounds` for it at all and never re-measured it. The wrap width
+		// then resolved against an ancestor this label had sized, which is the
+		// circle that leaves text wrapped at whatever width it first got.
+		const tree = inBox(
+			createElement(
+				"frame",
+				{
+					Name: "StringAuto",
+					Size: UDim2.fromScale(0, 0),
+					AutomaticSize: "XY",
+				},
+				createElement("textlabel", {
+					Name: "Body",
+					Size: UDim2.fromScale(0, 0),
+					AutomaticSize: "XY",
+					Text: BODY,
+					TextSize: BODY_SIZE,
+					LineHeight: BODY_LINE_HEIGHT,
+					TextWrapped: true,
+				}),
+			),
+		);
+		// Both oracles: without the measurement the label collapses to the same
+		// nothing at every width, which is path-independent and still wrong.
+		expect(sweep(tree, "Body", BODY, range(600, 200))).toEqual([]);
+		expect(sweepBothWays(tree, "Body", BODY, range(600, 200))).toEqual([]);
+	});
 
 	/**
 	 * The shapes where the wrap width and the painted width could come apart.

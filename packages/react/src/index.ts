@@ -39,7 +39,8 @@ import type {
 } from "@loom-dev/runtime";
 import {
 	createInstance as createLoomInstance,
-	EnumItem,
+	type EnumItem,
+	enumName,
 	flushDirtyNow,
 	getEventSignal,
 	getInternalId,
@@ -442,7 +443,7 @@ function getMeasureCtx(): CanvasRenderingContext2D | null {
  */
 function liveTextSize(textSize: unknown, fontSize: unknown): number {
 	if (typeof textSize === "number") return textSize;
-	const name = fontSize instanceof EnumItem ? fontSize.Name : undefined;
+	const name = enumName(fontSize);
 	return fontSizeToPx(name) ?? 14;
 }
 
@@ -464,7 +465,7 @@ function liveLineHeight(inst: LoomInstance): number {
 function measureTextBounds(inst: LoomInstance): PropertyValue | undefined {
 	if (!TEXT_CLASSES.has(inst.ClassName)) return undefined;
 	const auto = inst.AutomaticSize;
-	const autoName = auto instanceof EnumItem ? auto.Name : undefined;
+	const autoName = enumName(auto);
 	if (autoName !== "X" && autoName !== "Y" && autoName !== "XY")
 		return undefined;
 	// An empty TextBox displays its `PlaceholderText` — the renderer sets it on
@@ -502,7 +503,7 @@ const MEASURED_WRAP = new WeakMap<LoomInstance, number>();
 /** Is `AutomaticSize` covering the X axis, so the width is content-derived? */
 function autoOnX(inst: LoomInstance): boolean {
 	const auto = inst.AutomaticSize;
-	const name = auto instanceof EnumItem ? auto.Name : undefined;
+	const name = enumName(auto);
 	return name === "X" || name === "XY";
 }
 
@@ -1106,7 +1107,7 @@ class WorldImpl implements World {
 		for (const inst of this.byId.values()) {
 			if (!TEXT_CLASSES.has(inst.ClassName)) continue;
 			const auto = inst.AutomaticSize;
-			const autoName = auto instanceof EnumItem ? auto.Name : undefined;
+			const autoName = enumName(auto);
 			if (autoName === undefined || autoName === "None") continue;
 			const recorded = MEASURED_WRAP.get(inst);
 			if (recorded === undefined) continue;
