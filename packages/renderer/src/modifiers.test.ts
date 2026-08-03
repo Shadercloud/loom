@@ -146,8 +146,11 @@ describe("LineHeight", () => {
 	}
 
 	it("is single-spaced by default", () => {
+		// In pixels off `TextSize`, not as a multiple of the font size: the font
+		// size is `TextSize` scaled down by the face's own metrics (see
+		// `cssFontSize`), and the engine's line pitch does not follow it.
 		const layer = textLayer({});
-		expect(layer.style.lineHeight).toBe("1");
+		expect(layer.style.lineHeight).toBe("20px");
 		expect(layer.querySelector<HTMLElement>("div")?.style.marginTop).toBe("");
 	});
 
@@ -157,7 +160,7 @@ describe("LineHeight", () => {
 		// both outer edges (20 * 0.5 / 2 = 5px) leaves the block the height the
 		// engine measures — and a one-line label exactly `TextSize` tall.
 		const layer = textLayer({ LineHeight: prop.number(1.5) });
-		expect(layer.style.lineHeight).toBe("1.5");
+		expect(layer.style.lineHeight).toBe("30px");
 		const inner = layer.querySelector<HTMLElement>("div");
 		expect(inner?.style.marginTop).toBe("-5px");
 		expect(inner?.style.marginBottom).toBe("-5px");
@@ -165,10 +168,10 @@ describe("LineHeight", () => {
 
 	it("clamps to the 1…3 Studio allows", () => {
 		expect(textLayer({ LineHeight: prop.number(0.2) }).style.lineHeight).toBe(
-			"1",
+			"20px",
 		);
 		expect(textLayer({ LineHeight: prop.number(9) }).style.lineHeight).toBe(
-			"3",
+			"60px",
 		);
 	});
 });

@@ -24,8 +24,7 @@ import {
 	parseRichText,
 	type ResolvedFont,
 	type RichSegment,
-	type RichStyle,
-	resolveFont,
+	runFont,
 } from "@loom-dev/renderer";
 import type {
 	Color3,
@@ -586,28 +585,6 @@ function wrapWidth(inst: LoomInstance, autoName: string): number | undefined {
 }
 
 /** One rich-text run's font, its tags applied over the label's own. */
-function runFont(style: RichStyle, base: ResolvedFont): ResolvedFont {
-	const italic = style.italic === true || base.italic;
-	const weight = style.weight ?? (style.bold === true ? "700" : undefined);
-	if (style.family !== undefined) {
-		// A `family` URI carries its own metrics; `resolveFont` reads it the same
-		// way `FontFace` on the instance is read.
-		const face = resolveFont(undefined, {
-			family: style.family,
-			weight: Number(weight ?? base.weight),
-			style: italic ? "Italic" : "Normal",
-		});
-		return face;
-	}
-	const named =
-		style.face !== undefined ? resolveFont(style.face, undefined) : base;
-	return {
-		family: named.family,
-		weight: weight ?? named.weight,
-		italic,
-	};
-}
-
 /**
  * `TextBounds` for a text node: every run measured in the font its own tags ask
  * for, so a `<b>` or `<font size="24">` widens the line the way the engine's

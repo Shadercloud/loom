@@ -25,7 +25,10 @@ import {
 	clearImageSizeCache,
 	clearRegisteredFonts,
 	createDomSession,
+	cssFontSize,
 	type DomSession,
+	fontShorthand,
+	registerFont,
 	renderScene,
 	setImageResolver,
 } from "./index";
@@ -53,6 +56,14 @@ function withoutIds(html: string): string {
 let stubFaceRatio = 0;
 
 /**
+ * A second ratio, reported for sizes below the 100px probe {@link cssFontSize}
+ * reads the face at. It stands in for a browser whose small-size metrics do not
+ * scale from the probe — hinting — which is the only thing left that can make a
+ * face overhang the box after the size conversion.
+ */
+let stubSmallFaceRatio: number | undefined;
+
+/**
  * happy-dom has no 2d context at all, so the renderer measures nothing and the
  * text-clipping geometry (which is driven by the face's own box) can never come
  * up. Installing a metrics-only context here, at import time, is what lets it:
@@ -69,7 +80,11 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 				const em = Number.parseFloat(
 					/(\d+(?:\.\d+)?)px/.exec(this.font as string)?.[1] ?? "0",
 				);
-				const box = em * stubFaceRatio;
+				const ratio =
+					em < 100 && stubSmallFaceRatio !== undefined
+						? stubSmallFaceRatio
+						: stubFaceRatio;
+				const box = em * ratio;
 				return {
 					width: 0,
 					// Undefined metrics read as NaN, which is what a browser that
@@ -1064,6 +1079,7 @@ describe("text clipping", () => {
 
 	afterEach(async () => {
 		stubFaceRatio = 0;
+		stubSmallFaceRatio = undefined;
 		clearRegisteredFonts();
 		await Promise.resolve();
 	});
@@ -1088,11 +1104,34 @@ describe("text clipping", () => {
 		return layer;
 	}
 
-	it("grows the clip rect by the face's overhang, at both edges", () => {
-		// A 1.2 face at TextSize 20 needs 24px of line box against a 20px label
-		// box: 2px over each edge, plus the renderer's pixel of slack. Without the
-		// room the last line's descenders were cut off — issue #11.
-		stubFaceRatio = 1.2;
+	it("sizes the font so the face occupies TextSize", () => {
+		// `TextSize` is the height of the whole face, not the em. A face 1.25 em
+		// tall asked for TextSize 20 is a 16px font — painting 20px drew every
+		// glyph 25% too big, and wrapped the text that much early.
+		stubFaceRatio = 1.25;
+		expect(layerOf({ TextSize: prop.number(20) }).style.fontSize).toBe("16px");
+		// Nothing overhangs a box the face was just fitted to, so the clip rect
+		// the renderer used to need is flush.
+		const layer = layerOf({ TextSize: prop.number(20) });
+		expect([layer.style.top, layer.style.bottom]).toEqual(["", ""]);
+		expect(layer.style.boxSizing).toBe("");
+	});
+
+	it("keeps the 1:1 mapping when the browser reports no metrics", () => {
+		// happy-dom's real answer, and any browser without `fontBoundingBox*`:
+		// there is nothing to convert by, so the old behaviour stands rather than
+		// a guess.
+		stubFaceRatio = 0;
+		expect(layerOf({ TextSize: prop.number(21) }).style.fontSize).toBe("21px");
+	});
+
+	it("grows the clip rect when the face overhangs anyway", () => {
+		// The conversion reads the face at 100px; a browser that hints small sizes
+		// differently can still hand back a line box taller than `TextSize`. At
+		// TextSize 20 a 1.2 box is 2px over each edge, plus the renderer's pixel
+		// of slack. Without the room the last line's descenders were cut off.
+		stubFaceRatio = 1;
+		stubSmallFaceRatio = 1.2;
 		const layer = layerOf({ TextSize: prop.number(20) });
 		expect([layer.style.top, layer.style.bottom]).toEqual(["-3px", "-3px"]);
 		// Padding hands the content box its original height straight back, so the
@@ -1105,18 +1144,39 @@ describe("text clipping", () => {
 		expect(layer.style.overflow).toBe("hidden");
 	});
 
-	it("leaves the layer flush when the face fits inside TextSize", () => {
+	it("re-reads the ratio when a face arrives", async () => {
+		// The ratio belongs to the face, not to the name it was asked for: a
+		// registration (or a download finishing) puts a different typeface behind
+		// an unchanged stack, and a size converted through the old one is wrong
+		// for it.
+		const font = { family: "Gotham", weight: "400", italic: false };
+		stubFaceRatio = 1.25;
+		expect(cssFontSize(font, 20)).toBe(16);
 		stubFaceRatio = 1;
-		const layer = layerOf({ TextSize: prop.number(21) });
-		expect([layer.style.top, layer.style.bottom]).toEqual(["", ""]);
-		expect(layer.style.boxSizing).toBe("");
+		expect(cssFontSize(font, 20)).toBe(16); // cached, nothing has changed
+
+		registerFont("Gotham", { family: "Builder Sans" });
+		await Promise.resolve();
+		expect(cssFontSize(font, 20)).toBe(20);
+	});
+
+	it("measures at the size it paints", async () => {
+		// The whole point of doing this in `fontShorthand`: every measurer in the
+		// workspace goes through it, so none of them can drift from the paint.
+		stubFaceRatio = 1.25;
+		clearRegisteredFonts();
+		await Promise.resolve();
+		expect(
+			fontShorthand({ family: "Arial", weight: "700", italic: true }, 20),
+		).toBe("italic 700 16px Arial");
 	});
 
 	it("needs the same room whatever LineHeight asks for", () => {
 		// The lines after the first are spaced `TextSize * LineHeight` apart in
 		// both renderers, so they cancel: what overhangs is one face box against
 		// one TextSize, however the rest of the block is spread out.
-		stubFaceRatio = 1.2;
+		stubFaceRatio = 1;
+		stubSmallFaceRatio = 1.2;
 		const single = layerOf({ TextSize: prop.number(22) });
 		const spaced = layerOf({
 			TextSize: prop.number(22),
@@ -1160,9 +1220,9 @@ describe("text clipping", () => {
 		};
 
 		session.patch(scene(1), layout);
-		expect(lineHeightOf()).toBe("1");
+		expect(lineHeightOf()).toBe("18px");
 		session.patch(scene(2), layout);
-		expect(lineHeightOf()).toBe("2");
+		expect(lineHeightOf()).toBe("36px");
 		session.dispose();
 	});
 });

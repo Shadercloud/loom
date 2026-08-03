@@ -96,7 +96,7 @@ import {
 	scrollMetrics,
 } from "@loom-dev/scene";
 import { familyStack, onFontsChanged, warnMissingFace } from "./fonts.ts";
-import { parseRichText } from "./richtext.ts";
+import { parseRichText, type RichStyle } from "./richtext.ts";
 
 // Font registration is part of the public surface: a browser has none of the
 // engine's typefaces, so the host installs the ones it has.
@@ -204,6 +204,35 @@ export function nodeFont(node: SceneNode): ResolvedFont {
 }
 
 /**
+ * The font one `RichText` run paints in: the label's, with only what the run's
+ * own tags named overridden — the compositing the engine does.
+ *
+ * Here rather than in an adapter because the run's *size* has to be converted
+ * through its own face's metrics (see {@link cssFontSize}), so the paint and the
+ * measurement have to agree on which face a run ended up with.
+ */
+export function runFont(style: RichStyle, base: ResolvedFont): ResolvedFont {
+	const italic = style.italic === true || base.italic;
+	const weight = style.weight ?? (style.bold === true ? "700" : undefined);
+	if (style.family !== undefined) {
+		// A `family` URI carries its own metrics; `resolveFont` reads it the same
+		// way `FontFace` on the instance is read.
+		return resolveFont(undefined, {
+			family: style.family,
+			weight: Number(weight ?? base.weight),
+			style: italic ? "Italic" : "Normal",
+		});
+	}
+	const named =
+		style.face !== undefined ? resolveFont(style.face, undefined) : base;
+	return {
+		family: named.family,
+		weight: weight ?? named.weight,
+		italic,
+	};
+}
+
+/**
  * {@link resolveFont} for a live instance — the adapter measures text off the
  * instance, before the node is encoded.
  */
@@ -231,24 +260,86 @@ export function instanceFont(inst: {
 	);
 }
 
-/** CSS `font` shorthand for canvas measurement. */
-export function fontShorthand(font: ResolvedFont, sizePx: number): string {
-	return `${font.italic ? "italic " : ""}${font.weight} ${sizePx}px ${font.family}`;
+/**
+ * The CSS `font-size` that makes a face occupy `textSize` the way the engine
+ * does.
+ *
+ * `TextSize` is not a font size. Roblox fits the *whole face* into it — ascender
+ * to descender — so a one-line label is exactly `TextSize` tall and the glyphs
+ * inside are whatever is left after the face's own metrics take their share. CSS
+ * `font-size` sets the em square instead, and a face's ascent + descent runs
+ * past 1em: 1.17 for Roboto, 1.48 for Oswald, 1.05 for Inconsolata.
+ *
+ * Painting `font-size: TextSize` therefore drew every glyph too big by exactly
+ * that ratio — 17% for Roboto, 47% for Oswald — so text measured (and wrapped)
+ * that much wider than the engine's. Measured against Studio at `TextSize` 18,
+ * Roboto: `Player Profile` 93 units in the engine against 105 here, the whole
+ * body string 797 against 910. Every string, every size, the same ratio.
+ *
+ * The ratio is the face's, so it is read off the face the browser will actually
+ * paint with. A browser with no `fontBoundingBox*` metrics (or a stub canvas)
+ * reports NaN and keeps the old 1:1 mapping rather than guessing.
+ */
+const emScaleCache = new Map<string, number>();
+// A face arriving after first paint changes the metrics behind an unchanged
+// stack — the ratio belongs to the face, not to the name it was asked for.
+onFontsChanged(() => emScaleCache.clear());
+
+/** The reference size the ratio is read at, big enough to swamp the rounding
+ * browsers do when they report the face box. */
+const EM_PROBE_SIZE = 100;
+
+function faceBoxPerEm(font: ResolvedFont): number {
+	const key = `${font.italic ? "italic " : ""}${font.weight} ${font.family}`;
+	const cached = emScaleCache.get(key);
+	if (cached !== undefined) return cached;
+	let ratio = 1;
+	const ctx = measureContext();
+	if (ctx) {
+		ctx.font = `${font.italic ? "italic " : ""}${font.weight} ${EM_PROBE_SIZE}px ${font.family}`;
+		// Any string does: these are the *face's* metrics, not the glyphs'.
+		const metrics = ctx.measureText("Hg");
+		const box = metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
+		const measured = box / EM_PROBE_SIZE;
+		// A face reporting something absurd is a face loom should not be resizing
+		// text by; 1 is the old behaviour and a safe floor to fall back to.
+		if (Number.isFinite(measured) && measured >= 0.5 && measured <= 3) {
+			ratio = measured;
+		}
+	}
+	emScaleCache.set(key, ratio);
+	return ratio;
+}
+
+/** {@link faceBoxPerEm} applied: a Roblox `TextSize` as a CSS `font-size`. */
+export function cssFontSize(font: ResolvedFont, textSize: number): number {
+	if (!(textSize > 0)) return 0;
+	return textSize / faceBoxPerEm(font);
+}
+
+/**
+ * CSS `font` shorthand for canvas measurement, from a Roblox `TextSize` — the
+ * size conversion in {@link cssFontSize} included, so measurement and paint
+ * agree on how big the glyphs are.
+ */
+export function fontShorthand(font: ResolvedFont, textSize: number): string {
+	return `${font.italic ? "italic " : ""}${font.weight} ${cssFontSize(font, textSize)}px ${font.family}`;
 }
 
 /**
  * How far the painted glyphs can fall outside the box the layout gave a label,
  * per vertical edge, for one font at one size.
  *
- * `TextSize` means different things to the two renderers. Roblox fits the whole
- * face into it — a one-line label measures exactly `TextSize` tall and nothing
- * pokes out — while CSS spends it on the em, and a face's own ascent + descent
- * runs to ~1.2em on top of that. The label's box is the engine's height
- * (`TextSize + (n - 1) * TextSize * LineHeight`), so the browser's taller line
- * boxes have to go somewhere, and with the overlay clipped to that box they were
- * going under the knife: the last line lost its descenders (`activity` painted
- * as `activitv`) and, at a large enough `TextSize`, the first line lost the tops
- * of its ascenders.
+ * Normally none: {@link cssFontSize} sizes the font so the face box *is*
+ * `TextSize`, which is the same thing measured here, so there is nothing left
+ * over to hang out. What remains is the case that conversion cannot reach — the
+ * face is read at {@link EM_PROBE_SIZE} and a browser is free to hint a 14px
+ * line box to something other than 14/100ths of it. When that happens the label
+ * is clipped to the engine's height (`TextSize + (n - 1) * TextSize *
+ * LineHeight`) while the browser lays out taller lines, and the difference goes
+ * under the knife: the last line loses its descenders (`activity` painted as
+ * `activitv`), and at a large enough `TextSize` the first line loses the tops of
+ * its ascenders.
  *
  * The amount is the same at both edges and — the pleasant part — independent of
  * both `LineHeight` and the number of lines. Lines 2..n sit on `TextSize *
@@ -261,9 +352,9 @@ const bleedCache = new Map<string, number>();
 // font stack, so the measurements keyed on that stack no longer describe it.
 onFontsChanged(() => bleedCache.clear());
 
-function textBleed(font: ResolvedFont, sizePx: number): number {
-	if (!(sizePx > 0)) return 0;
-	const key = fontShorthand(font, sizePx);
+function textBleed(font: ResolvedFont, textSize: number): number {
+	if (!(textSize > 0)) return 0;
+	const key = fontShorthand(font, textSize);
 	const cached = bleedCache.get(key);
 	if (cached !== undefined) return cached;
 	const ctx = measureContext();
@@ -276,13 +367,13 @@ function textBleed(font: ResolvedFont, sizePx: number): number {
 			metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent;
 		// A browser without the metrics (or a stub canvas) reports NaN; no bleed is
 		// the pre-existing behaviour, which is the right thing to fall back to.
-		if (Number.isFinite(faceBox) && faceBox > sizePx) {
+		if (Number.isFinite(faceBox) && faceBox > textSize) {
 			// A whole pixel over, at least: browsers report this box rounded while
 			// laying the line out with the fractional original, so the overhang can
 			// run a shade past what it says. Rounding rather than ceiling keeps the
 			// answer off the float dust in `size * ratio`; a clip rect costs nothing
 			// by being a pixel generous either way.
-			bleed = Math.round((faceBox - sizePx) / 2) + 1;
+			bleed = Math.round((faceBox - textSize) / 2) + 1;
 		}
 	}
 	bleedCache.set(key, bleed);
@@ -888,12 +979,19 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	s.flexDirection = "column";
 	s.justifyContent = yAlignFlex(getTextYAlignment(node));
 	s.color = cssColor(getTextColor3(node), getTextTransparency(node));
-	s.fontSize = `${textSize}px`;
+	// `TextSize` is the height of the whole face, not the em — see
+	// {@link cssFontSize}, which is also what every measurement here goes
+	// through, so the box a label reserves and the glyphs painted into it come
+	// out of the same number.
+	s.fontSize = `${cssFontSize(font, textSize)}px`;
 	s.fontFamily = font.family;
 	s.fontWeight = font.weight;
 	if (font.italic) s.fontStyle = "italic";
 	const lineHeight = getLineHeight(node);
-	s.lineHeight = String(lineHeight);
+	// In pixels, off `TextSize` rather than as a multiplier of the (now smaller)
+	// em: the engine spends `LineHeight` on `TextSize`, so a line of 18 at 1.4 is
+	// 25.2 apart whatever the face's metrics did to the font size.
+	s.lineHeight = `${lineHeight * textSize}px`;
 	s.overflow = "hidden";
 	s.pointerEvents = "none";
 	s.zIndex = String(getZIndex(node)); // share the unified ZIndex space with children
@@ -956,6 +1054,8 @@ function paintRichText(
 ): void {
 	const baseColor = getTextColor3(node);
 	const baseTransparency = getTextTransparency(node);
+	const baseFont = nodeFont(node);
+	const baseTextSize = getTextSize(node);
 	for (const segment of parseRichText(text)) {
 		if (segment.kind === "break") {
 			inner.appendChild(document.createElement("br"));
@@ -977,7 +1077,14 @@ function paintRichText(
 		if (lines !== "") s.textDecoration = lines;
 		if (style.uppercase) s.textTransform = "uppercase";
 		if (style.smallcaps) s.fontVariant = "small-caps";
-		if (style.size !== undefined) s.fontSize = `${style.size}px`;
+		// `<font size>` is a `TextSize` like the label's, so it converts through
+		// the metrics of the face *this run* lands in. A run that only changes the
+		// family needs it too: it inherits a `font-size` converted for the label's
+		// face, which is the wrong number for a face with different metrics.
+		const run = runFont(style, baseFont);
+		if (style.size !== undefined || run.family !== baseFont.family) {
+			s.fontSize = `${cssFontSize(run, style.size ?? baseTextSize)}px`;
+		}
 		// `family` (a font asset URI) wins over the legacy `face` name, matching
 		// how `FontFace` wins over `Font` on the instance itself.
 		if (style.family !== undefined) {
@@ -1604,9 +1711,7 @@ function updateTextBounds(inst: LoomInstance, text: string): void {
 	const ctx = getTextMeasureCtx();
 	if (!ctx) return;
 	const size = typeof inst.TextSize === "number" ? inst.TextSize : 14;
-	const font = inst.Font as { Name?: string } | undefined;
-	const fontName = typeof font?.Name === "string" ? font.Name : undefined;
-	ctx.font = `${fontWeight(fontName)} ${size}px ${fontFamily(fontName)}`;
+	ctx.font = fontShorthand(instanceFont(inst), size);
 	const lines = text.split("\n");
 	let width = 0;
 	for (const line of lines) {
@@ -1739,7 +1844,7 @@ function applyTextBoxStyle(s: CSSStyleDeclaration, node: SceneNode): void {
 	s.outline = "none";
 	s.resize = "none";
 	s.color = cssColor(getTextColor3(node), getTextTransparency(node));
-	s.fontSize = `${getTextSize(node)}px`;
+	s.fontSize = `${cssFontSize(font, getTextSize(node))}px`;
 	s.fontFamily = font.family;
 	s.fontWeight = font.weight;
 	if (font.italic) s.fontStyle = "italic";
