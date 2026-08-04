@@ -1,5 +1,61 @@
 # @loom-dev/renderer
 
+## 0.9.5
+
+### Patch Changes
+
+- [`f4bf03d`](https://github.com/astra-void/loom/commit/f4bf03de7c2bf58d1cb4135b43c26a4e235fb7a4) Thanks [@astra-void](https://github.com/astra-void)! - Size the bundled faces the way the engine sizes them, and spend kerning.
+
+  `TextSize` is the height of the whole face, so loom divides by the face's own
+  box to get a `font-size`. It read that box from the browser
+  (`fontBoundingBoxAscent + Descent`), and that is not the number Roblox divides
+  by: Roboto reports 1.17 there while the engine sizes it as though it were 1.14.
+  Every Roboto glyph was painted about 2.6% small, and since advances come off the
+  same size, every string measured that much narrow before half-pixel rounding
+  pushed it back out.
+
+  `ENGINE_FACE_BOX` now carries the engine's ratio for each family
+  `@loom-dev/renderer/fonts` registers, solved against
+  `TextService:GetTextBoundsAsync` per-glyph advances at `TextSize` 18. 24 of the
+  28 reproduce all 24 sampled glyphs exactly; `FredokaOne` (Fredoka stands in for
+  it), `Merriweather`, `Nunito`, `Oswald` and `DenkOne` do not, and their fitted
+  ratio is still closer than the browser's. A family with no entry — anything a
+  project registered itself, `Gotham` included — keeps the measured box.
+
+  With the glyphs at the right size, advances round to the half pixel instead of
+  snapping up, which was only ever compensating for their being small. The engine
+  also kerns (`AV` is 19.5 where its glyphs are 10.5 and 10 alone), so
+  `shapedTextWidth` now adds the run's kerning, quantized once for the run.
+
+  Against the engine, Roboto 18, the [#11](https://github.com/astra-void/loom/issues/11)
+  paragraph: string widths are exact on 6 of 10 and never off by more than 0.5
+  (they were off by up to 9), and the wrapped line count matches at 49 of 50
+  widths from 320 to 1300 — 45 before this, 34 when CSS did the wrapping.
+
+- [`f4bf03d`](https://github.com/astra-void/loom/commit/f4bf03de7c2bf58d1cb4135b43c26a4e235fb7a4) Thanks [@astra-void](https://github.com/astra-void)! - Paint wrapped text at the line breaks it was measured with.
+
+  A label's box came from `shapedTextWidth` — one advance per grapheme, snapped to
+  the half pixel, the way the engine spends them — while the glyphs inside it were
+  left to CSS, which wraps on its own kerned run widths. Those are a couple of
+  percent narrower, so a label could reserve nine lines and paint eight, ending
+  short of a box built for it, and break at different words than Studio does.
+
+  `wrapLines` is now the single place a wrap is decided: measurement asks it how
+  many lines a label needs, and the text layer asks it where to put the breaks it
+  paints, keeping them in `white-space: pre`. `RichText` runs go through the same
+  wrap with the line carried across runs, each measured in the font its `<font>`
+  tag gave it.
+
+  Checked against `TextService:GetTextBoundsAsync` (Roboto 18, the paragraph from
+  [#11](https://github.com/astra-void/loom/issues/11), 50 widths from 320 to
+  1300): the painted line count matches the engine 45 times, against 34 when CSS
+  did the wrapping. What is left over is the measurement running about a percent
+  roomy, so text wraps a hair early rather than overflowing its box.
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.9.5
+  - @loom-dev/runtime@0.9.5
+
 ## 0.9.4
 
 ### Patch Changes
