@@ -1,5 +1,12 @@
 # @loom-dev/fumadocs-demo
 
+## 0.0.33
+
+### Patch Changes
+
+- Updated dependencies []:
+  - loom-dev@0.9.4
+
 ## 0.0.32
 
 ### Patch Changes

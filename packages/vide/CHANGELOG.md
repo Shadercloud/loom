@@ -1,5 +1,31 @@
 # @loom-dev/vide
 
+## 0.9.4
+
+### Patch Changes
+
+- [`e6de267`](https://github.com/astra-void/loom/commit/e6de267522721c64bf65aa2fba78b3f67f5e5818) Thanks [@astra-void](https://github.com/astra-void)! - Measure text with the same quantized advances Roblox uses, and share that
+  measurement across the static renderer and both live adapters.
+
+  Browser canvas measurement shapes and kerns a whole run with fractional glyph
+  advances. Roblox spends each displayed grapheme on a half-pixel boundary, so
+  the browser answer can be a few percent narrower and wrap a long paragraph at
+  different words. The difference was especially visible in development, where
+  the React adapter measured `TextBounds` itself while a compiled scene used the
+  renderer path.
+
+  The renderer now caches half-pixel grapheme advances per font, invalidates them
+  when a face changes, and preserves the engine's fractional result instead of
+  rounding it to a whole pixel. React and Vide use the same measurement, keeping
+  development and static previews aligned for the long wrapped text reported in
+  [#11](https://github.com/astra-void/loom/issues/11).
+
+- Updated dependencies [[`e6de267`](https://github.com/astra-void/loom/commit/e6de267522721c64bf65aa2fba78b3f67f5e5818)]:
+  - @loom-dev/renderer@0.9.4
+  - @loom-dev/scene@0.9.4
+  - @loom-dev/layout@0.9.4
+  - @loom-dev/runtime@0.9.4
+
 ## 0.9.3
 
 ### Patch Changes
