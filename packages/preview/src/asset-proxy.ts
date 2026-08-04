@@ -11,9 +11,10 @@
  *   a redirect, which keeps the browser half synchronous — the client resolver
  *   just points the layer at this route.
  * - **Build** ({@link loomAssetBundle}): there is no server later, so the ids
- *   the bundle mentions are resolved *now*, the images are downloaded into the
- *   output, and a manifest maps each id to its emitted file. The page then needs
- *   nothing but its own origin.
+ *   the build can account for — read out of the emitted output, plus whatever
+ *   prerendering the targets turned up (`./prerender.ts`) — are resolved *now*,
+ *   the images are downloaded into the output, and a manifest maps each id to
+ *   its emitted file. The page then needs nothing but its own origin.
  */
 import type { Plugin, ViteDevServer } from "vite";
 
@@ -145,6 +146,20 @@ export function assetIdsIn(
 	return into;
 }
 
+/**
+ * Whether the output builds an asset id at runtime — `rbxassetid://` with
+ * something other than digits after it, which is what
+ * `` `rbxassetid://${iconId}` `` minifies to.
+ *
+ * The ids behind one of these are unreadable here (after bundling they are bare
+ * numbers among every other number), so the scan alone would silently bake
+ * nothing. It is the reason for the prerender, and the thing to name in the
+ * warning when the prerender still came back empty.
+ */
+export function composesAssetIds(code: string): boolean {
+	return /rbxassetid:\/\/(?!\d)/.test(code);
+}
+
 /** File extension for a downloaded thumbnail, from what the CDN said it is. */
 function extensionFor(contentType: string | null): string {
 	if (contentType?.includes("jpeg")) return "jpg";
@@ -173,28 +188,75 @@ async function downloadAsset(
 	};
 }
 
+export interface AssetBundleOptions {
+	/** Injectable for tests; the build itself has no reason to pass one. */
+	fetchImpl?: typeof fetch;
+	/**
+	 * Extra `Image` values from somewhere the emitted code cannot be read for
+	 * them — `./prerender.ts` mounts the targets and reports what their trees
+	 * hold, which is how a runtime-composed id gets baked. Absent, the build
+	 * falls back to the literal scan alone.
+	 */
+	discover?: (
+		root: string,
+		warn: (message: string) => void,
+	) => Promise<Iterable<string>>;
+}
+
 /**
- * Resolve and download every asset id the bundle mentions, then emit them —
- * plus a `<base>__loom/assets.json` manifest — into the build output, so a
+ * Resolve and download every asset id the build can account for, then emit them
+ * — plus a `<base>__loom/assets.json` manifest — into the build output, so a
  * static preview paints its `rbxassetid://` images with no server behind it.
  *
- * Only ids **written out** as `rbxassetid://<digits>` are found. One assembled
- * at runtime (`"rbxassetid://" + id`) is not in the output to find, and stays
- * unresolved — the honest limit of a static build.
+ * Two sources, because one is not enough. The **scan** reads the emitted output
+ * for `rbxassetid://<digits>`, which finds every id a source spells out. The
+ * **prerender** ({@link AssetBundleOptions.discover}) mounts the gallery
+ * targets and reads their live trees, which is the only way to see an id built
+ * at runtime — `` `rbxassetid://${iconId}` `` leaves nothing in the bundle to
+ * match. What neither covers is an id the first render never reaches (behind a
+ * hover state, or fetched later); that one stays unresolved, and the build says
+ * so rather than leaving a blank image unexplained.
  *
  * Never fails the build: an id that will not resolve (offline, deleted, or
  * moderated) is warned about and left out of the manifest, exactly as it would
  * have been before this ran.
  */
-export function loomAssetBundle(fetchImpl: typeof fetch = fetch): Plugin {
+export function loomAssetBundle(options: AssetBundleOptions = {}): Plugin {
+	const fetchImpl = options.fetchImpl ?? fetch;
+	let root = process.cwd();
 	return {
 		name: "loom:asset-bundle",
 		apply: "build",
+		configResolved(config) {
+			root = config.root;
+		},
 		async generateBundle(_options, bundle) {
 			const ids = new Set<string>();
+			let composed = false;
 			for (const file of Object.values(bundle)) {
-				if (file.type === "chunk") assetIdsIn(file.code, ids);
-				else if (typeof file.source === "string") assetIdsIn(file.source, ids);
+				const code = file.type === "chunk" ? file.code : file.source;
+				if (typeof code !== "string") continue;
+				assetIdsIn(code, ids);
+				composed ||= composesAssetIds(code);
+			}
+			const scanned = ids.size;
+			// Only for composition. With every id spelled out the scan already has
+			// them all, and mounting the whole gallery to rediscover them would be
+			// seconds spent to learn nothing.
+			if (options.discover && composed) {
+				for (const image of await options.discover(root, (message) => {
+					this.warn(`[loom] ${message}`);
+				})) {
+					assetIdsIn(image, ids);
+				}
+			}
+			if (composed && ids.size === scanned) {
+				this.warn(
+					"[loom] this build composes `rbxassetid://` ids at runtime, and " +
+						"prerendering the targets surfaced none of them — those images " +
+						"will not paint in the static output. They resolve under `loom " +
+						"preview`, which has a server to ask.",
+				);
 			}
 			if (ids.size === 0) return;
 

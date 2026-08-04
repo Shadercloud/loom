@@ -607,13 +607,36 @@ export function loomPreview(options: LoomPreviewOptions = {}): Plugin[] {
 	};
 
 	const plugins: Plugin[] = [rbxtsSyntax, main, serveGlobals, loomAssetProxy()];
-	if (options.assets !== false) plugins.push(loomAssetBundle());
 
 	// Gallery mode: the target import map (dev) + the generated gallery page.
 	const patterns =
 		options.targets !== undefined
 			? normalizeTargetsPatterns(options.targets)
 			: undefined;
+
+	if (options.assets !== false) {
+		plugins.push(
+			loomAssetBundle(
+				// Only gallery mode has targets to mount. A single-entry build keeps
+				// the literal scan alone: its entry *self-mounts* on import, which
+				// under node would run the real WASM layout rather than the stub the
+				// prerender leans on to stay cheap.
+				patterns
+					? {
+							discover: async (root, warn) => {
+								const { prerenderImages } = await import("./prerender.ts");
+								return prerenderImages({
+									root,
+									patterns,
+									...(options.shims ? { shims: options.shims } : {}),
+									warn,
+								});
+							},
+						}
+					: {},
+			),
+		);
+	}
 	if (patterns) plugins.push(loomGallery(patterns));
 	if (options.html !== false) {
 		plugins.push(

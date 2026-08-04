@@ -5,9 +5,11 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	type AssetBundleOptions,
 	assetIdFromPath,
 	assetIdsIn,
 	clearAssetCache,
+	composesAssetIds,
 	loomAssetBundle,
 	resolveAssetUrl,
 } from "./asset-proxy.ts";
@@ -152,8 +154,12 @@ describe("loomAssetBundle", () => {
 	async function bake(
 		bundle: Record<string, unknown>,
 		fetchImpl = fakeCdn(),
+		discover?: AssetBundleOptions["discover"],
 	): Promise<{ emitted: Record<string, unknown>; warnings: string[] }> {
-		const plugin = loomAssetBundle(fetchImpl);
+		const plugin = loomAssetBundle({
+			fetchImpl,
+			...(discover ? { discover } : {}),
+		});
 		const emitted: Record<string, unknown> = {};
 		const warnings: string[] = [];
 		const context = {
@@ -230,5 +236,73 @@ describe("loomAssetBundle", () => {
 			jpeg,
 		);
 		expect(Object.keys(emitted)).toContain("__loom/asset/7.jpg");
+	});
+
+	// The bundle a component library produces: the prefix is there, the id is a
+	// bare number somewhere else entirely. Only the prerender can answer.
+	const COMPOSED = { "index.js": { type: "chunk", code: '"rbxassetid://"+n' } };
+
+	it("bakes an id only the prerender could have found", async () => {
+		const { emitted } = await bake({ ...COMPOSED }, fakeCdn(), async () => [
+			"rbxassetid://424242",
+			// A plain URL among them: the renderer loads it as-is, so it is not an
+			// id and must not become a manifest entry.
+			"https://cdn.test/plain.png",
+		]);
+		expect(JSON.parse(emitted["__loom/assets.json"] as string)).toEqual({
+			"424242": "__loom/asset/424242.png",
+		});
+	});
+
+	it("says so when composition is all that is left", async () => {
+		const { emitted, warnings } = await bake(
+			{ ...COMPOSED },
+			fakeCdn(),
+			async () => [],
+		);
+		expect(warnings.join()).toContain(
+			"composes `rbxassetid://` ids at runtime",
+		);
+		expect(emitted).toEqual({});
+	});
+
+	it("stays quiet when the prerender covered the composed ids", async () => {
+		const { warnings } = await bake({ ...COMPOSED }, fakeCdn(), async () => [
+			"rbxassetid://424242",
+		]);
+		expect(warnings).toEqual([]);
+	});
+
+	it("does not prerender a build that composes nothing", async () => {
+		const prerendered: string[] = [];
+		const spy = async () => {
+			prerendered.push("ran");
+			return [];
+		};
+		// No images at all…
+		await bake(
+			{ "index.js": { type: "chunk", code: "console.log(1)" } },
+			fakeCdn(),
+			spy,
+		);
+		// …and every id spelled out, which the scan already has in full.
+		await bake(
+			{ "index.js": { type: "chunk", code: '"rbxassetid://1818"' } },
+			fakeCdn(),
+			spy,
+		);
+		expect(prerendered).toEqual([]);
+	});
+});
+
+describe("composesAssetIds", () => {
+	it("spots an id built at runtime", () => {
+		expect(composesAssetIds('"rbxassetid://"+n')).toBe(true);
+		expect(composesAssetIds(`\`rbxassetid://\${id}\``)).toBe(true);
+	});
+
+	it("leaves a spelled-out id alone — the scan already has it", () => {
+		expect(composesAssetIds('"rbxassetid://1818"')).toBe(false);
+		expect(composesAssetIds("nothing to see")).toBe(false);
 	});
 });
