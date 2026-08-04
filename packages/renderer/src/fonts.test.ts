@@ -11,7 +11,7 @@ import {
 	onFontsChanged,
 	registerFont,
 } from "./fonts.ts";
-import { fontFamily, measureText } from "./index.ts";
+import { fontFamily, measureText, shapedTextWidth } from "./index.ts";
 
 afterEach(() => {
 	clearRegisteredFonts();
@@ -228,6 +228,36 @@ describe("clearRegisteredFonts", () => {
 });
 
 describe("measureText", () => {
+	it("uses the engine's quantized advances instead of browser run width", () => {
+		const measure = vi.fn((text: string) => ({
+			// The browser kerns the run to 12px; the engine spends 6.2px rounded up
+			// to the next half pixel for each character: 6.5 + 6.5 = 13px.
+			width: text.length === 1 ? 6.2 : 12,
+		}));
+		const ctx = {
+			font: "10px Test",
+			measureText: measure,
+		} as unknown as CanvasRenderingContext2D;
+
+		expect(shapedTextWidth(ctx, "AV")).toBe(13);
+		expect(measure).toHaveBeenCalledWith("A");
+		expect(measure).toHaveBeenCalledWith("V");
+		expect(measure).not.toHaveBeenCalledWith("AV");
+	});
+
+	it("keeps one grapheme cluster on one advance", () => {
+		const family = "👨‍👩‍👧‍👦";
+		const measure = vi.fn(() => ({ width: 12.2 }));
+		const ctx = {
+			font: "11px Emoji",
+			measureText: measure,
+		} as unknown as CanvasRenderingContext2D;
+
+		expect(shapedTextWidth(ctx, family)).toBe(12.5);
+		expect(measure).toHaveBeenCalledOnce();
+		expect(measure).toHaveBeenCalledWith(family);
+	});
+
 	it("returns nothing for an empty string, and one line otherwise", () => {
 		expect(measureText({ text: "", size: 18 })).toEqual({ x: 0, y: 0 });
 		expect(measureText({ text: "hello", size: 18 }).y).toBe(18);

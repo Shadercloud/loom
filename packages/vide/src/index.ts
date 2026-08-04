@@ -17,6 +17,7 @@ import {
 	instanceFont,
 	onFontsChanged,
 	renderScene,
+	shapedTextWidth,
 } from "@loom-dev/renderer";
 import { enumName, toPropertyValue } from "@loom-dev/runtime";
 import {
@@ -275,7 +276,7 @@ function measureTextBounds(
 	};
 	for (const line of text.split("\n")) {
 		if (wrapAt === undefined) {
-			endLine(ctx.measureText(line).width);
+			endLine(shapedTextWidth(ctx, line));
 			continue;
 		}
 		let lineWidth = 0;
@@ -283,7 +284,7 @@ function measureTextBounds(
 		// rather than assumed.
 		for (const piece of line.split(/(\s+)/)) {
 			if (piece === "") continue;
-			const pieceWidth = ctx.measureText(piece).width;
+			const pieceWidth = shapedTextWidth(ctx, piece);
 			if (lineWidth > 0 && lineWidth + pieceWidth > wrapAt) {
 				endLine(lineWidth);
 				lineWidth = 0;
@@ -295,7 +296,7 @@ function measureTextBounds(
 		}
 		endLine(lineWidth);
 	}
-	return prop.vector2({ x: Math.ceil(width), y: height });
+	return prop.vector2({ x: width, y: height });
 }
 
 /** What one snapshot of the live tree needs from the layout that last ran. */

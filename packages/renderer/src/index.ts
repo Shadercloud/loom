@@ -394,6 +394,67 @@ function measureContext(): CanvasRenderingContext2D | null {
 }
 
 /**
+ * Width of one unbreakable run, measured the way the engine's shaper spends it:
+ * one advance per glyph, each snapped **up** to the half-pixel, and no kerning
+ * between them.
+ *
+ * `ctx.measureText(run)` is the browser's answer, and it differs from the
+ * engine's by a steady couple of percent: the browser kerns and keeps advances
+ * fractional, while every width the engine reports is a multiple of 0.5 — a
+ * ten-`i` string is exactly ten times one `i`, so the quantum is per glyph, not
+ * per string. Probed against `TextService:GetTextSize` (Roboto, sizes 12–48),
+ * snapping each advance up landed on the engine's number for the UI-size
+ * strings that matter (`Save` 34, `Cancel` 48.5 at 18) where rounding sat ~2%
+ * under; what error remains (~+1%, the engine hints advances per-ppem and a
+ * browser will not say what FreeType hinted) at least errs on the roomy side,
+ * so text wraps a hair early rather than overflowing its box.
+ *
+ * The per-glyph advances are cached under `ctx.font` — the shorthand carries
+ * family, weight, style and size, which is exactly the cache key — and dropped
+ * when a registered face loads, since the same shorthand then shapes with a
+ * different face.
+ */
+const advanceCache = new Map<string, Map<string, number>>();
+onFontsChanged(() => advanceCache.clear());
+const graphemeSegmenter =
+	typeof Intl.Segmenter === "function"
+		? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+		: undefined;
+
+function* graphemes(run: string): Iterable<string> {
+	if (graphemeSegmenter === undefined) {
+		// Older engines still get code points rather than UTF-16 halves.
+		yield* run;
+		return;
+	}
+	for (const item of graphemeSegmenter.segment(run)) yield item.segment;
+}
+
+export function shapedTextWidth(
+	ctx: CanvasRenderingContext2D,
+	run: string,
+): number {
+	const fontKey = ctx.font;
+	let advances = advanceCache.get(fontKey);
+	if (advances === undefined) {
+		advances = new Map();
+		advanceCache.set(fontKey, advances);
+	}
+	let total = 0;
+	// Keep combining marks and emoji ZWJ sequences together. Measuring their code
+	// points separately would turn one displayed glyph into several advances.
+	for (const glyph of graphemes(run)) {
+		let advance = advances.get(glyph);
+		if (advance === undefined) {
+			advance = Math.ceil(ctx.measureText(glyph).width * 2) / 2;
+			advances.set(glyph, advance);
+		}
+		total += advance;
+	}
+	return total;
+}
+
+/**
  * Measure a plain string the way the engine's `TextService` does — the same font
  * resolution the renderer paints with, so what a component *reserves* for a
  * label and what the label then *occupies* come from one place.
@@ -419,7 +480,7 @@ export function measureText(request: {
 	const ctx = measureContext();
 	if (ctx) ctx.font = fontShorthand(resolveFont(request.font, undefined), size);
 	const widthOf = (piece: string): number =>
-		ctx ? ctx.measureText(piece).width : 0;
+		ctx ? shapedTextWidth(ctx, piece) : 0;
 	const wrapAt =
 		request.width !== undefined && request.width > 0
 			? request.width
@@ -444,7 +505,10 @@ export function measureText(request: {
 		}
 		widest = Math.max(widest, line);
 	}
-	return { x: Math.ceil(widest), y: lines * size };
+	// Every advance is already a multiple of 0.5, and the engine's own answer
+	// keeps that half (`GetTextSize("Save", 24, …)` is 44.5) — ceiling it would
+	// report one wider than Studio does.
+	return { x: widest, y: lines * size };
 }
 
 // Hand the measurement to the runtime, which owns `TextService` but has no
@@ -1715,9 +1779,9 @@ function updateTextBounds(inst: LoomInstance, text: string): void {
 	const lines = text.split("\n");
 	let width = 0;
 	for (const line of lines) {
-		width = Math.max(width, ctx.measureText(line).width);
+		width = Math.max(width, shapedTextWidth(ctx, line));
 	}
-	const w = Math.ceil(width);
+	const w = width;
 	const h = text === "" ? 0 : lines.length * size;
 	const current = inst.TextBounds as { X?: number; Y?: number } | undefined;
 	if (current && current.X === w && current.Y === h) return;

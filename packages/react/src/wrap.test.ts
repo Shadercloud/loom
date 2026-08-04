@@ -51,7 +51,13 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 	writable: true,
 	value: () => ({
 		font: "",
-		measureText: (text: string) => ({ width: text.length * CHAR_W }),
+		// Browsers shape a whole run fractionally (and may kern it), while Roblox
+		// spends a separately quantized advance per character. Keeping those two
+		// answers different makes this test fail if the live React path goes back to
+		// measuring whole words while the static renderer uses engine-shaped widths.
+		measureText: (text: string) => ({
+			width: text.length === 1 ? CHAR_W - 0.4 : text.length * (CHAR_W - 1),
+		}),
 	}),
 });
 

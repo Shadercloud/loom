@@ -25,6 +25,7 @@ import {
 	type ResolvedFont,
 	type RichSegment,
 	runFont,
+	shapedTextWidth,
 } from "@loom-dev/renderer";
 import type {
 	Color3,
@@ -621,7 +622,7 @@ function measureSegments(
 	/** Add one unbreakable piece, wrapping first if it no longer fits. */
 	const push = (piece: string, size: number): void => {
 		if (piece === "") return;
-		const pieceWidth = ctx.measureText(piece).width;
+		const pieceWidth = shapedTextWidth(ctx, piece);
 		if (
 			wrapAt !== undefined &&
 			lineWidth > 0 &&
@@ -658,7 +659,7 @@ function measureSegments(
 		}
 	}
 	endLine();
-	return { x: Math.ceil(width), y: height };
+	return { x: width, y: height };
 }
 
 function encodeInstance(

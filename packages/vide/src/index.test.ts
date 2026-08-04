@@ -20,7 +20,11 @@ import { type ComputeLayout, create, mount, source } from "./index";
  */
 const measureStub = {
 	font: "",
-	measureText: (text: string) => ({ width: text.length * 7 }),
+	// A whole browser-shaped run is narrower than its individually quantized
+	// advances. The adapter must use the latter, like the static renderer does.
+	measureText: (text: string) => ({
+		width: text === "~" ? 6.2 : text.length === 1 ? 6.6 : text.length * 6,
+	}),
 };
 Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 	value: () => measureStub,
@@ -159,6 +163,26 @@ describe("vide adapter text measurement", () => {
 		// 500, and not the 133 the string measures on one line.
 		expect(last?.x).toBeLessThanOrEqual(80);
 		expect(last?.y).toBeGreaterThan(10);
+	});
+
+	it("keeps the renderer's half-pixel text width", () => {
+		const measured: Array<{ x: number; y: number }> = [];
+		unmounts.push(
+			mount(
+				() =>
+					create("ScreenGui")({
+						1: create("TextLabel")({
+							Text: "~",
+							AutomaticSize: Enum.AutomaticSize.XY,
+							TextSize: 10,
+						}),
+					}),
+				host,
+				{ computeLayout: makeLayout(() => undefined, measured) },
+			),
+		);
+
+		expect(measured.at(-1)?.x).toBe(6.5);
 	});
 
 	it("reads TextWrap as the alias it is, and lets TextWrapped overrule it", () => {

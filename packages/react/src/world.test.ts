@@ -48,7 +48,11 @@ function makeMount(): HTMLElement {
  */
 const measureStub = {
 	font: "",
-	measureText: (text: string) => ({ width: text.length * 7 }),
+	// A whole browser-shaped run is narrower than its individually quantized
+	// advances. The adapter must use the latter, like the static renderer does.
+	measureText: (text: string) => ({
+		width: text === "~" ? 6.2 : text.length === 1 ? 6.6 : text.length * 6,
+	}),
 };
 Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 	value: () => measureStub,
@@ -618,6 +622,39 @@ describe("mountSync world", () => {
 		// Wrapped: never wider than the 100px parent, and several lines tall.
 		expect(last?.x).toBeLessThanOrEqual(100);
 		expect(last?.y).toBeGreaterThan(10);
+	});
+
+	it("keeps the renderer's half-pixel text width", () => {
+		let width = 0;
+		roots.push(
+			mountSync(
+				createElement(
+					"screenGui",
+					null,
+					createElement("textlabel", {
+						Text: "~",
+						AutomaticSize: Enum.AutomaticSize.XY,
+						TextSize: 10,
+					}),
+				),
+				mount,
+				{
+					computeLayout(node) {
+						const label = node.children?.[0];
+						const bounds = label?.properties?.TextBounds;
+						if (bounds?.type === "Vector2") {
+							width = (bounds.value as { x: number }).x;
+						}
+						return makeStubLayout({ width: 100, height: 100 })(node, {
+							width: 100,
+							height: 100,
+						});
+					},
+				},
+			),
+		);
+
+		expect(width).toBe(6.5);
 	});
 
 	it("wraps at the nearest ancestor that has a width, past auto-sized ones", () => {
