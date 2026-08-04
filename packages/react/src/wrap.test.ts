@@ -51,12 +51,13 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 	writable: true,
 	value: () => ({
 		font: "",
-		// Browsers shape a whole run fractionally (and may kern it), while Roblox
-		// spends a separately quantized advance per character. Keeping those two
-		// answers different makes this test fail if the live React path goes back to
-		// measuring whole words while the static renderer uses engine-shaped widths.
+		// Browsers shape a whole run fractionally, while Roblox rounds a separate
+		// advance per character. An unkerned face at `CHAR_W - 0.2` rounds to
+		// exactly `CHAR_W` a glyph while its runs stay fractional, so this still
+		// fails if the live React path goes back to measuring whole words while the
+		// static renderer uses engine-shaped widths.
 		measureText: (text: string) => ({
-			width: text.length === 1 ? CHAR_W - 0.4 : text.length * (CHAR_W - 1),
+			width: text.length * (CHAR_W - 0.2),
 		}),
 	}),
 });

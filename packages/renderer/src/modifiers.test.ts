@@ -8,6 +8,21 @@ import { color3FromRGB, prop, udim, udim2 } from "@loom-dev/scene";
 import { describe, expect, it } from "vitest";
 import { renderScene } from "./index";
 
+/**
+ * One flat advance per character, so a wrapped label breaks at widths this file
+ * can state exactly. Only `measureText` is stubbed: the face metrics stay
+ * absent, which is what jsdom offers anyway, so nothing else here moves.
+ */
+const CHAR_W = 6;
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+	configurable: true,
+	writable: true,
+	value: () => ({
+		font: "",
+		measureText: (text: string) => ({ width: text.length * CHAR_W }),
+	}),
+});
+
 function layoutOf(entries: Record<string, Rect>): LayoutResult {
 	const rects: LayoutResult["rects"] = {};
 	for (const [id, rect] of Object.entries(entries)) rects[id] = { rect };
@@ -411,7 +426,16 @@ describe("RichText", () => {
 });
 
 describe("TextWrap", () => {
-	function wrapOf(properties: SceneNode["properties"]): string {
+	/**
+	 * The label is 24 wide (`LAYOUT_WITH_ICON`), so at {@link CHAR_W} a four-letter
+	 * word fills a line exactly and the next word has to start a new one.
+	 */
+	const FOUR_WORDS = "aaaa bbbb cccc";
+
+	function paintedOf(properties: SceneNode["properties"]): {
+		whiteSpace: string;
+		text: string;
+	} {
 		const mount = document.createElement("div");
 		renderScene(
 			{
@@ -429,33 +453,54 @@ describe("TextWrap", () => {
 			'[data-loom-name="Label"] div > div',
 		);
 		if (!inner) throw new Error("text layer not rendered");
-		return inner.style.whiteSpace;
+		return {
+			whiteSpace: inner.style.whiteSpace,
+			text: inner.textContent ?? "",
+		};
+	}
+
+	/** The lines the label actually paints, however it was told to break them. */
+	function linesOf(properties: SceneNode["properties"]): string[] {
+		return paintedOf(properties).text.split("\n");
 	}
 
 	it("honours the deprecated TextWrap alias", () => {
 		// Roblox's own docs call `TextWrap` "simply an alias for `TextWrapped`", so
 		// a tree that sets only the old spelling wraps in the engine. Reading the
 		// new spelling alone ran the text off the edge of its container.
-		expect(wrapOf({ Text: prop.string("x"), TextWrap: prop.bool(true) })).toBe(
-			"pre-wrap",
-		);
-		expect(wrapOf({ Text: prop.string("x"), TextWrap: prop.bool(false) })).toBe(
-			"pre",
-		);
+		expect(
+			linesOf({ Text: prop.string(FOUR_WORDS), TextWrap: prop.bool(true) }),
+		).toEqual(["aaaa", "bbbb", "cccc"]);
+		expect(
+			linesOf({ Text: prop.string(FOUR_WORDS), TextWrap: prop.bool(false) }),
+		).toEqual([FOUR_WORDS]);
 	});
 
 	it("lets the modern spelling win when both are set", () => {
 		expect(
-			wrapOf({
-				Text: prop.string("x"),
+			linesOf({
+				Text: prop.string(FOUR_WORDS),
 				TextWrapped: prop.bool(false),
 				TextWrap: prop.bool(true),
 			}),
-		).toBe("pre");
+		).toEqual([FOUR_WORDS]);
 	});
 
 	it("defaults to not wrapping", () => {
-		expect(wrapOf({ Text: prop.string("x") })).toBe("pre");
+		expect(linesOf({ Text: prop.string(FOUR_WORDS) })).toEqual([FOUR_WORDS]);
+	});
+
+	it("breaks where the measurement broke, not where the browser would", () => {
+		// CSS wraps on the browser's own kerned run widths, which are narrower than
+		// the advances the box was measured with — so a label could reserve a line
+		// the paint never filled. A wrapped label now carries the measurement's own
+		// breaks, and `pre` keeps them exactly.
+		const painted = paintedOf({
+			Text: prop.string(FOUR_WORDS),
+			TextWrapped: prop.bool(true),
+		});
+		expect(painted.whiteSpace).toBe("pre");
+		expect(painted.text).toBe("aaaa\nbbbb\ncccc");
 	});
 
 	it("keeps the whitespace the engine keeps", () => {
@@ -465,10 +510,10 @@ describe("TextWrap", () => {
 		// several lines painting as one — a box built for a line count that was
 		// never drawn.
 		expect(
-			wrapOf({ Text: prop.string("a\nb"), TextWrapped: prop.bool(true) }),
-		).toBe("pre-wrap");
+			linesOf({ Text: prop.string("a\nb"), TextWrapped: prop.bool(true) }),
+		).toEqual(["a", "b"]);
 		expect(
-			wrapOf({ Text: prop.string("a\nb"), TextWrapped: prop.bool(false) }),
-		).toBe("pre");
+			paintedOf({ Text: prop.string("a\nb"), TextWrapped: prop.bool(false) }),
+		).toEqual({ whiteSpace: "pre", text: "a\nb" });
 	});
 });

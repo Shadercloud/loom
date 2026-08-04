@@ -48,11 +48,10 @@ function makeMount(): HTMLElement {
  */
 const measureStub = {
 	font: "",
-	// A whole browser-shaped run is narrower than its individually quantized
-	// advances. The adapter must use the latter, like the static renderer does.
-	measureText: (text: string) => ({
-		width: text === "~" ? 6.2 : text.length === 1 ? 6.6 : text.length * 6,
-	}),
+	// An unkerned face at 6.3 a character: a browser-shaped run is 6.3 × length,
+	// while the engine rounds each advance to the half pixel and spends 6.5. The
+	// adapter must report the latter, like the static renderer does.
+	measureText: (text: string) => ({ width: text.length * 6.3 }),
 };
 Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 	value: () => measureStub,
@@ -514,7 +513,7 @@ describe("mountSync world", () => {
 		expect(bounds).toBeDefined();
 		// One line tall, and wide enough for the placeholder rather than zero.
 		expect(bounds?.y).toBe(20);
-		expect(bounds?.x).toBe("John Doe".length * 7);
+		expect(bounds?.x).toBe("John Doe".length * 6.5);
 	});
 
 	it("makes a listening Frame hit-testable, Active or not", () => {
@@ -784,13 +783,13 @@ describe("mountSync world", () => {
 			'[data-loom-name="Wrapped"]',
 		);
 		const painted = (): number => Number.parseFloat(label?.style.width ?? "");
-		// 280 of room, so the 133 the string measures on one line fits as it is.
-		expect(painted()).toBe(133);
+		// 280 of room, so the 123.5 the string measures on one line fits as it is.
+		expect(painted()).toBe(123.5);
 
 		// The container narrows — one resize tick, one flush.
 		card.width = 100;
 		root.world.flushSync();
-		// Already wrapped: 80 of room, not the 133 of the pass that measured
+		// Already wrapped: 80 of room, not the 123.5 of the pass that measured
 		// against the width the card had a moment ago.
 		expect(painted()).toBeLessThanOrEqual(80);
 	});

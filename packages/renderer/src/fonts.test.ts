@@ -228,21 +228,33 @@ describe("clearRegisteredFonts", () => {
 });
 
 describe("measureText", () => {
-	it("uses the engine's quantized advances instead of browser run width", () => {
+	it("spends a rounded advance per glyph, not the browser's run width", () => {
+		// An unkerned face at 6.2px a character: the run is 12.4 wide, while the
+		// engine rounds each advance to the half pixel and spends 6 + 6 = 12.
+		const measure = vi.fn((text: string) => ({ width: text.length * 6.2 }));
+		const ctx = {
+			font: "10px Test",
+			measureText: measure,
+		} as unknown as CanvasRenderingContext2D;
+
+		expect(shapedTextWidth(ctx, "AV")).toBe(12);
+		expect(measure).toHaveBeenCalledWith("A");
+		expect(measure).toHaveBeenCalledWith("V");
+	});
+
+	it("spends the kerning between a pair as well as their advances", () => {
+		// `AV` closes up by 0.4 in this face: 6 + 6 of advance, less a kern that
+		// lands on the half pixel the engine reports every width on.
 		const measure = vi.fn((text: string) => ({
-			// The browser kerns the run to 12px; the engine spends 6.2px rounded up
-			// to the next half pixel for each character: 6.5 + 6.5 = 13px.
-			width: text.length === 1 ? 6.2 : 12,
+			width: text === "AV" ? 12 : text.length * 6.2,
 		}));
 		const ctx = {
 			font: "10px Test",
 			measureText: measure,
 		} as unknown as CanvasRenderingContext2D;
 
-		expect(shapedTextWidth(ctx, "AV")).toBe(13);
-		expect(measure).toHaveBeenCalledWith("A");
-		expect(measure).toHaveBeenCalledWith("V");
-		expect(measure).not.toHaveBeenCalledWith("AV");
+		expect(shapedTextWidth(ctx, "AV")).toBe(11.5);
+		expect(measure).toHaveBeenCalledWith("AV");
 	});
 
 	it("keeps one grapheme cluster on one advance", () => {
@@ -253,7 +265,7 @@ describe("measureText", () => {
 			measureText: measure,
 		} as unknown as CanvasRenderingContext2D;
 
-		expect(shapedTextWidth(ctx, family)).toBe(12.5);
+		expect(shapedTextWidth(ctx, family)).toBe(12);
 		expect(measure).toHaveBeenCalledOnce();
 		expect(measure).toHaveBeenCalledWith(family);
 	});

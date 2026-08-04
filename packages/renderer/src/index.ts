@@ -108,6 +108,9 @@ export {
 	onFontsChanged,
 	registerFont,
 } from "./fonts.ts";
+
+import type { RichSegment } from "./richtext.ts";
+
 // The rich-text parser is part of the public surface: the react adapter has to
 // measure the *shown* text, not the markup, for AutomaticSize.
 export {
@@ -289,10 +292,77 @@ onFontsChanged(() => emScaleCache.clear());
  * browsers do when they report the face box. */
 const EM_PROBE_SIZE = 100;
 
+/**
+ * The ratio the *engine* uses, for the faces {@link registerFont} ships.
+ *
+ * `fontBoundingBoxAscent + Descent` is the browser's answer for "how tall is
+ * this face", and it is not the number Roblox divides by — Roboto reports 1.17
+ * there while the engine sizes the face as though it were 1.14. The difference
+ * is small and entirely visible: it painted Roboto ~2.6% small, and since the
+ * advances come off the same size, it measured every string that much narrow
+ * before the half-pixel rounding pushed it back out again.
+ *
+ * Each entry is the size that reproduces `TextService:GetTextBoundsAsync`
+ * exactly. Solved per family against the engine's own per-glyph advances at
+ * `TextSize` 18 (24 glyphs: `iltmaenowsrfy.,␣AWCBFTgu`), taking the middle of
+ * the range of sizes that round to all 24. 24 of the 28 land on every glyph;
+ * the four that do not are noted below, and their fitted ratio is still closer
+ * than the browser's.
+ *
+ * Keyed by the CSS family the face declares, since that is what survives into
+ * {@link ResolvedFont}. A family with no entry — anything a project registered
+ * itself, `Gotham` included — keeps the measured box, which is the previous
+ * behaviour.
+ */
+const ENGINE_FACE_BOX: ReadonlyMap<string, number> = new Map([
+	["Source Sans 3 Variable", 1.2212],
+	["Roboto Variable", 1.14],
+	["Roboto Mono Variable", 1.2707],
+	["Roboto Condensed Variable", 1.1385],
+	["Inconsolata Variable", 1.0001],
+	["Arimo Variable", 1.0863],
+	// Fredoka stands in for Fredoka One (see `open-fonts.ts`), so this is the
+	// closest size for a face the engine does not actually draw with: 13/24.
+	["Fredoka Variable", 1.1236],
+	["Grenze Gotisch Variable", 1.4337],
+	["Josefin Sans Variable", 0.9723],
+	["Jura Variable", 1.155],
+	// 16/24 — the bundled cut differs from the engine's beyond a size change.
+	["Merriweather Variable", 1.221],
+	["Nunito Variable", 1.3353], // 23/24
+	["Oswald Variable", 1.4308], // 23/24
+	["Amatic SC", 1.2234],
+	["Bangers", 1.0334],
+	["Creepster", 1.1378],
+	["Denk One", 1.221], // 23/24
+	["Fondamento", 1.3465],
+	["Indie Flower", 1.412],
+	["Kalam", 1.5501],
+	["Luckiest Guy", 0.9724],
+	["Michroma", 1.3843],
+	["Patrick Hand", 1.3117],
+	["Permanent Marker", 1.3862],
+	["Sarpanch", 1.3644],
+	["Special Elite", 0.9715],
+	["Titillium Web", 1.4739],
+	["Ubuntu", 1.0927],
+]);
+
+/** The first family in a CSS stack, unquoted — what the table is keyed by. */
+function primaryFamily(stack: string): string {
+	const first = stack.split(",")[0]?.trim() ?? "";
+	return first.replace(/^["']|["']$/g, "");
+}
+
 function faceBoxPerEm(font: ResolvedFont): number {
 	const key = `${font.italic ? "italic " : ""}${font.weight} ${font.family}`;
 	const cached = emScaleCache.get(key);
 	if (cached !== undefined) return cached;
+	const known = ENGINE_FACE_BOX.get(primaryFamily(font.family));
+	if (known !== undefined) {
+		emScaleCache.set(key, known);
+		return known;
+	}
 	let ratio = 1;
 	const ctx = measureContext();
 	if (ctx) {
@@ -394,28 +464,44 @@ function measureContext(): CanvasRenderingContext2D | null {
 }
 
 /**
- * Width of one unbreakable run, measured the way the engine's shaper spends it:
- * one advance per glyph, each snapped **up** to the half-pixel, and no kerning
+ * Width of one unbreakable run, measured the way the engine spends it: one
+ * advance per glyph, each **rounded** to the half-pixel, plus the kerning
  * between them.
  *
- * `ctx.measureText(run)` is the browser's answer, and it differs from the
- * engine's by a steady couple of percent: the browser kerns and keeps advances
- * fractional, while every width the engine reports is a multiple of 0.5 — a
- * ten-`i` string is exactly ten times one `i`, so the quantum is per glyph, not
- * per string. Probed against `TextService:GetTextSize` (Roboto, sizes 12–48),
- * snapping each advance up landed on the engine's number for the UI-size
- * strings that matter (`Save` 34, `Cancel` 48.5 at 18) where rounding sat ~2%
- * under; what error remains (~+1%, the engine hints advances per-ppem and a
- * browser will not say what FreeType hinted) at least errs on the roomy side,
- * so text wraps a hair early rather than overflowing its box.
+ * `ctx.measureText(run)` is the browser's answer and it is not the engine's.
+ * Every advance the engine reports is a multiple of 0.5 — a ten-`i` string is
+ * exactly ten times one `i`, so the quantum is per glyph — and it kerns: `AV`
+ * comes back 19.5 where its two glyphs are 10.5 and 10 on their own.
  *
- * The per-glyph advances are cached under `ctx.font` — the shorthand carries
- * family, weight, style and size, which is exactly the cache key — and dropped
- * when a registered face loads, since the same shorthand then shapes with a
- * different face.
+ * Rounding is only correct once the glyphs are the right size, which is what
+ * {@link ENGINE_FACE_BOX} fixed; before that the advances came out ~2.6% narrow
+ * and rounding them lost half a pixel a glyph, which is why this snapped *up*
+ * instead and ran wide. Against `GetTextBoundsAsync` (Roboto 18) over eleven
+ * strings from single pairs to full 115-character lines, rounding at the
+ * engine's size with kerning is exact on six and never off by more than 0.5;
+ * snapping up without it was exact on five and off by 9 on the longest line.
+ *
+ * The kerning total is quantized once for the run rather than per pair: the
+ * engine's own kerning for a line lands on a half pixel, and quantizing each
+ * pair would round a hundred sub-half-pixel deltas away to nothing.
+ *
+ * Both caches are keyed by `ctx.font` — the shorthand carries family, weight,
+ * style and size, which is exactly the cache key — and dropped when a
+ * registered face loads, since the same shorthand then shapes with a different
+ * face.
  */
-const advanceCache = new Map<string, Map<string, number>>();
-onFontsChanged(() => advanceCache.clear());
+interface GlyphMetrics {
+	/** Half-pixel advance, the engine's unit. */
+	advance: number;
+	/** Unrounded width, kept so kerning can be read out of a pair. */
+	raw: number;
+}
+const advanceCache = new Map<string, Map<string, GlyphMetrics>>();
+const kernCache = new Map<string, Map<string, number>>();
+onFontsChanged(() => {
+	advanceCache.clear();
+	kernCache.clear();
+});
 const graphemeSegmenter =
 	typeof Intl.Segmenter === "function"
 		? new Intl.Segmenter(undefined, { granularity: "grapheme" })
@@ -430,6 +516,11 @@ function* graphemes(run: string): Iterable<string> {
 	for (const item of graphemeSegmenter.segment(run)) yield item.segment;
 }
 
+/** Snap to the half pixel the engine reports every advance on. */
+function halfPixel(width: number): number {
+	return Math.round(width * 2) / 2;
+}
+
 export function shapedTextWidth(
 	ctx: CanvasRenderingContext2D,
 	run: string,
@@ -440,18 +531,115 @@ export function shapedTextWidth(
 		advances = new Map();
 		advanceCache.set(fontKey, advances);
 	}
+	let kerns = kernCache.get(fontKey);
+	if (kerns === undefined) {
+		kerns = new Map();
+		kernCache.set(fontKey, kerns);
+	}
+	const metricsOf = (glyph: string): GlyphMetrics => {
+		let metrics = advances.get(glyph);
+		if (metrics === undefined) {
+			const raw = ctx.measureText(glyph).width;
+			metrics = { advance: halfPixel(raw), raw };
+			advances.set(glyph, metrics);
+		}
+		return metrics;
+	};
 	let total = 0;
+	let kerning = 0;
+	let previous: string | undefined;
 	// Keep combining marks and emoji ZWJ sequences together. Measuring their code
 	// points separately would turn one displayed glyph into several advances.
 	for (const glyph of graphemes(run)) {
-		let advance = advances.get(glyph);
-		if (advance === undefined) {
-			advance = Math.ceil(ctx.measureText(glyph).width * 2) / 2;
-			advances.set(glyph, advance);
+		const metrics = metricsOf(glyph);
+		total += metrics.advance;
+		if (previous !== undefined) {
+			const pair = `${previous} ${glyph}`;
+			let kern = kerns.get(pair);
+			if (kern === undefined) {
+				kern =
+					ctx.measureText(previous + glyph).width -
+					metricsOf(previous).raw -
+					metrics.raw;
+				kerns.set(pair, kern);
+			}
+			kerning += kern;
 		}
-		total += advance;
+		previous = glyph;
 	}
-	return total;
+	return total + halfPixel(kerning);
+}
+
+/**
+ * A width function for one font at one `TextSize`, over the shared measuring
+ * context — which every other measurer here reuses, so the font is re-asserted
+ * rather than assumed to be whatever it was left as.
+ */
+function widthMeasurer(
+	font: ResolvedFont,
+	textSize: number,
+): (piece: string) => number {
+	const ctx = measureContext();
+	if (!ctx) return () => 0;
+	const shorthand = fontShorthand(font, textSize);
+	return (piece) => {
+		if (ctx.font !== shorthand) ctx.font = shorthand;
+		return shapedTextWidth(ctx, piece);
+	};
+}
+
+/**
+ * Break a string into the lines the engine would break it into: greedy at word
+ * boundaries, on {@link shapedTextWidth} advances, `\n` always breaking.
+ *
+ * This is the one place the wrap is decided. Measurement asks it how many lines
+ * a label needs, and {@link createTextLayer} asks it where to put the breaks it
+ * paints — because the browser, left to wrap the text itself, uses its own
+ * kerned run widths and breaks a couple of words later than the engine does.
+ * Against `TextService:GetTextBoundsAsync` (Roboto 18, the #11 paragraph, 50
+ * widths from 320 to 1300) these advances land on the engine's line count 48
+ * times; the browser's own wrapping managed 32. Sharing the answer is what
+ * keeps a box from being a line taller than the text drawn inside it.
+ *
+ * A word longer than `wrapAt` stays on its own line rather than being split
+ * mid-word — the same thing the measurement has always done, so the two agree
+ * on that edge too.
+ */
+function wrapLines(
+	text: string,
+	wrapAt: number | undefined,
+	widthOf: (piece: string) => number,
+): { lines: string[]; widest: number } {
+	const lines: string[] = [];
+	let widest = 0;
+	for (const paragraph of text.split("\n")) {
+		if (wrapAt === undefined) {
+			lines.push(paragraph);
+			widest = Math.max(widest, widthOf(paragraph));
+			continue;
+		}
+		let line = "";
+		let lineWidth = 0;
+		for (const piece of paragraph.split(/(\s+)/)) {
+			if (piece === "") continue;
+			const pieceWidth = widthOf(piece);
+			if (lineWidth > 0 && lineWidth + pieceWidth > wrapAt) {
+				lines.push(line);
+				widest = Math.max(widest, lineWidth);
+				// A run of spaces that lands on a break is spent on the break: the
+				// next line starts at the margin, not indented by it.
+				const breaks = piece.trim() === "";
+				line = breaks ? "" : piece;
+				lineWidth = breaks ? 0 : pieceWidth;
+				continue;
+			}
+			line += piece;
+			lineWidth += pieceWidth;
+		}
+		lines.push(line);
+		widest = Math.max(widest, lineWidth);
+	}
+	return { lines, widest };
 }
 
 /**
@@ -479,36 +667,17 @@ export function measureText(request: {
 	// collapses, rather than the whole answer.
 	const ctx = measureContext();
 	if (ctx) ctx.font = fontShorthand(resolveFont(request.font, undefined), size);
-	const widthOf = (piece: string): number =>
-		ctx ? shapedTextWidth(ctx, piece) : 0;
-	const wrapAt =
+	const { lines, widest } = wrapLines(
+		request.text,
 		request.width !== undefined && request.width > 0
 			? request.width
-			: undefined;
-	let widest = 0;
-	let lines = 0;
-	for (const paragraph of request.text.split("\n")) {
-		let line = 0;
-		lines += 1;
-		const pieces =
-			wrapAt === undefined ? [paragraph] : paragraph.split(/(\s+)/);
-		for (const piece of pieces) {
-			if (piece === "") continue;
-			const pieceWidth = widthOf(piece);
-			if (wrapAt !== undefined && line > 0 && line + pieceWidth > wrapAt) {
-				widest = Math.max(widest, line);
-				lines += 1;
-				line = piece.trim() === "" ? 0 : pieceWidth;
-				continue;
-			}
-			line += pieceWidth;
-		}
-		widest = Math.max(widest, line);
-	}
+			: undefined,
+		(piece) => (ctx ? shapedTextWidth(ctx, piece) : 0),
+	);
 	// Every advance is already a multiple of 0.5, and the engine's own answer
 	// keeps that half (`GetTextSize("Save", 24, …)` is 44.5) — ceiling it would
 	// report one wider than Studio does.
-	return { x: widest, y: lines * size };
+	return { x: widest, y: lines.length * size };
 }
 
 // Hand the measurement to the runtime, which owns `TextService` but has no
@@ -1026,7 +1195,11 @@ function scrollBarKey(
 }
 
 /** Build a text class's `Text` overlay layer, or `undefined` when empty. */
-function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
+function createTextLayer(
+	node: SceneNode,
+	/** The laid-out width the text wraps inside; 0 when it has none yet. */
+	width: number,
+): HTMLDivElement | undefined {
 	if (!TEXT_CLASSES.has(node.className)) return undefined;
 	const text = getText(node);
 	if (text === undefined || text === "") return undefined;
@@ -1092,16 +1265,84 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
 	// HTML's default collapses both, so text loom *measured* as several lines
 	// (every measurer here splits on "\n") painted as one long run, leaving a box
 	// built for a line count the paint never produced.
-	inner.style.whiteSpace = getTextWrapped(node) ? "pre-wrap" : "pre";
+	// Wrapped text is broken here rather than by CSS. The browser wraps on its own
+	// kerned run widths, which are a couple of percent narrower than the advances
+	// the engine spends and the box was measured with — so a label could reserve
+	// nine lines and paint eight, ending short of a box built for it. The breaks
+	// now come from `wrapLines`, the same call the measurement made, and `pre`
+	// keeps them. A label with no width yet has nothing to wrap against and falls
+	// back to letting CSS do it.
+	const wrapped = getTextWrapped(node);
+	const preBreak = wrapped && width > 0;
+	inner.style.whiteSpace = wrapped && !preBreak ? "pre-wrap" : "pre";
 	if (getRichText(node)) {
-		paintRichText(inner, text, node);
+		paintRichText(inner, text, node, preBreak ? width : 0);
 	} else {
 		// `RichText = false` means the markup is not markup: `<b>` is two angle
 		// brackets and a letter, and `textContent` is what shows it as such.
-		inner.textContent = text;
+		inner.textContent = preBreak
+			? wrapLines(text, width, widthMeasurer(font, textSize)).lines.join("\n")
+			: text;
 	}
 	layer.appendChild(inner);
 	return layer;
+}
+
+/**
+ * The rich-text counterpart of {@link wrapLines}: the same greedy wrap, but the
+ * line width carries across runs, and each run measures in the font `<font>`
+ * gave it. Returns one string per segment, with `\n` where a break falls.
+ *
+ * A word split by a tag (`he<b>llo</b>`) counts as two pieces rather than one.
+ * That is what the adapters' own segment measurement does, so a box and the
+ * text painted into it still agree — which is the property that matters here.
+ */
+function breakRichSegments(
+	segments: readonly RichSegment[],
+	node: SceneNode,
+	width: number,
+): string[] {
+	const baseFont = nodeFont(node);
+	const baseTextSize = getTextSize(node);
+	const out: string[] = [];
+	let lineWidth = 0;
+	for (const segment of segments) {
+		if (segment.kind === "break") {
+			out.push("");
+			lineWidth = 0;
+			continue;
+		}
+		const widthOf = widthMeasurer(
+			runFont(segment.style, baseFont),
+			segment.style.size ?? baseTextSize,
+		);
+		let built = "";
+		const paragraphs = segment.text.split("\n");
+		for (let i = 0; i < paragraphs.length; i += 1) {
+			if (i > 0) {
+				built += "\n";
+				lineWidth = 0;
+			}
+			for (const piece of (paragraphs[i] ?? "").split(/(\s+)/)) {
+				if (piece === "") continue;
+				const pieceWidth = widthOf(piece);
+				if (lineWidth > 0 && lineWidth + pieceWidth > width) {
+					built += "\n";
+					if (piece.trim() === "") {
+						lineWidth = 0;
+						continue;
+					}
+					built += piece;
+					lineWidth = pieceWidth;
+					continue;
+				}
+				built += piece;
+				lineWidth += pieceWidth;
+			}
+		}
+		out.push(built);
+	}
+	return out;
 }
 
 /**
@@ -1110,17 +1351,26 @@ function createTextLayer(node: SceneNode): HTMLDivElement | undefined {
  * Every run inherits the layer's own font and color and overrides only what its
  * tags named, so `<font size="20">` inside a 14px label changes the size and
  * nothing else — the same compositing the engine does.
+ *
+ * `width` is the wrap width when the label is wrapped and laid out, and 0 when
+ * it is not; a wrapped label gets its breaks put in rather than left to CSS.
  */
 function paintRichText(
 	inner: HTMLElement,
 	text: string,
 	node: SceneNode,
+	width: number,
 ): void {
 	const baseColor = getTextColor3(node);
 	const baseTransparency = getTextTransparency(node);
 	const baseFont = nodeFont(node);
 	const baseTextSize = getTextSize(node);
-	for (const segment of parseRichText(text)) {
+	const segments = parseRichText(text);
+	const broken =
+		width > 0 ? breakRichSegments(segments, node, width) : undefined;
+	let index = -1;
+	for (const segment of segments) {
+		index += 1;
 		if (segment.kind === "break") {
 			inner.appendChild(document.createElement("br"));
 			continue;
@@ -1168,7 +1418,7 @@ function paintRichText(
 					? withAlpha(style.color, 1 - transparency)
 					: cssColor(baseColor, transparency);
 		}
-		span.appendChild(document.createTextNode(segment.text));
+		span.appendChild(document.createTextNode(broken?.[index] ?? segment.text));
 		inner.appendChild(span);
 	}
 }
@@ -1202,13 +1452,16 @@ function withAlpha(color: string, alpha: number): string {
  * Fingerprint of every input `createTextLayer` reads, so the session rebuilds
  * the overlay only when a text-affecting prop actually changed.
  */
-function textLayerKey(node: SceneNode): string {
+function textLayerKey(node: SceneNode, width: number): string {
 	if (!TEXT_CLASSES.has(node.className)) return "";
 	const text = getText(node);
 	if (text === undefined || text === "") return "";
 	const font = nodeFont(node);
 	return [
 		text,
+		// Wrapped text carries its own line breaks now, so a label that only got
+		// wider has to be repainted to break in the new places.
+		width,
 		font.family,
 		font.weight,
 		font.italic ? 1 : 0,
@@ -1939,7 +2192,7 @@ function renderNode(
 	const imageLayer = createImageLayer(node, rect);
 	if (imageLayer) el.appendChild(imageLayer);
 
-	const textLayer = createTextLayer(node);
+	const textLayer = createTextLayer(node, rect.width);
 	if (textLayer) el.appendChild(textLayer);
 
 	// ScrollingFrame children live in the canvas wrapper (see makeCanvasWrapper)
@@ -2188,10 +2441,11 @@ export function createDomSession(
 
 		// TextBox paints its text in a persistent input element, not the overlay.
 		const isTextBox = node.className === "TextBox";
-		const textKey = isTextBox ? "" : textLayerKey(node);
+		const textKey = isTextBox ? "" : textLayerKey(node, rect.width);
 		if (textKey !== entry.textKey) {
 			entry.textEl?.remove();
-			entry.textEl = textKey === "" ? undefined : createTextLayer(node);
+			entry.textEl =
+				textKey === "" ? undefined : createTextLayer(node, rect.width);
 			entry.textKey = textKey;
 		}
 

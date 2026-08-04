@@ -20,11 +20,10 @@ import { type ComputeLayout, create, mount, source } from "./index";
  */
 const measureStub = {
 	font: "",
-	// A whole browser-shaped run is narrower than its individually quantized
-	// advances. The adapter must use the latter, like the static renderer does.
-	measureText: (text: string) => ({
-		width: text === "~" ? 6.2 : text.length === 1 ? 6.6 : text.length * 6,
-	}),
+	// An unkerned face at 6.3 a character: a browser-shaped run is 6.3 × length,
+	// while the engine rounds each advance to the half pixel and spends 6.5. The
+	// adapter must report the latter, like the static renderer does.
+	measureText: (text: string) => ({ width: text.length * 6.3 }),
 };
 Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 	value: () => measureStub,
@@ -198,7 +197,7 @@ describe("vide adapter text measurement", () => {
 			(node) => (node.name === "Card" ? 100 : undefined),
 		);
 		// Unwrapped: the whole string on one line, past the card it sits in.
-		expect(overruled.at(-1)?.x).toBe(TEXT.length * 7);
+		expect(overruled.at(-1)?.x).toBe(TEXT.length * 6.5);
 	});
 
 	it("wraps a label with a width of its own against that width", () => {
@@ -267,7 +266,7 @@ describe("vide adapter text measurement", () => {
 		// one — which is what a real frame gives it.
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		// 280 of room, so the 133 the string measures on one line fits as it is.
-		expect(rendered()).toBe(TEXT.length * 7);
+		expect(rendered()).toBe(TEXT.length * 6.5);
 
 		// The container narrows — one resize, one paint.
 		box.width = 100;
