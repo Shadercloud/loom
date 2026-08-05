@@ -234,12 +234,143 @@ try {
 		);
 	console.log("[packed-dev-test] OK: no optimized chunk carries the runtime");
 
+	// --- one renderer font registry ------------------------------------------
+	//
+	// The registry is reached two ways: `@loom-dev/renderer/fonts`, whose import
+	// registers the open faces (the preview's globals pull it in), and the
+	// `@loom-dev/renderer` root, which is what `@loom-dev/react` measures and
+	// paints through. They have to be the same module instance: a second copy
+	// would take the registrations *and* the `onFontsChanged` listeners with it,
+	// so the faces would be registered into a registry the React world never
+	// reads and the world would never re-measure when one loaded. A static build
+	// canonicalizes the graph and cannot land there; a dev server, where the
+	// subpath and the root are separate requests and the optimizer may rewrite
+	// either, can.
+	//
+	// Asserted over the *served module graph*, not over one file: whether the
+	// split comes from an optimized chunk, an alternate URL for the same file, or
+	// a symlink resolved two ways, it shows up the same way — as two served
+	// modules that each declare the registry.
+	const graph = await crawlModuleGraph(base);
+	console.log(`[packed-dev-test] crawled ${graph.size} browser modules`);
+
+	// Two independent signals, so this is not one implementation string: the
+	// module that *declares* the registry state, and the one that declares the
+	// function writing into it. esbuild renames on collision, hence the suffix.
+	const declaresState = (src) =>
+		/const registrations = (?:\/\* @__PURE__ \*\/ )?new Map\(/.test(src) &&
+		/const listeners = (?:\/\* @__PURE__ \*\/ )?new Set\(/.test(src);
+	const declaresRegister = (src) => /function registerFont\d*\(/.test(src);
+
+	const registryUrls = [];
+	for (const [url, source] of graph) {
+		if (declaresState(source) || declaresRegister(source))
+			registryUrls.push(url);
+	}
+	if (registryUrls.length !== 1)
+		fail(
+			`the browser graph has ${registryUrls.length} copies of the renderer's ` +
+				`font registry (expected exactly 1):\n  ${registryUrls.join("\n  ")}\n` +
+				`the faces are registered into one and measured through another, so ` +
+				`text is measured in the fallback and never re-measured when a face ` +
+				`loads`,
+		);
+	console.log(
+		`[packed-dev-test] OK: one font registry — ${registryUrls[0].replace(base, "")}`,
+	);
+
+	// And both public entrypoints really do reach *that* module, rather than one
+	// of them having been left out of the graph entirely.
+	const reachesRegistry = [...graph].filter(
+		([url, source]) =>
+			(url.includes("open-fonts") || url.includes("renderer/dist/index")) &&
+			importsOf(url, source).includes(registryUrls[0]),
+	);
+	if (reachesRegistry.length < 2)
+		fail(
+			`only ${reachesRegistry.length} of the renderer's two entrypoints ` +
+				`(@loom-dev/renderer and @loom-dev/renderer/fonts) import the font ` +
+				`registry module — the other reached a different one`,
+		);
+	console.log(
+		"[packed-dev-test] OK: the renderer root and /fonts share one registry",
+	);
+
 	if (KEEP) {
 		console.log(`[packed-dev-test] --keep: serving ${base} (ctrl-c to stop)`);
 		await new Promise(() => {});
 	}
 } finally {
 	stop();
+}
+
+/**
+ * Every import specifier in a dev-server-transformed module, resolved against
+ * the module's own URL.
+ *
+ * Vite rewrites every bare specifier to a served URL before the browser sees
+ * it, so this is the graph the browser actually builds — which is the level the
+ * duplicate-instance question lives at. A `?v=` query is part of the identity
+ * (two URLs differing only by it *are* two module instances), so nothing is
+ * stripped.
+ */
+function importsOf(url, source) {
+	const out = [];
+	const pattern = /(?:from|import)\s*["']([^"']+)["']/g;
+	for (const [, spec] of source.matchAll(pattern)) {
+		if (spec.startsWith("data:")) continue;
+		try {
+			const resolved = new URL(spec, url);
+			if (resolved.origin === new URL(url).origin) out.push(resolved.href);
+		} catch {
+			// Not a resolvable specifier (a bare id Vite left alone) — nothing to
+			// follow, and nothing that can be a second copy of anything.
+		}
+	}
+	return out;
+}
+
+/**
+ * The browser's module graph, walked from the page: every served JavaScript
+ * module URL mapped to the source the dev server transformed it into.
+ *
+ * Starts at the HTML, which is where the globals script tag is injected — the
+ * one that pulls in `@loom-dev/renderer/fonts`. Without it the crawl would
+ * never see the subpath at all, which is exactly the half this test is about.
+ */
+async function crawlModuleGraph(base) {
+	const html = await (await fetch(base)).text();
+	const queue = [];
+	for (const [, src] of html.matchAll(/<script[^>]+src=["']([^"']+)["']/g)) {
+		try {
+			queue.push(new URL(src, base).href);
+		} catch {
+			// A src Vite left as-is and the browser would resolve differently; the
+			// modules that matter here are all served ones.
+		}
+	}
+	const graph = new Map();
+	// A generous cap, so a graph that somehow cycles into unbounded query
+	// variants ends the test rather than the machine.
+	while (queue.length > 0 && graph.size < 2000) {
+		const url = queue.shift();
+		if (graph.has(url)) continue;
+		let source;
+		try {
+			const response = await fetch(url);
+			if (!response.ok) continue;
+			const type = response.headers.get("content-type") ?? "";
+			source = await response.text();
+			// CSS and assets are served as JS modules too, and their generated
+			// wrappers are not part of this question.
+			if (!type.includes("javascript")) continue;
+		} catch {
+			continue;
+		}
+		graph.set(url, source);
+		queue.push(...importsOf(url, source));
+	}
+	return graph;
 }
 
 async function waitFor(check, timeoutMs, what) {

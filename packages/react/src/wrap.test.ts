@@ -17,6 +17,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { registerFont } from "@loom-dev/renderer";
 import type { LoomInstance } from "@loom-dev/runtime";
 import {
 	Enum,
@@ -37,6 +38,13 @@ import { type MountedWorld, mountSync } from "./index";
 
 /** Advance width of one character in the stubbed face. */
 const CHAR_W = 7;
+
+/**
+ * The advance the stubbed canvas is currently reporting, so a test can change
+ * the face under a mounted world the way a `@font-face` finishing its download
+ * does. Everything but the late-face test leaves it at `CHAR_W`.
+ */
+let faceAdvance = CHAR_W;
 const BODY = "View player information, statistics, and recent activity.";
 const BODY_SIZE = 18;
 const BODY_LINE_HEIGHT = 1.4;
@@ -57,7 +65,7 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
 		// fails if the live React path goes back to measuring whole words while the
 		// static renderer uses engine-shaped widths.
 		measureText: (text: string) => ({
-			width: text.length * (CHAR_W - 0.2),
+			width: text.length * (faceAdvance - 0.2),
 		}),
 	}),
 });
@@ -68,12 +76,16 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
  * longer fits opens a line, and a run of spaces that would overflow is dropped
  * rather than carried over.
  */
-function wrapLines(text: string, wrapAt: number): number {
+function wrapLines(
+	text: string,
+	wrapAt: number,
+	advance = faceAdvance,
+): number {
 	let lines = 0;
 	let lineWidth = 0;
 	for (const piece of text.split(/(\s+)/)) {
 		if (piece === "") continue;
-		const pieceWidth = piece.length * CHAR_W;
+		const pieceWidth = piece.length * advance;
 		if (lineWidth > 0 && lineWidth + pieceWidth > wrapAt) {
 			lines += 1;
 			lineWidth = 0;
@@ -557,4 +569,61 @@ describe("wrapped text against the real layout engine", () => {
 		);
 		expect(sweep(tree, "Body", BODY, range(600, 200))).toEqual([]);
 	});
+
+	it("lands where a face present from the start would, arriving late", async () => {
+		// #11's shape: the first measurement runs against whatever the browser has
+		// *now*, and a registered face is almost never loaded by then — nothing has
+		// asked for it, and the canvas loom measures with never will. So the first
+		// layout is the fallback's, and the face that lands afterwards has to be
+		// able to redo it. This pins the outcome rather than the mechanism: a dev
+		// server, where the face arrives well after the document settled, has to
+		// end up at the layout a static build reaches on its first frame.
+		const tree = cards(5);
+
+		/**
+		 * Change the face the stub reports and announce it, which is the whole
+		 * mechanism under test: a registration drops the renderer's per-font
+		 * advance caches and re-measures every auto-sized label. Without the
+		 * announcement the caches still hold the previous face's advances, keyed
+		 * on a `ctx.font` that did not change.
+		 */
+		const setFace = async (advance: number, family: string) => {
+			faceAdvance = advance;
+			registerFont("Gotham", { family });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		};
+
+		// The build's world: the real face from the first frame.
+		await setFace(CHAR_W, "Builder Sans");
+		setStage(760);
+		root = mountSync(tree, mount, { computeLayout: realLayout });
+		settle();
+		const withFaceFromTheStart = measure("BodyText0");
+
+		// The dev server's world: measured in a fallback narrow enough that the
+		// body fits on one line in it and needs two in the real face — a
+		// difference the label's own height records.
+		root.unmount();
+		document.body.innerHTML = "";
+		mount = document.createElement("div");
+		document.body.appendChild(mount);
+		await setFace(CHAR_W - 3, "Fallback Sans");
+		setStage(760);
+		root = mountSync(tree, mount, { computeLayout: realLayout });
+		settle();
+		const inTheFallback = measure("BodyText0");
+
+		// …and then the face lands and reports itself.
+		await setFace(CHAR_W, "Builder Sans");
+		settle();
+		const afterTheFaceLoaded = measure("BodyText0");
+
+		// The fallback really was a different face, or the rest proves nothing.
+		expect(inTheFallback.height).not.toBe(withFaceFromTheStart.height);
+		expect(afterTheFaceLoaded).toEqual(withFaceFromTheStart);
+		// And the settled box still matches the wrap its own width produces.
+		expect(
+			linesFromHeight(afterTheFaceLoaded.height, BODY_SIZE, BODY_LINE_HEIGHT),
+		).toBeCloseTo(wrapLines(BODY, afterTheFaceLoaded.width, CHAR_W), 2);
+	}, 30_000);
 });

@@ -288,3 +288,164 @@ describe("measureText", () => {
 		);
 	});
 });
+
+/**
+ * A canvas that knows exactly the families it is told about, so a test can put
+ * a face out of reach the way a failed download does.
+ *
+ * `measureText` answers off the *first* family in `ctx.font`'s stack: a known
+ * one gets its own advance and face box, an unknown one falls through to the
+ * generic named behind it — which is what a browser does, and what the probe in
+ * `familyIsAvailable` reads.
+ */
+function installFakeCanvas(available: ReadonlySet<string>): () => void {
+	const original = HTMLCanvasElement.prototype.getContext;
+	const context = {
+		font: "10px sans-serif",
+		measureText(text: string) {
+			const stack = this.font.slice(this.font.indexOf("px ") + 3);
+			const first = (stack.split(",")[0] ?? "")
+				.trim()
+				.replace(/^["']|["']$/g, "");
+			const known = available.has(first);
+			// The two generics the probe compares against have to differ, or a real
+			// family could not shift either of them.
+			const generic = stack.includes("monospace") ? 10 : 8;
+			const per = known ? 12 : generic;
+			// The box the *browser* reports: 1.17 for the real face, 1.18 for the
+			// fallback. Both are deliberately unlike the engine's 1.2212 for Source
+			// Sans 3, so a test can tell a table lookup from a measurement.
+			const box = known ? 1.17 : 1.18;
+			const size = Number.parseFloat(
+				this.font.slice(0, this.font.indexOf("px")).split(" ").at(-1) ?? "10",
+			);
+			return {
+				width: text.length * per,
+				fontBoundingBoxAscent: box * size * 0.8,
+				fontBoundingBoxDescent: box * size * 0.2,
+			};
+		},
+	};
+	HTMLCanvasElement.prototype.getContext = (() =>
+		context) as unknown as typeof original;
+	return () => {
+		HTMLCanvasElement.prototype.getContext = original;
+	};
+}
+
+/** A fresh renderer + font registry, so the metric caches start empty. */
+async function freshRenderer(): Promise<{
+	fonts: typeof import("./fonts.ts");
+	renderer: typeof import("./index.ts");
+}> {
+	vi.resetModules();
+	return {
+		fonts: await import("./fonts.ts"),
+		renderer: await import("./index.ts"),
+	};
+}
+
+describe("familyIsAvailable", () => {
+	it("is true only for a family the browser can actually paint", async () => {
+		const restore = installFakeCanvas(new Set(["Source Sans 3 Variable"]));
+		try {
+			const { fonts } = await freshRenderer();
+			expect(fonts.familyIsAvailable("Source Sans 3 Variable")).toBe(true);
+			// Registered, declared, named in the stack — and still not there.
+			expect(fonts.familyIsAvailable("Roboto Variable")).toBe(false);
+		} finally {
+			restore();
+		}
+	});
+
+	it("says yes when it cannot tell, rather than guessing no", async () => {
+		// A canvas with no text metrics at all (a stub, a headless DOM) measures
+		// every string at 0, so the probe and its baseline agree for a family that
+		// is present and one that is not alike. Reading that as "missing" would
+		// take the engine's face metrics away from every family on a platform that
+		// simply cannot be asked.
+		const original = HTMLCanvasElement.prototype.getContext;
+		HTMLCanvasElement.prototype.getContext = (() => ({
+			font: "10px sans-serif",
+			measureText: () => ({ width: 0 }),
+		})) as unknown as typeof original;
+		try {
+			const { fonts } = await freshRenderer();
+			expect(fonts.familyIsAvailable("Source Sans 3 Variable")).toBe(true);
+		} finally {
+			HTMLCanvasElement.prototype.getContext = original;
+		}
+	});
+});
+
+describe("engine face metrics", () => {
+	/**
+	 * `TextSize` 18 through the stack a registered `SourceSans` resolves to,
+	 * against whatever canvas the caller has installed.
+	 */
+	async function registeredSize(): Promise<number> {
+		const { fonts, renderer } = await freshRenderer();
+		fonts.registerFont("SourceSans", { family: "Source Sans 3 Variable" });
+		return renderer.cssFontSize(
+			{
+				family: renderer.fontFamily("SourceSans"),
+				weight: "400",
+				italic: false,
+			},
+			18,
+		);
+	}
+
+	it("uses the engine's calibration for a face that is really there", async () => {
+		const restore = installFakeCanvas(new Set(["Source Sans 3 Variable"]));
+		try {
+			// The engine's 1.2212 for this face, not the 1.17 the browser reports.
+			expect(await registeredSize()).toBeCloseTo(18 / 1.2212, 4);
+		} finally {
+			restore();
+		}
+	});
+
+	it("measures instead when the registered face never loaded", async () => {
+		// #11's dev-only shape: the registration succeeded, the download did not.
+		// The browser is painting the fallback, so sizing the text by the engine's
+		// ratio for a face that is not there puts every advance on the wrong
+		// glyphs — the text then wraps in places the engine never would, and the
+		// AutomaticSize box does not fit the text drawn inside it. A static build
+		// carries its font files in its own output and never lands here, which is
+		// what made this look like a dev-only rendering bug.
+		const restore = installFakeCanvas(new Set());
+		try {
+			expect(await registeredSize()).toBeCloseTo(18 / 1.18, 4);
+		} finally {
+			restore();
+		}
+	});
+
+	it("settles on the engine's calibration once the face arrives", async () => {
+		// The load is reported through `onFontsChanged`, which drops the metric
+		// caches — so the same label re-measures against the face that just landed
+		// and ends up where a build that had it from the start does.
+		const present = new Set<string>();
+		const restore = installFakeCanvas(present);
+		try {
+			const { fonts, renderer } = await freshRenderer();
+			fonts.registerFont("SourceSans", { family: "Source Sans 3 Variable" });
+			const font = {
+				family: renderer.fontFamily("SourceSans"),
+				weight: "400",
+				italic: false,
+			};
+			expect(renderer.cssFontSize(font, 18)).toBeCloseTo(18 / 1.18, 4);
+
+			// The face lands, and the browser reports the end of the cycle.
+			present.add("Source Sans 3 Variable");
+			fonts.registerFont("SourceSans", { family: "Source Sans 3 Variable" });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(renderer.cssFontSize(font, 18)).toBeCloseTo(18 / 1.2212, 4);
+		} finally {
+			restore();
+		}
+	});
+});

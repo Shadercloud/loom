@@ -8,8 +8,9 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Alias, resolveConfig, type ViteDevServer } from "vite";
 import { afterAll, describe, expect, it } from "vitest";
@@ -164,6 +165,71 @@ describe("the generated Vite config", () => {
 		expect(
 			applyAliases(config.resolve.alias as Alias[], "@rbxts/services"),
 		).toBe(resolve(root, "loom-shims/services.ts"));
+	});
+});
+
+/**
+ * The renderer has two public entrypoints and one piece of state behind them:
+ * `@loom-dev/renderer/fonts` registers the open faces on import, and the
+ * `@loom-dev/renderer` root is what the adapters measure and paint through.
+ * Split those into two module instances and the faces land in a registry
+ * nothing reads, while the world that does the measuring never hears that one
+ * loaded — the shape #11 was first suspected of.
+ *
+ * The entrypoints are guarded here rather than only in the packed dev test,
+ * because that one installs from the network: this catches a `package.json`
+ * `exports` change (a second bundle for the subpath, a subpath pointed at a
+ * different tree) without leaving the repo.
+ */
+describe("the renderer's two entrypoints", () => {
+	const requireFromPreview = createRequire(import.meta.url);
+
+	it("resolve into one package, so one module holds the registry", () => {
+		const root = realpathSync(requireFromPreview.resolve("@loom-dev/renderer"));
+		const fonts = realpathSync(
+			requireFromPreview.resolve("@loom-dev/renderer/fonts"),
+		);
+		// Two entries, two files.
+		expect(root).not.toBe(fonts);
+		// Emitted side by side — `src/` in a checkout, `dist/` once published —
+		// which is what lets the state they share sit in one relative module both
+		// of them import. An entry moved to a tree of its own would bundle its own
+		// copy of the registry instead.
+		expect(dirname(fonts)).toBe(dirname(root));
+	});
+
+	it("are both kept out of the dependency optimizer", async () => {
+		const projectRoot = mkdtempSync(join(tmpdir(), "loom-renderer-entries-"));
+		try {
+			const config = await resolveConfig(
+				{
+					root: projectRoot,
+					configFile: false,
+					logLevel: "silent",
+					plugins: [loomPreview({ html: false })],
+				},
+				"serve",
+			);
+			const exclude = config.optimizeDeps.exclude ?? [];
+			const include = config.optimizeDeps.include ?? [];
+
+			// Vite matches `exclude` by package *and* subpath — `moduleListContains`
+			// in the scanner, `exclude.includes(pkgId)` in the resolver — so one
+			// root entry covers `@loom-dev/renderer/fonts` too. Asserted with the
+			// same rule Vite applies, so this fails if the root entry is ever
+			// dropped or narrowed to something the subpath no longer sits under.
+			const covers = (id: string): boolean =>
+				exclude.some((m) => m === id || id.startsWith(`${m}/`));
+			expect(covers("@loom-dev/renderer")).toBe(true);
+			expect(covers("@loom-dev/renderer/fonts")).toBe(true);
+
+			// And nothing asks for the subpath to be pre-bundled, which would give
+			// it a chunk of its own — with its own copy of the registry inside it.
+			expect(include).not.toContain("@loom-dev/renderer");
+			expect(include).not.toContain("@loom-dev/renderer/fonts");
+		} finally {
+			rmSync(projectRoot, { recursive: true, force: true });
+		}
 	});
 });
 
