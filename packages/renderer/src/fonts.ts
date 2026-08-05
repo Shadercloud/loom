@@ -257,6 +257,9 @@ export function onFontsChanged(listener: () => void): () => void {
 let notifyQueued = false;
 function fireNotify(): void {
 	notifyQueued = false;
+	// Before the listeners, not after: they re-measure, and what a family
+	// resolves to is exactly what just changed.
+	availability.clear();
 	for (const listener of [...listeners]) {
 		try {
 			listener();
@@ -353,8 +356,12 @@ export function warnMissingFace(name: string | undefined): void {
 
 let probeCtx: CanvasRenderingContext2D | null | undefined;
 
+/** Answers so far this font-loading cycle; dropped by {@link fireNotify}. */
+const availability = new Map<string, boolean>();
+
 /**
- * Whether the browser can actually paint `family`.
+ * Whether the browser can actually paint `family` — a bare CSS family name, not
+ * a stack.
  *
  * Not `document.fonts.check()`: that answers "would this font specification
  * resolve", and an unknown family resolves — to the fallback — so it says yes
@@ -362,8 +369,15 @@ let probeCtx: CanvasRenderingContext2D | null | undefined;
  * actually differs. Rendered against two generics with wildly different metrics,
  * a real family shifts at least one of them; a missing one leaves both exactly
  * where the generic put them.
+ *
+ * Exported because a registration is a *claim*, not a fact: the page still has
+ * to fetch the file, and it may not arrive. Everything that reasons about the
+ * face behind a family — its metrics above all — has to be able to ask whether
+ * it is really there. See `./index.ts`'s `faceBoxPerEm`.
  */
-function familyIsAvailable(family: string): boolean {
+export function familyIsAvailable(family: string): boolean {
+	const cached = availability.get(family);
+	if (cached !== undefined) return cached;
 	if (probeCtx === undefined) {
 		probeCtx =
 			typeof document !== "undefined"
@@ -373,13 +387,27 @@ function familyIsAvailable(family: string): boolean {
 	const ctx = probeCtx;
 	if (!ctx) return true; // nothing to measure with; assume the best and stay quiet
 	const probe = "mmmmmmmmmmlliWWWW0123456789";
+	let available = false;
+	let answered = false;
 	for (const generic of ["monospace", "serif"]) {
 		ctx.font = `72px ${generic}`;
 		const base = ctx.measureText(probe).width;
-		ctx.font = `72px ${family}, ${generic}`;
-		if (ctx.measureText(probe).width !== base) return true;
+		// A canvas that measures every string at 0 (a stub, a headless DOM with no
+		// font metrics) cannot answer the question at all — and "both came back the
+		// same" would read as a definite *no*, which would take the engine's face
+		// metrics away from every family on a platform that simply cannot be asked.
+		// Not knowing is not the same as knowing it is missing.
+		if (!(base > 0)) continue;
+		answered = true;
+		ctx.font = `72px ${quoteFamily(family)}, ${generic}`;
+		if (ctx.measureText(probe).width !== base) {
+			available = true;
+			break;
+		}
 	}
-	return false;
+	if (!answered) return true;
+	availability.set(family, available);
+	return available;
 }
 
 function scheduleAudit(): void {
@@ -405,7 +433,29 @@ function scheduleAudit(): void {
 		}
 		for (const key of [...seen]) {
 			seen.delete(key);
-			if (warned.has(key) || registrations.has(key)) continue;
+			if (warned.has(key)) continue;
+			const registered = registrations.get(key);
+			if (registered) {
+				// A registration is a claim about a face the page still has to fetch,
+				// and a fetch can fail: a dev server that will not serve the file, a
+				// proxy in front of it, an offline machine. Loom then paints and
+				// measures in the fallback while every metric it derives — the
+				// engine's per-face size calibration above all — still describes the
+				// face that never came, so the text wraps where the engine would not.
+				// A static build carries the files in its own output and never lands
+				// here, which is what makes this look like a dev-only rendering bug
+				// rather than a font that failed to load.
+				if (familyIsAvailable(registered.family)) continue;
+				warned.add(key);
+				console.warn(
+					`loom: the face registered for the Roblox font family "${key}" ` +
+						`("${registered.family}") is not loaded — the browser could not ` +
+						`fetch or decode it, so its text is painted and measured in the ` +
+						`fallback instead and does not wrap where the engine does. Look ` +
+						`for a failed font request in the network panel.`,
+				);
+				continue;
+			}
 			// The family's own name heads every default stack; if the browser can
 			// serve it, nothing is missing.
 			const own = defaultStack(key).split(",")[0]?.trim();

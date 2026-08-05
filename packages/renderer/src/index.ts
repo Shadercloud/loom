@@ -95,7 +95,12 @@ import {
 	type ScrollMetrics,
 	scrollMetrics,
 } from "@loom-dev/scene";
-import { familyStack, onFontsChanged, warnMissingFace } from "./fonts.ts";
+import {
+	familyIsAvailable,
+	familyStack,
+	onFontsChanged,
+	warnMissingFace,
+} from "./fonts.ts";
 import { parseRichText, type RichStyle } from "./richtext.ts";
 
 // Font registration is part of the public surface: a browser has none of the
@@ -104,6 +109,7 @@ export {
 	clearRegisteredFonts,
 	type FontFaceSource,
 	type FontRegistration,
+	familyIsAvailable,
 	familyKey,
 	onFontsChanged,
 	registerFont,
@@ -358,8 +364,19 @@ function faceBoxPerEm(font: ResolvedFont): number {
 	const key = `${font.italic ? "italic " : ""}${font.weight} ${font.family}`;
 	const cached = emScaleCache.get(key);
 	if (cached !== undefined) return cached;
-	const known = ENGINE_FACE_BOX.get(primaryFamily(font.family));
-	if (known !== undefined) {
+	// Only when the browser can actually paint it. The table describes one
+	// specific face, and it is reached by *name* — through a registration, which
+	// is a claim about a file the page still has to fetch. When that fetch fails
+	// (a dev server that will not serve it, a proxy in front of it) the browser
+	// paints the fallback while this would go on sizing the text as though the
+	// engine's face were there: every advance comes off the wrong glyphs, so
+	// `wrapLines` breaks in places the engine does not and `AutomaticSize`
+	// reports a box that does not match the text drawn in it. Measuring instead
+	// describes whatever is really being painted, and the answer is recomputed
+	// when the face lands, since a font-loading cycle drops this cache.
+	const primary = primaryFamily(font.family);
+	const known = ENGINE_FACE_BOX.get(primary);
+	if (known !== undefined && familyIsAvailable(primary)) {
 		emScaleCache.set(key, known);
 		return known;
 	}
