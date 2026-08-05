@@ -1,5 +1,12 @@
 # loom-dev
 
+## 0.9.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/preview@0.9.6
+
 ## 0.9.5
 
 ### Patch Changes

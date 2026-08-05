@@ -1,5 +1,15 @@
 # @loom-dev/vide
 
+## 0.9.6
+
+### Patch Changes
+
+- Updated dependencies [[`f14c548`](https://github.com/astra-void/loom/commit/f14c54895ec16c9c425b41deed12f3a4c6c85ace)]:
+  - @loom-dev/renderer@0.9.6
+  - @loom-dev/scene@0.9.6
+  - @loom-dev/layout@0.9.6
+  - @loom-dev/runtime@0.9.6
+
 ## 0.9.5
 
 ### Patch Changes
