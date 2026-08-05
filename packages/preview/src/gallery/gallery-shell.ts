@@ -13,6 +13,8 @@
  *   one on load without a hash.
  * - `?chrome=none` hides the sidebar and renders a single target full-bleed —
  *   this is what the docs-site iframes embed.
+ * - `?debug=1` (or the header's `debug` button, or Ctrl+Alt+D) opens the debug
+ *   panel over the stage — see `./debug.ts`.
  * - Each target renders through the preview's own `createRoot()`, inside a
  *   React error boundary; import failures, bad `preview` exports, and render
  *   throws all land in the inline red error panel instead of taking the page.
@@ -31,6 +33,7 @@ import {
 	type PreviewTheme,
 	setPreviewTheme,
 } from "../client.ts";
+import { createDebugPanel } from "./debug.ts";
 import { parseBackgroundColor, parseGalleryParams } from "./params.ts";
 import "./shell.css";
 
@@ -163,6 +166,9 @@ export function startGallery(targets: TargetMap): void {
 		toggle?.setAttribute("aria-expanded", String(open));
 	};
 
+	/** The sidebar's debug button, when there is a sidebar to put one in. */
+	let debugButton: HTMLButtonElement | undefined;
+
 	if (chromeless) {
 		sidebar.hidden = true;
 	} else {
@@ -173,6 +179,14 @@ export function startGallery(targets: TargetMap): void {
 		const headerCount = document.createElement("span");
 		headerCount.className = "loom-gallery-count";
 		headerCount.textContent = String(keys.length);
+		const debugToggle = document.createElement("button");
+		debugToggle.type = "button";
+		debugToggle.className = "loom-gallery-debug-toggle";
+		debugToggle.textContent = "debug";
+		debugToggle.title = "toggle the debug panel (Ctrl+Alt+D)";
+		debugToggle.setAttribute("aria-pressed", "false");
+		debugToggle.addEventListener("click", () => setDebugOpen(!debug.isOpen()));
+		debugButton = debugToggle;
 		const toggle = document.createElement("button");
 		toggle.type = "button";
 		toggle.className = "loom-gallery-toggle";
@@ -181,7 +195,7 @@ export function startGallery(targets: TargetMap): void {
 		toggle.addEventListener("click", () => {
 			setListOpen(!document.body.classList.contains(OPEN_CLASS), toggle);
 		});
-		header.append(headerName, headerCount, toggle);
+		header.append(headerName, headerCount, debugToggle, toggle);
 
 		const list = document.createElement("ul");
 		list.className = "loom-gallery-list";
@@ -227,12 +241,72 @@ export function startGallery(targets: TargetMap): void {
 		stack.textContent = detail;
 		errorPanel.append(heading, stack);
 		errorPanel.hidden = false;
+		debug.setError(title);
 	}
 
 	function clearError(): void {
 		errorPanel.hidden = true;
 		errorPanel.replaceChildren();
+		debug.setError(undefined);
 	}
+
+	// -------------------------------------------------------------------------
+	// Debug mode. Off unless asked for — by `?debug=1`, the sidebar button, or
+	// Ctrl+Alt+D — and remembered for the tab, so the full reload the shell takes
+	// on every HMR edit doesn't close it behind the author's back.
+	// -------------------------------------------------------------------------
+
+	const DEBUG_STORAGE_KEY = "loom-gallery-debug";
+
+	/**
+	 * sessionStorage, if this page has one (a sandboxed iframe throws) *and* is
+	 * the gallery itself. A chromeless embed shares the host tab's storage, so
+	 * remembering the toggle there would put a debug panel over every preview on
+	 * a docs page as soon as the reader had opened one in the gallery. Embeds
+	 * take `?debug=1` and nothing else.
+	 */
+	function debugMemory(): Storage | undefined {
+		if (chromeless) return undefined;
+		try {
+			return window.sessionStorage;
+		} catch {
+			return undefined;
+		}
+	}
+
+	const debug = createDebugPanel(stage, {
+		remount: () => {
+			if (activeKey !== undefined) void mount(activeKey);
+		},
+		onClose: () => setDebugOpen(false),
+	});
+
+	function setDebugOpen(open: boolean): void {
+		debug.setOpen(open);
+		debugButton?.setAttribute("aria-pressed", String(open));
+		debugButton?.classList.toggle("active", open);
+		try {
+			debugMemory()?.setItem(DEBUG_STORAGE_KEY, open ? "1" : "0");
+		} catch {
+			// A storage quota or a privacy mode that refuses writes is not a reason
+			// to fail the toggle — the panel just won't survive the next reload.
+		}
+	}
+
+	setDebugOpen(
+		initial.debug || debugMemory()?.getItem(DEBUG_STORAGE_KEY) === "1",
+	);
+
+	// Ctrl+Alt+D: free on every platform loom runs on (⌘⌥D is macOS's own dock
+	// toggle, which is why the meta chord isn't the one). Scene keyboard input
+	// goes through the renderer's own window listener, so this deliberately does
+	// not consume the event beyond its own default.
+	window.addEventListener("keydown", (event: KeyboardEvent) => {
+		if (!event.ctrlKey || !event.altKey || event.metaKey) return;
+		if (event.code !== "KeyD" && event.key.toLowerCase() !== "d") return;
+		event.preventDefault();
+		setDebugOpen(!debug.isOpen());
+	});
 
 	// -------------------------------------------------------------------------
 	// Target loading + mounting
@@ -297,12 +371,14 @@ export function startGallery(targets: TargetMap): void {
 		for (const [k, item] of items) item.classList.toggle("active", k === key);
 
 		let mod: TargetModule;
+		const importStartedAt = performance.now();
 		try {
 			mod = await loadTarget(key);
 		} catch (error) {
 			if (seq === mountSeq) showError(`failed to import ${key}`, error);
 			return;
 		}
+		const importMs = performance.now() - importStartedAt;
 		if (seq !== mountSeq) return; // superseded while awaiting
 
 		let preview: PreviewExport;
@@ -313,6 +389,13 @@ export function startGallery(targets: TargetMap): void {
 			return;
 		}
 		applyTitle(key, preview);
+		// Before the render, not after: the debug panel times the first frame from
+		// here, and the mount it is timing starts on the next line.
+		debug.setTarget({
+			key,
+			title: typeof preview.title === "string" ? preview.title : undefined,
+			importMs,
+		});
 
 		const root = createRoot();
 		activeRoot = root;
@@ -363,6 +446,7 @@ export function startGallery(targets: TargetMap): void {
 		activeKey = undefined;
 		unmountActive();
 		clearError();
+		debug.setTarget(undefined);
 		placeholder.hidden = false;
 		for (const item of items.values()) item.classList.remove("active");
 		if (key !== undefined) {

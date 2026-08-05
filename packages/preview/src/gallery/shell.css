@@ -198,6 +198,353 @@ body.loom-chromeless #loom-gallery-stage {
 }
 
 /*
+ * Debug mode (`?debug=1` / Ctrl+Alt+D). One card in the stage's top-right
+ * corner plus a hover outline, both painted over the scene and neither of them
+ * in the render path — see `./debug.ts`. The card is the only part that takes
+ * the pointer, and it sits under the error panel, which always wins the corner.
+ *
+ * The value colours are the panel's whole visual grammar: a reader scanning
+ * forty rows of instance properties finds the number, the string and the enum
+ * by hue before reading any of them. They are custom properties so the light
+ * theme restates four values instead of every rule.
+ */
+.loom-gallery-debug-toggle {
+	padding: 3px 7px;
+	border: 1px solid #333944;
+	border-radius: 6px;
+	background: transparent;
+	color: #6d7382;
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.loom-gallery-debug-toggle:hover {
+	background: #232833;
+	color: #dfe2e9;
+}
+
+.loom-gallery-debug-toggle.active {
+	background: #2c3a55;
+	border-color: #3d5280;
+	color: #eef1f7;
+}
+
+.loom-debug {
+	--dbg-line: #2b3038;
+	--dbg-label: #6d7382;
+	--dbg-text: #dfe2e9;
+	--dbg-hover: #ffffff0d;
+	--dbg-chip: #ffffff0f;
+	--dbg-num: #8ab4f8;
+	--dbg-str: #e0a273;
+	--dbg-bool: #b39ddb;
+	--dbg-enum: #d7b96a;
+	--dbg-class: #71c5cf;
+	--dbg-accent: #6ea8ff;
+
+	position: absolute;
+	top: 12px;
+	right: 12px;
+	z-index: 2147483646;
+	display: flex;
+	flex-direction: column;
+	width: 320px;
+	max-width: calc(100% - 24px);
+	max-height: calc(100% - 24px);
+	background: #101318f2;
+	backdrop-filter: blur(8px);
+	border: 1px solid var(--dbg-line);
+	border-radius: 10px;
+	box-shadow: 0 12px 32px #00000040;
+	color: var(--dbg-text);
+	font-size: 11px;
+	line-height: 1.55;
+	font-variant-numeric: tabular-nums;
+}
+
+/* `display: flex` above would defeat the UA [hidden] rule. */
+.loom-debug[hidden] {
+	display: none;
+}
+
+.loom-debug-header {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 8px 8px 8px 11px;
+	border-bottom: 1px solid var(--dbg-line);
+	color: #e8eaf0;
+}
+
+.loom-debug-heading {
+	flex: 1;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+}
+
+/* The live number that stays visible however much of the panel is folded. */
+.loom-debug-stat {
+	color: var(--dbg-num);
+}
+
+.loom-debug-action {
+	padding: 2px 7px;
+	border: 1px solid var(--dbg-line);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--dbg-label);
+	font: inherit;
+	font-size: 11px;
+	line-height: 1.5;
+	cursor: pointer;
+}
+
+.loom-debug-action:hover {
+	background: var(--dbg-hover);
+	color: var(--dbg-text);
+}
+
+.loom-debug-body {
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding-bottom: 6px;
+}
+
+.loom-debug-section + .loom-debug-section {
+	border-top: 1px solid var(--dbg-line);
+}
+
+/*
+ * The section header is a button: folding is the only way a readout this tall
+ * stays usable on a laptop, and the badge keeps each folded section reporting
+ * its one number.
+ */
+.loom-debug-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	padding: 7px 10px 5px;
+	border: 0;
+	background: transparent;
+	color: var(--dbg-label);
+	font: inherit;
+	font-size: 9px;
+	text-transform: uppercase;
+	letter-spacing: 0.09em;
+	text-align: left;
+	cursor: pointer;
+}
+
+.loom-debug-title:hover {
+	background: var(--dbg-hover);
+	color: var(--dbg-text);
+}
+
+.loom-debug-chevron {
+	width: 8px;
+	opacity: 0.7;
+}
+
+.loom-debug-badge {
+	flex: 1;
+	text-align: right;
+	color: var(--dbg-label);
+	letter-spacing: 0;
+	text-transform: none;
+}
+
+.loom-debug-rows {
+	padding-bottom: 5px;
+}
+
+.loom-debug-section.collapsed .loom-debug-rows {
+	display: none;
+}
+
+.loom-debug-row {
+	display: grid;
+	grid-template-columns: var(--dbg-key, 82px) 1fr;
+	gap: 8px;
+	padding: 1px 10px;
+}
+
+/*
+ * `scene` labels its rows with layer names and `fonts` with family names, both
+ * of which a property-sized label column cuts in half.
+ */
+.loom-debug-section[data-section="scene"],
+.loom-debug-section[data-section="fonts"] {
+	--dbg-key: 116px;
+}
+
+/* A note (a hint, a `+N more`) has no label to leave room for. */
+.loom-debug-row.is-note {
+	grid-template-columns: 1fr;
+}
+
+.loom-debug-row.is-clickable {
+	cursor: pointer;
+}
+
+.loom-debug-row.is-clickable:hover {
+	background: var(--dbg-hover);
+}
+
+.loom-debug-key {
+	color: var(--dbg-label);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.loom-debug-row.is-note .loom-debug-key {
+	display: none;
+}
+
+.loom-debug-value {
+	color: var(--dbg-text);
+	overflow-wrap: anywhere;
+}
+
+.loom-debug-value.k-num {
+	color: var(--dbg-num);
+}
+.loom-debug-value.k-str {
+	color: var(--dbg-str);
+}
+.loom-debug-value.k-bool {
+	color: var(--dbg-bool);
+}
+.loom-debug-value.k-enum {
+	color: var(--dbg-enum);
+}
+.loom-debug-value.k-class {
+	color: var(--dbg-class);
+}
+.loom-debug-value.k-muted {
+	color: var(--dbg-label);
+}
+
+/* A colour is unreadable as three floats; the hex gets a sample beside it. */
+.loom-debug-swatch {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	margin-right: 5px;
+	border: 1px solid #ffffff26;
+	border-radius: 2px;
+	vertical-align: baseline;
+}
+
+/*
+ * Chip rows: the class histogram, the modifier list and the ancestor path are
+ * all sets of short tokens, which read far better wrapped than as one row each.
+ */
+.loom-debug-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 3px;
+}
+
+.loom-debug-chip {
+	padding: 0 5px;
+	border-radius: 4px;
+	background: var(--dbg-chip);
+	color: var(--dbg-label);
+	white-space: nowrap;
+}
+
+.loom-debug-chip.k-class {
+	color: var(--dbg-class);
+}
+
+.loom-debug-chip.is-clickable {
+	cursor: pointer;
+}
+
+.loom-debug-chip.is-clickable:hover {
+	background: var(--dbg-accent);
+	color: #0b0e13;
+}
+
+.loom-debug-highlight {
+	position: absolute;
+	z-index: 2147483645;
+	pointer-events: none;
+	outline: 1px solid var(--dbg-highlight, #6ea8ff);
+	background: #6ea8ff1c;
+}
+
+/* A pinned selection is the one that stopped following the pointer. */
+.loom-debug-highlight.pinned {
+	--dbg-highlight: #ffb454;
+	background: #ffb4541c;
+}
+
+.loom-debug-highlight[hidden] {
+	display: none;
+}
+
+.loom-debug-highlight-label {
+	position: absolute;
+	left: 0;
+	bottom: 100%;
+	margin-bottom: 2px;
+	padding: 0 5px;
+	border-radius: 3px;
+	background: var(--dbg-highlight, #6ea8ff);
+	color: #0b0e13;
+	font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	font-size: 10px;
+	line-height: 1.5;
+	white-space: nowrap;
+}
+
+.loom-debug-highlight.label-inside .loom-debug-highlight-label {
+	bottom: auto;
+	top: 0;
+	margin: 0;
+}
+
+html.loom-theme-light .loom-debug {
+	--dbg-line: #e0e5ec;
+	--dbg-label: #77808f;
+	--dbg-text: #26303f;
+	--dbg-hover: #0000000a;
+	--dbg-chip: #00000010;
+	--dbg-num: #1f5fd0;
+	--dbg-str: #a35a1e;
+	--dbg-bool: #7548c4;
+	--dbg-enum: #8a6a12;
+	--dbg-class: #10707d;
+	--dbg-accent: #2f6fed;
+
+	background: #ffffffeb;
+	border-color: var(--dbg-line);
+	box-shadow: 0 12px 32px #10182814;
+}
+
+html.loom-theme-light .loom-debug-header {
+	color: #101828;
+}
+
+html.loom-theme-light .loom-debug-swatch {
+	border-color: #00000026;
+}
+
+html.loom-theme-light .loom-debug-chip.is-clickable:hover,
+html.loom-theme-light .loom-debug-highlight-label {
+	color: #ffffff;
+}
+
+html.loom-theme-light .loom-gallery-debug-toggle {
+	border-color: #d5dbe4;
+	color: #77808f;
+}
+
+/*
  * Phone-sized chrome. A 248px fixed sidebar beside the stage leaves nothing to
  * render into on a ~390px screen, so below this width the shell stacks: the
  * sidebar becomes a collapsed top bar (the target list opens on tap and closes
@@ -242,6 +589,21 @@ body.loom-chromeless #loom-gallery-stage {
 	/* Touch targets: 6px of padding is a mouse-sized row. */
 	.loom-gallery-item {
 		padding: 10px 8px;
+	}
+
+	/*
+	 * A 288px card in the corner of a ~390px stage is the stage. Debug mode
+	 * becomes a bottom sheet instead, so the scene keeps the top half of the
+	 * screen — which is the half being debugged.
+	 */
+	.loom-debug {
+		top: auto;
+		right: 8px;
+		bottom: 8px;
+		left: 8px;
+		width: auto;
+		max-width: none;
+		max-height: 50%;
 	}
 
 	#loom-gallery-stage {

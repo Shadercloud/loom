@@ -308,6 +308,7 @@ The same query contract works on the dev server and the static build:
 | `chrome` | `none` | drops the sidebar and renders one target full-bleed |
 | `theme` | `light`, `dark` (default) | picks the palette, and seeds `PlayerGui.LoomTheme` |
 | `background` | any CSS colour | paints the stage that exact colour |
+| `debug` | `1` (or bare `?debug`); `0` is off | opens the debug panel over the stage |
 
 `theme` chooses between loom's own two backdrops (`#14161a` and `#f6f9fc`);
 `background` overrides just that backdrop with a colour of your own, leaving
@@ -333,6 +334,58 @@ backdrop. Posting `{ type: "loom-background" }` with no colour hands the
 backdrop back to the theme. (A param that drives the *scene* rather than the
 gallery — a control that picks your own component's theme, say — still needs
 the reload; only the backdrop is switchable in place.)
+
+#### Debug mode
+
+Every gallery has a debug panel: the `debug` button in the sidebar header,
+**Ctrl+Alt+D**, or `?debug=1` on any gallery URL (including a `chrome=none`
+embed). It is off by default, and while it is closed nothing it does runs at
+all — no observers, no timers, no tree walks.
+
+Open, it reports — each section folds away, and keeps reporting its one number
+when folded:
+
+- **target** — the target's path and title, how long its `import()` took, and
+  how long from the mount to the first frame on screen. The panel's `↻` button
+  re-mounts the active target, which is how those timings are taken for a
+  target that was already up when the panel opened.
+- **viewport** — the stage in real pixels, the *logical* viewport the scene
+  actually laid out against, `Workspace.CurrentCamera.ViewportSize`, the mobile
+  scale factor and the `?base=` width behind it, the device pixel ratio, and
+  the theme. They agree on a desktop and diverge on a phone, which is the point
+  of showing all four.
+- **scene** — live instances, how many of them are GuiObjects (and how many of
+  those are invisible, which is usually why a scene looks empty), tree depth,
+  the DOM nodes it became, a count per class, and each layer with its
+  `DisplayOrder` and size.
+- **fonts** — every typeface the scene's text resolved to, with the weights
+  asked for and whether the browser really **loaded** it or fell back. A family
+  that never arrived still paints, just at another face's metrics, so this is
+  the row that explains a layout that only differs on one machine.
+- **frame** — frame rate, DOM patches committed since the panel opened, and a
+  count of what loom logged (its warnings explain a scene, and nobody reads the
+  console).
+- **inspect** — hover the stage and the panel names the GuiObject under the
+  pointer, outlines it with its size, and lists its ancestry, absolute
+  geometry, `UI*` modifiers, resolved typeface and properties — colours as
+  swatches, everything else typed and coloured. **Alt+click pins** the
+  selection so it stops following the pointer (Escape releases it); the
+  ancestry trail and the *under* rows — everything else the pointer is over —
+  are clickable, so you can walk the tree. The hit test is the scene's own
+  (`PlayerGui:GetGuiObjectsAtPosition`), so a click-through frame no browser
+  inspector can reach is still inspectable here.
+
+`copy` puts the readout on the clipboard as text. `json` downloads the whole
+thing as a file — every section as data, plus the complete instance tree with
+each object's absolute position and size, which is what an issue wants instead
+of a screenshot of a panel. The same object is available while the panel is
+open as `loomDebug.snapshot()`, so a devtools session or a headless harness can
+take one too.
+
+The toggle is remembered for the tab, so the full reload the gallery takes on
+every edit doesn't close it behind you. Embeds (`chrome=none`) deliberately do
+not remember it — a debug panel on a docs page is only ever one you asked for
+with `?debug=1`.
 
 #### Gallery troubleshooting
 

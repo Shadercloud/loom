@@ -17,6 +17,21 @@ export interface GalleryParams {
 	 * `theme` would have painted. Undefined when absent or unusable.
 	 */
 	background?: string;
+	/** `?debug=1` → open the debug panel on load (see `./debug.ts`). */
+	debug: boolean;
+}
+
+/** The `?debug=` spellings that mean "off"; anything else present means on. */
+const DEBUG_OFF = new Set(["0", "false", "off", "no", "none"]);
+
+/**
+ * Read one `?debug=` value. A bare `?debug` (no `=`) is on, which is how a
+ * flag is usually typed by hand; `?debug=0` and friends are off, so a host page
+ * templating the param can pass a boolean straight through.
+ */
+export function parseDebugFlag(raw: string | null | undefined): boolean {
+	if (raw === null || raw === undefined) return false;
+	return !DEBUG_OFF.has(raw.trim().toLowerCase());
 }
 
 /**
@@ -84,5 +99,6 @@ export function parseGalleryParams(search: string): GalleryParams {
 		chromeless: params.get("chrome") === "none",
 		theme: params.get("theme") === "light" ? "light" : "dark",
 		background: parseBackgroundColor(params.get("background")),
+		debug: parseDebugFlag(params.get("debug")),
 	};
 }

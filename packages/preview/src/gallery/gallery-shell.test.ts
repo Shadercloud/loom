@@ -164,6 +164,71 @@ describe("gallery stage backdrop", () => {
 });
 
 /**
+ * Debug mode's three entry points, and the one place it deliberately does not
+ * remember itself (a chromeless embed shares the host tab's sessionStorage).
+ */
+describe("gallery debug mode", () => {
+	const boot = (search: string): void => {
+		document.body.className = "";
+		document.body.innerHTML = `
+			<aside id="loom-gallery-sidebar"></aside>
+			<main id="loom-gallery-stage"><div id="loom-root"></div></main>
+		`;
+		window.history.replaceState({}, "", `/loom-preview/${search}`);
+		startGallery({
+			[TARGET]: async () => ({
+				preview: { render: () => React.createElement("frame") } as const,
+			}),
+		});
+	};
+
+	const panel = (): HTMLElement =>
+		document.getElementById("loom-debug") as HTMLElement;
+
+	beforeEach(() => {
+		sessionStorage.clear();
+	});
+
+	it("stays closed until something asks for it", () => {
+		boot("");
+		expect(panel().hidden).toBe(true);
+	});
+
+	it("opens from ?debug=1, the header button, and Ctrl+Alt+D", () => {
+		boot("?debug=1");
+		expect(panel().hidden).toBe(false);
+
+		const toggle = document.querySelector(
+			".loom-gallery-debug-toggle",
+		) as HTMLButtonElement;
+		expect(toggle.getAttribute("aria-pressed")).toBe("true");
+
+		toggle.click();
+		expect(panel().hidden).toBe(true);
+		expect(toggle.getAttribute("aria-pressed")).toBe("false");
+
+		window.dispatchEvent(
+			new KeyboardEvent("keydown", {
+				code: "KeyD",
+				key: "d",
+				ctrlKey: true,
+				altKey: true,
+			}),
+		);
+		expect(panel().hidden).toBe(false);
+	});
+
+	it("remembers the toggle for the tab, but never for an embed", () => {
+		boot("?debug=1");
+		boot(""); // a reload with no param at all
+		expect(panel().hidden).toBe(false);
+
+		boot(`?chrome=none&target=${encodeURIComponent(TARGET)}`);
+		expect(panel().hidden).toBe(true);
+	});
+});
+
+/**
  * The narrow-screen chrome: the CSS media query stacks the sidebar over the
  * stage and hides the list unless `body.loom-gallery-open` is set — this is the
  * state side of that contract.
