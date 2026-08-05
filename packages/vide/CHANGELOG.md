@@ -1,5 +1,15 @@
 # @loom-dev/vide
 
+## 0.10.0
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @loom-dev/scene@0.10.0
+  - @loom-dev/layout@0.10.0
+  - @loom-dev/runtime@0.10.0
+  - @loom-dev/renderer@0.10.0
+
 ## 0.9.6
 
 ### Patch Changes
