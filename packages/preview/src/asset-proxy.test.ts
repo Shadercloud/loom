@@ -273,6 +273,35 @@ describe("loomAssetBundle", () => {
 		expect(warnings).toEqual([]);
 	});
 
+	// Issue #13: the prerender died before it reached a scene — an installed
+	// layout handed its reconciler the host app's React — and took the whole
+	// `next build` with it.
+	it("survives a prerender that will not even start", async () => {
+		const { emitted, warnings } = await bake(
+			{
+				"index.js": {
+					type: "chunk",
+					code: '"rbxassetid://"+n;"rbxassetid://1818"',
+				},
+			},
+			fakeCdn(),
+			async () => {
+				throw new TypeError(
+					"Cannot read properties of undefined (reading 'ReactCurrentBatchConfig')",
+				);
+			},
+		);
+		expect(warnings.join()).toContain(
+			"could not prerender the gallery targets",
+		);
+		expect(warnings.join()).toContain("ReactCurrentBatchConfig");
+		// And the literal ids the scan read are baked regardless — a build that
+		// loses its composed icons must not lose the spelled-out ones too.
+		expect(JSON.parse(emitted["__loom/assets.json"] as string)).toEqual({
+			"1818": "__loom/asset/1818.png",
+		});
+	});
+
 	it("does not prerender a build that composes nothing", async () => {
 		const prerendered: string[] = [];
 		const spy = async () => {

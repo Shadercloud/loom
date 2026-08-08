@@ -24,8 +24,8 @@
  * DOM session has nothing to lay out — and the React tree, which is all this
  * needs, is built either way.
  */
-import { createRequire } from "node:module";
-import { join } from "node:path";
+import Module, { createRequire } from "node:module";
+import { dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { InlineConfig, Plugin } from "vite";
 import { findLoomTargets } from "./gallery.ts";
@@ -41,9 +41,12 @@ const requireFromPreview = createRequire(import.meta.url);
  * been externalized to node instead, but the alias has already replaced it.
  *
  * So the same files are handed to node the only way left: `createRequire`. The
- * shim below is what the SSR graph imports, and because node's require cache is
- * keyed by path, the reconciler's own `require("react")` lands on the very same
- * module object — one react, which is the whole point of the aliases.
+ * shim below is what the SSR graph imports, and node's require cache is keyed by
+ * path, so everything that goes through here shares one module object.
+ *
+ * What that does *not* settle is the reconciler's own `require("react")`, which
+ * node resolves from the reconciler's directory and no Vite alias can reach:
+ * see {@link pinReconcilerReact}.
  */
 function cjsExternalPaths(): Set<string> {
 	const paths = new Set<string>();
@@ -66,6 +69,92 @@ function cjsExternalPaths(): Set<string> {
 		// id and Vite externalizes it on its own.
 	}
 	return paths;
+}
+
+/** The react ids the reconciler may ask node for, mapped to loom's copies. */
+function pinnedReact(): Map<string, string> {
+	const pinned = new Map<string, string>();
+	for (const id of ["react", "react/jsx-runtime", "react/jsx-dev-runtime"]) {
+		try {
+			pinned.set(id, requireFromPreview.resolve(id));
+		} catch {
+			// A react the preview cannot see is a react it cannot pin either.
+		}
+	}
+	return pinned;
+}
+
+/** The reconciler's package directory, the only place the pin applies. */
+function reconcilerDir(): string | undefined {
+	try {
+		const fromAdapter = createRequire(
+			requireFromPreview.resolve("@loom-dev/react"),
+		);
+		return dirname(fromAdapter.resolve("react-reconciler")) + sep;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Answer the CJS reconciler's `require("react")` with loom's pinned react, for
+ * as long as the prerender runs. Returns the undo.
+ *
+ * Everything else converges on one react through `resolve.alias` (see
+ * `./vite.ts`), but the reconciler is handed to *node* by
+ * {@link cjsInteropPlugin}, and node resolves its `require("react")` from the
+ * reconciler's own directory — where no Vite alias reaches. In a workspace that
+ * lands on the same react regardless. In an installed app it need not: hoist
+ * `@loom-dev/react` next to a host's react 19 while loom's own 18 stays nested
+ * under `loom-dev`, and the reconciler gets the host's copy — then reconciler
+ * 0.29 dies reading react 18's since-renamed internals, `Cannot read properties
+ * of undefined (reading 'ReactCurrentBatchConfig')`, at evaluation, before a
+ * single scene mounts.
+ *
+ * The adapter's peer range says react 18 only, which is what should keep an
+ * installer from placing it there at all. This does not trust that: a range is
+ * advice, `--legacy-peer-deps` ignores it, and an already-installed tree keeps
+ * whatever layout it was given.
+ *
+ * Patching node's resolver is process-wide, so the redirect is narrowed to
+ * requests whose *parent* is inside the reconciler: a host framework building
+ * its own React 19 pages in this same process resolves exactly as it did.
+ */
+function pinReconcilerReact(): () => void {
+	const dir = reconcilerDir();
+	const pinned = pinnedReact();
+	if (dir === undefined || pinned.size === 0) return () => undefined;
+	return pinResolutionUnder(dir, pinned);
+}
+
+/**
+ * Redirect `request` → file for requires made from under `dir`, and hand back
+ * the undo. Split out of {@link pinReconcilerReact} so a test can aim it at a
+ * fixture instead of at whatever react this checkout happens to resolve.
+ */
+export function pinResolutionUnder(
+	dir: string,
+	pinned: ReadonlyMap<string, string>,
+): () => void {
+	const loader = Module as unknown as {
+		_resolveFilename: (
+			this: unknown,
+			request: string,
+			parent: { filename?: string | null } | undefined,
+			...rest: unknown[]
+		) => string;
+	};
+	const original = loader._resolveFilename;
+	loader._resolveFilename = function patched(request, parent, ...rest) {
+		const target = pinned.get(request);
+		if (target !== undefined && parent?.filename?.startsWith(dir) === true) {
+			return target;
+		}
+		return original.call(this, request, parent, ...rest);
+	};
+	return () => {
+		loader._resolveFilename = original;
+	};
 }
 
 const CJS_PREFIX = "\0loom-prerender-cjs:";
@@ -193,6 +282,7 @@ export async function prerenderImages(
 
 	const window = new Window({ url: "http://localhost/" });
 	const restoreDom = installDom(window as unknown as Record<string, unknown>);
+	const restoreReact = pinReconcilerReact();
 	// Imported here, not at module scope: `./vite.ts` reaches this module through
 	// a dynamic import, and a static edge back would be a cycle at load time.
 	const { loomPreview } = await import("./vite.ts");
@@ -214,67 +304,74 @@ export async function prerenderImages(
 		],
 	};
 
-	const server = await createServer(config);
+	// The globals and node's patched resolver are restored whatever happens —
+	// including a `createServer` that never returns one, which would otherwise
+	// leave a react redirect installed over the rest of the host's build.
 	try {
-		// Absolute paths, so these land on the same module instances the plugin's
-		// aliases point every previewed import at.
-		const runtime = (await server.ssrLoadModule(
-			requireFromPreview.resolve("@loom-dev/runtime"),
-		)) as { installGlobals: () => void };
-		// Before any target module evaluates: roblox-ts sources use `UDim2` and
-		// friends at module scope, with no import to make them appear.
-		runtime.installGlobals();
-		const adapter = (await server.ssrLoadModule(
-			requireFromPreview.resolve("@loom-dev/react"),
-		)) as {
-			mountSync: (
-				element: unknown,
-				mount: unknown,
-				options: { computeLayout: typeof stubLayout },
-			) => { world: { rootInstance: LiveInstance }; unmount: () => void };
-		};
-		const react = (await server.ssrLoadModule(
-			requireFromPreview.resolve("react"),
-		)) as ReactLike;
+		const server = await createServer(config);
+		try {
+			// Absolute paths, so these land on the same module instances the plugin's
+			// aliases point every previewed import at.
+			const runtime = (await server.ssrLoadModule(
+				requireFromPreview.resolve("@loom-dev/runtime"),
+			)) as { installGlobals: () => void };
+			// Before any target module evaluates: roblox-ts sources use `UDim2` and
+			// friends at module scope, with no import to make them appear.
+			runtime.installGlobals();
+			const adapter = (await server.ssrLoadModule(
+				requireFromPreview.resolve("@loom-dev/react"),
+			)) as {
+				mountSync: (
+					element: unknown,
+					mount: unknown,
+					options: { computeLayout: typeof stubLayout },
+				) => { world: { rootInstance: LiveInstance }; unmount: () => void };
+			};
+			const react = (await server.ssrLoadModule(
+				requireFromPreview.resolve("react"),
+			)) as ReactLike;
 
-		for (const relPath of targets) {
-			try {
-				const module = (await server.ssrLoadModule(
-					join(options.root, relPath),
-				)) as { preview?: { render?: unknown } };
-				const render = module.preview?.render;
-				if (typeof render !== "function") {
-					// Not a prerender failure: the gallery shell reports this shape
-					// error in the browser, where the user is looking.
-					continue;
+			for (const relPath of targets) {
+				try {
+					const module = (await server.ssrLoadModule(
+						join(options.root, relPath),
+					)) as { preview?: { render?: unknown } };
+					const render = module.preview?.render;
+					if (typeof render !== "function") {
+						// Not a prerender failure: the gallery shell reports this shape
+						// error in the browser, where the user is looking.
+						continue;
+					}
+					const mount = window.document.createElement("div");
+					let failure: unknown;
+					// As a component behind a boundary, exactly like the gallery shell
+					// mounts it: a `render` that uses hooks renders here the way it will
+					// there, and one that throws leaves a *mounted* world to dispose
+					// rather than an orphan holding the runtime's PlayerGui.
+					const mounted = adapter.mountSync(
+						react.createElement(
+							errorBoundary(react, (error) => {
+								failure = error;
+							}),
+							null,
+							react.createElement(render),
+						),
+						mount,
+						{ computeLayout: stubLayout },
+					);
+					collectImages(mounted.world.rootInstance, images);
+					mounted.unmount();
+					if (failure !== undefined) throw failure;
+				} catch (err: unknown) {
+					const message = err instanceof Error ? err.message : String(err);
+					options.warn(`could not prerender ${relPath}: ${message}`);
 				}
-				const mount = window.document.createElement("div");
-				let failure: unknown;
-				// As a component behind a boundary, exactly like the gallery shell
-				// mounts it: a `render` that uses hooks renders here the way it will
-				// there, and one that throws leaves a *mounted* world to dispose
-				// rather than an orphan holding the runtime's PlayerGui.
-				const mounted = adapter.mountSync(
-					react.createElement(
-						errorBoundary(react, (error) => {
-							failure = error;
-						}),
-						null,
-						react.createElement(render),
-					),
-					mount,
-					{ computeLayout: stubLayout },
-				);
-				collectImages(mounted.world.rootInstance, images);
-				mounted.unmount();
-				if (failure !== undefined) throw failure;
-			} catch (err: unknown) {
-				const message = err instanceof Error ? err.message : String(err);
-				options.warn(`could not prerender ${relPath}: ${message}`);
 			}
+		} finally {
+			await server.close();
 		}
 	} finally {
-		await server.close();
+		restoreReact();
 		restoreDom();
 		// happy-dom keeps timers of its own (its `requestAnimationFrame` is one),
 		// and a build that has finished should not be held open by them.

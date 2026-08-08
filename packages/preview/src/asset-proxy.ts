@@ -217,9 +217,11 @@ export interface AssetBundleOptions {
  * hover state, or fetched later); that one stays unresolved, and the build says
  * so rather than leaving a blank image unexplained.
  *
- * Never fails the build: an id that will not resolve (offline, deleted, or
- * moderated) is warned about and left out of the manifest, exactly as it would
- * have been before this ran.
+ * Never fails the build, and that holds for the whole pass, not just the
+ * downloads: an id that will not resolve (offline, deleted, or moderated) is
+ * warned about and left out of the manifest, and a prerender that cannot even
+ * start is warned about and skipped. Either way the output is what it would
+ * have been before this plugin ran.
  */
 export function loomAssetBundle(options: AssetBundleOptions = {}): Plugin {
 	const fetchImpl = options.fetchImpl ?? fetch;
@@ -240,17 +242,33 @@ export function loomAssetBundle(options: AssetBundleOptions = {}): Plugin {
 				composed ||= composesAssetIds(code);
 			}
 			const scanned = ids.size;
+			let prerenderFailed = false;
 			// Only for composition. With every id spelled out the scan already has
 			// them all, and mounting the whole gallery to rediscover them would be
 			// seconds spent to learn nothing.
 			if (options.discover && composed) {
-				for (const image of await options.discover(root, (message) => {
-					this.warn(`[loom] ${message}`);
-				})) {
-					assetIdsIn(image, ids);
+				try {
+					for (const image of await options.discover(root, (message) => {
+						this.warn(`[loom] ${message}`);
+					})) {
+						assetIdsIn(image, ids);
+					}
+				} catch (err: unknown) {
+					// A *scene* that will not render is already warned about and skipped
+					// inside the prerender. Reaching here means the pass itself never
+					// got as far as a scene — a Vite server that would not start, a
+					// module that would not load — and that is no reason to lose a build
+					// over images. Fall back to the ids the scan read.
+					prerenderFailed = true;
+					const message = err instanceof Error ? err.message : String(err);
+					this.warn(
+						`[loom] could not prerender the gallery targets, so any \`rbxassetid://\` ` +
+							`id this build composes at runtime stays unresolved in the static ` +
+							`output: ${message}`,
+					);
 				}
 			}
-			if (composed && ids.size === scanned) {
+			if (composed && !prerenderFailed && ids.size === scanned) {
 				this.warn(
 					"[loom] this build composes `rbxassetid://` ids at runtime, and " +
 						"prerendering the targets surfaced none of them — those images " +

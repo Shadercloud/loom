@@ -15,10 +15,11 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { prerenderImages } from "./prerender.ts";
+import { pinResolutionUnder, prerenderImages } from "./prerender.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "loom-prerender-")));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -125,5 +126,56 @@ describe("prerenderImages", () => {
 			warn: () => undefined,
 		});
 		expect(none.size).toBe(0);
+	});
+});
+
+/**
+ * Issue #13. The CJS reconciler is loaded by node, where Vite's aliases do not
+ * apply, so its own `require("react")` is answered by whatever sits beside it —
+ * in an installed app, the host's React 19, which reconciler 0.29 cannot read.
+ *
+ * A workspace checkout resolves one react either way, so this drives the pin
+ * over a fixture: two directories, each requiring the same id, only one of them
+ * "the reconciler".
+ */
+describe("pinResolutionUnder", () => {
+	const dir = join(root, "pin");
+	mkdirSync(join(dir, "inside"), { recursive: true });
+	mkdirSync(join(dir, "outside"), { recursive: true });
+	writeFileSync(join(dir, "pinned.cjs"), "module.exports = 'pinned';\n");
+	writeFileSync(join(dir, "real.cjs"), "module.exports = 'real';\n");
+	writeFileSync(
+		join(dir, "inside/ask.cjs"),
+		"module.exports = () => require('../real.cjs');\n",
+	);
+	writeFileSync(
+		join(dir, "outside/ask.cjs"),
+		"module.exports = () => require('../real.cjs');\n",
+	);
+
+	const require_ = createRequire(import.meta.url);
+	const inside = require_(join(dir, "inside/ask.cjs")) as () => string;
+	const outside = require_(join(dir, "outside/ask.cjs")) as () => string;
+	const pinned = new Map([["../real.cjs", join(dir, "pinned.cjs")]]);
+
+	it("answers a require made from under the directory with the pinned file", () => {
+		const undo = pinResolutionUnder(join(dir, "inside") + sep, pinned);
+		try {
+			expect(inside()).toBe("pinned");
+			// The host's own modules keep resolving exactly as they did: the patch
+			// is on a global loader, and a Next build is running in this process.
+			expect(outside()).toBe("real");
+		} finally {
+			undo();
+		}
+	});
+
+	it("puts node's resolver back", () => {
+		pinResolutionUnder(join(dir, "inside") + sep, pinned)();
+		delete require_.cache[require_.resolve(join(dir, "inside/ask.cjs"))];
+		delete require_.cache[require_.resolve(join(dir, "pinned.cjs"))];
+		expect((require_(join(dir, "inside/ask.cjs")) as () => string)()).toBe(
+			"real",
+		);
 	});
 });

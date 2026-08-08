@@ -62,6 +62,10 @@ const SCENE_MARKER = "packed-external-react-class-scene";
 const HTTP_SCENE_MARKER = "packed-external-http-color-scene";
 /** Nothing in the gallery may report React 19 — that is the host app's copy. */
 const HOST_REACT = "19.";
+/** The scene whose `rbxassetid://` is built at runtime, so it must prerender. */
+const ASSET_SCENE_MARKER = "packed-external-asset-scene";
+/** A real, public Roblox asset, so the bake has something that resolves. */
+const ASSET_ID = "6031075931";
 
 function run(command, args, options = {}) {
 	process.stdout.write(`\n$ ${command} ${args.join(" ")}\n`);
@@ -328,6 +332,27 @@ export const preview = {
 `,
 );
 
+// Issue #13: an id *composed* at runtime, which is the only shape that makes
+// the asset bundler prerender the targets — and the prerender is what dies in
+// an installed layout, where the reconciler's own `require("react")` finds the
+// host app's React 19 instead of loom's pinned 18.
+write(
+	"loom/targets/AssetScene.loom.tsx",
+	`const ICONS = { star: "${ASSET_ID}" } as const;
+
+export const preview = {
+	title: "${ASSET_SCENE_MARKER}",
+	render: () => (
+		<imagelabel
+			Name="Icon"
+			Size={UDim2.fromOffset(64, 64)}
+			Image={\`rbxassetid://\${ICONS.star}\`}
+		/>
+	),
+} as const;
+`,
+);
+
 // --- 4. install --------------------------------------------------------------
 
 run("npm", ["install", "--no-audit", "--no-fund", "--loglevel", "error"], {
@@ -406,6 +431,27 @@ if (!httpSceneCode.includes("GenerateGUID")) {
 	fail("the HttpService/Color3 chunk never calls GenerateGUID");
 }
 
+// Issue #13: the composed id is invisible to the bundle scan, so a manifest
+// entry for it is proof the prerender ran — mounting the scene under node with
+// loom's own React, beside a host app whose React is 19.
+const manifestFile = join(gallery, "__loom/assets.json");
+if (!existsSync(manifestFile)) {
+	fail(
+		"the static gallery baked no __loom/assets.json — the asset prerender " +
+			"never resolved the runtime-composed rbxassetid://",
+	);
+}
+const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
+if (!manifest[ASSET_ID]) {
+	fail(
+		`the asset manifest has no entry for the composed id ${ASSET_ID} ` +
+			`(saw: ${JSON.stringify(manifest)})`,
+	);
+}
+if (!existsSync(join(gallery, manifest[ASSET_ID]))) {
+	fail(`the manifest points at ${manifest[ASSET_ID]}, which was not emitted`);
+}
+
 const allCode = js
 	.map((f) => readFileSync(join(assetsDir, f), "utf8"))
 	.join("\n");
@@ -447,6 +493,7 @@ console.log(`
 [packed-next-test] PASS
   tarballs:       ${Object.keys(tarballFor).length}
   gallery chunks: ${sceneChunk}, ${httpSceneChunk}
+  baked asset:    ${ASSET_ID} -> ${manifest[ASSET_ID]}
   fixture:        ${app}
 `);
 
