@@ -1,5 +1,36 @@
 # @loom-dev/preview
 
+## 0.10.1
+
+### Patch Changes
+
+- [`6cfda61`](https://github.com/astra-void/loom/commit/6cfda613768d4ff2ab390ec9ba5d702428c402fe) Thanks [@astra-void](https://github.com/astra-void)! - Give the asset prerender loom's own React, so a static build with `assets` on
+  does not die in an installed app.
+
+  `next build` failed with `[loom:asset-bundle] Cannot read properties of undefined
+(reading 'ReactCurrentBatchConfig')` as soon as a gallery composed an
+  `rbxassetid://` at runtime, and the only way out was `assets: false`. The bake
+  mounts the scenes to find those ids, and it hands the CommonJS reconciler to
+  node, where Vite's aliases do not apply: node answered the reconciler's own
+  `require("react")` with whatever sat beside it. In a published install that is
+  the host app's React 19 — npm hoists `@loom-dev/react` next to it while loom's
+  React 18 stays nested under `loom-dev` — and reconciler 0.29 dies reading React
+  18's since-renamed internals before a single scene mounts.
+
+  Node's resolver is now pinned for the length of the prerender, and only for
+  requires coming from inside the reconciler: it gets loom's React 18, and a host
+  framework building its own React 19 pages in the same process is untouched.
+
+  A prerender that cannot start no longer fails the build either. That was always
+  the promise for a scene that will not render; it now covers the pass itself, so
+  the worst case is a warning and the ids the bundle scan could read, not a lost
+  build.
+
+- Updated dependencies [[`1a57c8e`](https://github.com/astra-void/loom/commit/1a57c8e07f8a771212de70cc1a82f0797174b4f3)]:
+  - @loom-dev/react@0.10.1
+  - @loom-dev/runtime@0.10.1
+  - @loom-dev/renderer@0.10.1
+
 ## 0.10.0
 
 ### Minor Changes
