@@ -2537,9 +2537,9 @@ export function createDomSession(
 	/**
 	 * On-screen pixels per layout pixel.
 	 *
-	 * The host may scale the whole mount down to fit a small screen (that is how
-	 * the preview keeps a desktop-sized viewport on a phone instead of
-	 * overflowing — see `@loom-dev/preview`'s `viewport.ts`). Rects, and
+	 * The host may scale the whole mount down to fit a small screen (that is what
+	 * the preview's `?base=` does: keep a wide logical viewport and paint it
+	 * small — see `@loom-dev/preview`'s `viewport.ts`). Rects, and
 	 * therefore everything Roblox reports as a position, live in the mount's
 	 * *untransformed* layout space, while pointer events arrive in on-screen
 	 * pixels. `getBoundingClientRect()` reflects CSS transforms and `offsetWidth`

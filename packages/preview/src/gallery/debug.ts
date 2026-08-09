@@ -356,7 +356,7 @@ function activeMount(): HTMLElement | undefined {
 
 /**
  * On-screen pixels per layout pixel, exactly as the renderer's own pointer
- * mapping computes it: `getBoundingClientRect()` reflects the mobile viewport
+ * mapping computes it: `getBoundingClientRect()` reflects the `?base=` viewport
  * transform and `offsetWidth` does not, so their ratio *is* the factor — with
  * no knowledge of who applied the transform.
  */
@@ -383,8 +383,8 @@ function formatSize(size: Size | undefined, unit = ""): string {
  * Every box a preview has at once: the stage the browser gave it, the *logical*
  * viewport the scene laid out against, what the world told
  * `Workspace.CurrentCamera`, and the factor between the first two. They agree
- * on a desktop and diverge on a phone, which is the whole reason to show all
- * four rather than one.
+ * unless the page asked for a `?base=` viewport, and showing all four is how
+ * you tell "the scene laid out small" from "the scene was painted small".
  */
 function viewportMetrics(stage: HTMLElement): DebugSnapshot["viewport"] {
 	const mount = activeMount();

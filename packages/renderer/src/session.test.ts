@@ -872,12 +872,12 @@ describe("createDomSession", () => {
 		session.dispose();
 	});
 
-	// --- scaled mount (mobile viewport) + touch ---------------------------------
+	// --- scaled mount (?base= logical viewport) + touch --------------------------
 
 	/**
 	 * Pretend the mount is `rendered` px wide on screen while laying out at
-	 * `layoutWidth` — what `@loom-dev/preview`'s viewport adaptation does on a
-	 * phone (CSS-transform the whole stage down, keep the desktop viewport).
+	 * `layoutWidth` — what `@loom-dev/preview`'s `?base=` does (CSS-transform the
+	 * whole stage down, keep the wide logical viewport).
 	 * happy-dom lays nothing out, so both measurements are stubbed.
 	 */
 	function scaleMount(rendered: number, layoutWidth: number): number {

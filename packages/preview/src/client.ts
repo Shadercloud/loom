@@ -77,11 +77,11 @@ export interface RootOptions {
  * (portals, multiple mounts) don't clobber each other — the renderer
  * `replaceChildren()`es its own mount on every commit.
  *
- * The container is also what carries the mobile viewport adaptation (see
- * `./viewport.ts`): on a phone-shaped screen narrower than the base width it
- * keeps a desktop-sized logical viewport and is scaled down to fit, so a scene
- * written for a desktop screen shrinks instead of overflowing. A desktop window
- * dragged narrow reflows instead, and `?base=` overrides both.
+ * The container is also what carries the optional logical-viewport scaling (see
+ * `./viewport.ts`). It is off unless a page asks for it with `?base=<px>`: by
+ * default the scene lays out against the stage's real pixels at every size, so
+ * a narrow stage reflows — text re-wraps, lists re-flow — the way the engine
+ * reflows at that viewport, instead of being painted small.
  */
 export function createRoot(
 	_target?: unknown,

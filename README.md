@@ -309,6 +309,18 @@ The same query contract works on the dev server and the static build:
 | `theme` | `light`, `dark` (default) | picks the palette, and seeds `PlayerGui.LoomTheme` |
 | `background` | any CSS colour | paints the stage that exact colour |
 | `debug` | `1` (or bare `?debug`); `0` is off | opens the debug panel over the stage |
+| `base` | a width in px (or bare `?base` for 960); off by default | lays the scene out at that logical width and paints it scaled to fit |
+
+By default a preview lays the scene out against the stage's real pixels at
+every size, so a narrow stage reflows exactly as the engine reflows at that
+viewport — text re-wraps, a `UIListLayout` with `Wraps` re-flows,
+`AutomaticSize` re-measures. `?base=` opts out of that: the scene keeps a
+logical viewport of the width you give and the whole stage is scaled down to
+fit, so it stays composed the way it was written and is simply drawn smaller.
+That is what you want for a thumbnail of a wide dashboard in a narrow column,
+and what you do *not* want when the narrow viewport is the thing you are
+checking. The debug panel's **viewport** section shows both boxes and the
+factor between them.
 
 `theme` chooses between loom's own two backdrops (`#14161a` and `#f6f9fc`);
 `background` overrides just that backdrop with a colour of your own, leaving
@@ -350,10 +362,10 @@ when folded:
   re-mounts the active target, which is how those timings are taken for a
   target that was already up when the panel opened.
 - **viewport** — the stage in real pixels, the *logical* viewport the scene
-  actually laid out against, `Workspace.CurrentCamera.ViewportSize`, the mobile
-  scale factor and the `?base=` width behind it, the device pixel ratio, and
-  the theme. They agree on a desktop and diverge on a phone, which is the point
-  of showing all four.
+  actually laid out against, `Workspace.CurrentCamera.ViewportSize`, the scale
+  factor and the `?base=` width behind it, the device pixel ratio, and the
+  theme. They agree unless the page asked for a `?base=` viewport, which is how
+  you tell a scene that laid out small from one that was painted small.
 - **scene** — live instances, how many of them are GuiObjects (and how many of
   those are invisible, which is usually why a scene looks empty), tree depth,
   the DOM nodes it became, a count per class, and each layer with its
