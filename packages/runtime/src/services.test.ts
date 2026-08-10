@@ -51,7 +51,9 @@ describe("Players", () => {
 		const seen: string[] = [];
 		localPlayer
 			.GetAttributeChangedSignal("VelaColorScheme")
-			.Connect(() => seen.push(String(localPlayer.GetAttribute("VelaColorScheme"))));
+			.Connect(() =>
+				seen.push(String(localPlayer.GetAttribute("VelaColorScheme"))),
+			);
 
 		expect(localPlayer.GetAttribute("VelaColorScheme")).toBeUndefined();
 		localPlayer.SetAttribute("VelaColorScheme", "dark");
