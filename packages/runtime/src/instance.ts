@@ -34,6 +34,7 @@ export const EVENT_NAMES: ReadonlySet<string> = new Set([
 	"ChildAdded",
 	"ChildRemoved",
 	"AncestryChanged",
+	"AttributeChanged",
 	"Destroying",
 	// Tween.Completed — read straight off a freshly created tween
 	// (`TweenService:Create(...).Completed:Connect(...)`), so it has to resolve
@@ -64,6 +65,7 @@ export interface LoomInstance {
 	readonly AncestryChanged: LoomSignal<
 		[LoomInstance, LoomInstance | undefined]
 	>;
+	readonly AttributeChanged: LoomSignal<[string]>;
 	readonly Destroying: LoomSignal<[]>;
 	IsA(className: string): boolean;
 	GetChildren(): LoomInstance[];
@@ -76,6 +78,10 @@ export interface LoomInstance {
 	WaitForChild(name: string, timeout?: number): LoomInstance | undefined;
 	IsDescendantOf(ancestor: LoomInstance): boolean;
 	GetPropertyChangedSignal(propertyName: string): LoomSignal<[]>;
+	GetAttribute(attribute: string): unknown;
+	GetAttributes(): Map<string, unknown>;
+	SetAttribute(attribute: string, value: unknown): void;
+	GetAttributeChangedSignal(attribute: string): LoomSignal<[]>;
 	Destroy(): void;
 	ClearAllChildren(): void;
 	GetFullName(): string;
@@ -89,6 +95,13 @@ interface InstanceImpl {
 	readonly children: InstanceImpl[];
 	readonly propSignals: Map<string, LoomSignal<[]>>;
 	readonly eventSignals: Map<string, LoomSignal<unknown[]>>;
+	/**
+	 * Attributes live beside the property store rather than in it: Roblox keeps
+	 * the two namespaces apart — an attribute never shows up as a property, does
+	 * not fire `Changed`, and is not something the renderer paints.
+	 */
+	readonly attributes: Map<string, unknown>;
+	readonly attributeSignals: Map<string, LoomSignal<[]>>;
 	destroyed: boolean;
 	absolutePosition: Vector2;
 	absoluteSize: Vector2;
@@ -165,6 +178,18 @@ function getOrCreatePropSignal(
 	return signal;
 }
 
+function getOrCreateAttributeSignal(
+	impl: InstanceImpl,
+	attribute: string,
+): LoomSignal<[]> {
+	let signal = impl.attributeSignals.get(attribute);
+	if (!signal) {
+		signal = new LoomSignal();
+		impl.attributeSignals.set(attribute, signal);
+	}
+	return signal;
+}
+
 function getOrCreateEventSignal(
 	impl: InstanceImpl,
 	name: string,
@@ -196,6 +221,30 @@ function findFirstChildImpl(
 	return undefined;
 }
 
+/**
+ * Roblox rejects an attribute name outright rather than storing something the
+ * datamodel cannot serialize: at most 100 characters, alphanumerics and
+ * underscore only, and the `RBX` prefix is reserved for the engine. Throwing
+ * matches it — a name a real place would refuse should not quietly work here and
+ * fail once the code is in Studio.
+ */
+const ATTRIBUTE_NAME = /^[A-Za-z0-9_]{1,100}$/;
+
+function assertAttributeName(impl: InstanceImpl, attribute: string): void {
+	if (!ATTRIBUTE_NAME.test(attribute)) {
+		throw new Error(
+			`[loom] Attribute name "${attribute}" on ${METHODS.GetFullName(impl)} is invalid — ` +
+				"up to 100 alphanumerics and underscores",
+		);
+	}
+	if (attribute.startsWith("RBX")) {
+		throw new Error(
+			`[loom] Attribute name "${attribute}" on ${METHODS.GetFullName(impl)} is reserved — ` +
+				"the RBX prefix belongs to the engine",
+		);
+	}
+}
+
 function collectDescendants(impl: InstanceImpl, out: LoomInstance[]): void {
 	for (const child of impl.children) {
 		out.push(child.proxy);
@@ -218,8 +267,10 @@ function destroyImpl(impl: InstanceImpl, detach: boolean): void {
 	impl.children.length = 0;
 	for (const signal of impl.propSignals.values()) signal.disconnectAll();
 	for (const signal of impl.eventSignals.values()) signal.disconnectAll();
+	for (const signal of impl.attributeSignals.values()) signal.disconnectAll();
 	impl.propSignals.clear();
 	impl.eventSignals.clear();
+	impl.attributeSignals.clear();
 	impl.destroyed = true;
 }
 
@@ -304,6 +355,38 @@ const METHODS = {
 		propertyName: string,
 	): LoomSignal<[]> {
 		return getOrCreatePropSignal(impl, propertyName);
+	},
+	GetAttribute(impl: InstanceImpl, attribute: string): unknown {
+		return impl.attributes.get(attribute);
+	},
+	GetAttributes(impl: InstanceImpl): Map<string, unknown> {
+		// A copy, for the reason `GetChildren` returns one: the caller gets a
+		// snapshot it can hold onto, not a live view of the store.
+		return new Map(impl.attributes);
+	},
+	SetAttribute(impl: InstanceImpl, attribute: string, value: unknown): void {
+		assertAttributeName(impl, attribute);
+		// `nil` removes the attribute, which is how Roblox spells "unset" — there
+		// is no separate remove call, and a removal still notifies.
+		if (value === undefined || value === null) {
+			if (!impl.attributes.delete(attribute)) return;
+		} else {
+			if (
+				impl.attributes.has(attribute) &&
+				impl.attributes.get(attribute) === value
+			) {
+				return;
+			}
+			impl.attributes.set(attribute, value);
+		}
+		impl.attributeSignals.get(attribute)?.fire();
+		impl.eventSignals.get("AttributeChanged")?.fire(attribute);
+	},
+	GetAttributeChangedSignal(
+		impl: InstanceImpl,
+		attribute: string,
+	): LoomSignal<[]> {
+		return getOrCreateAttributeSignal(impl, attribute);
 	},
 	Destroy(impl: InstanceImpl): void {
 		destroyImpl(impl, true);
@@ -639,6 +722,8 @@ export function createInstance(className: string, name?: string): LoomInstance {
 		children: [],
 		propSignals: new Map(),
 		eventSignals: new Map(),
+		attributes: new Map(),
+		attributeSignals: new Map(),
 		destroyed: false,
 		absolutePosition: Vector2.zero,
 		absoluteSize: Vector2.zero,

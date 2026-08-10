@@ -350,3 +350,106 @@ describe("GuiObject read defaults", () => {
 		expect(createInstance("Folder").ZIndex).toBeUndefined();
 	});
 });
+
+describe("attributes", () => {
+	// Roblox's second namespace on every instance, and the one an app owns
+	// outright: nothing the engine writes, nothing the renderer paints. Vela's
+	// runtime reads `LocalPlayer:GetAttribute("VelaColorScheme")` on every
+	// environment read to resolve `dark:`, so without these a scene that reaches
+	// its runtime host dies on `GetAttribute is not a function` before it draws.
+	it("reads back what was set, and reports nothing for an unset name", () => {
+		const frame = createInstance("Frame");
+		expect(frame.GetAttribute("Theme")).toBeUndefined();
+
+		frame.SetAttribute("Theme", "dark");
+		expect(frame.GetAttribute("Theme")).toBe("dark");
+	});
+
+	it("removes an attribute when the value is nil", () => {
+		// Roblox spells "unset" as `SetAttribute(name, nil)` — there is no
+		// separate remove call, and the removal still notifies.
+		const frame = createInstance("Frame");
+		frame.SetAttribute("Theme", "dark");
+
+		const seen: string[] = [];
+		(frame.AttributeChanged as LoomSignal<[string]>).Connect((name) =>
+			seen.push(name),
+		);
+
+		frame.SetAttribute("Theme", undefined);
+		expect(frame.GetAttribute("Theme")).toBeUndefined();
+		expect(frame.GetAttributes().has("Theme")).toBe(false);
+		expect(seen).toEqual(["Theme"]);
+	});
+
+	it("fires the per-attribute signal and AttributeChanged, once per change", () => {
+		const frame = createInstance("Frame");
+		const perName: number[] = [];
+		const anyName: string[] = [];
+		frame.GetAttributeChangedSignal("Theme").Connect(() => perName.push(1));
+		(frame.AttributeChanged as LoomSignal<[string]>).Connect((name) =>
+			anyName.push(name),
+		);
+
+		frame.SetAttribute("Theme", "dark");
+		frame.SetAttribute("Theme", "dark"); // unchanged — silent, as in Roblox
+		frame.SetAttribute("Theme", "light");
+		frame.SetAttribute("Other", 1);
+
+		expect(perName).toHaveLength(2);
+		expect(anyName).toEqual(["Theme", "Theme", "Other"]);
+	});
+
+	it("hands the same per-attribute signal back on every read", () => {
+		const frame = createInstance("Frame");
+		expect(frame.GetAttributeChangedSignal("Theme")).toBe(
+			frame.GetAttributeChangedSignal("Theme"),
+		);
+	});
+
+	it("GetAttributes returns a snapshot, not the live store", () => {
+		const frame = createInstance("Frame");
+		frame.SetAttribute("A", 1);
+		const snapshot = frame.GetAttributes();
+		snapshot.clear();
+		expect(frame.GetAttributes().get("A")).toBe(1);
+	});
+
+	it("keeps attributes out of the property namespace", () => {
+		// The two are separate in Roblox: an attribute is not readable as a
+		// property, does not fire `Changed`, and never reaches the renderer.
+		const frame = createInstance("Frame");
+		const changed: unknown[] = [];
+		(frame.Changed as LoomSignal<[string]>).Connect((key) => changed.push(key));
+
+		frame.SetAttribute("Theme", "dark");
+
+		expect(frame.Theme).toBeUndefined();
+		expect(changed).toEqual([]);
+	});
+
+	it("rejects a name Roblox would reject", () => {
+		const frame = createInstance("Frame");
+		expect(() => frame.SetAttribute("has space", 1)).toThrow(/invalid/);
+		expect(() => frame.SetAttribute("kebab-case", 1)).toThrow(/invalid/);
+		expect(() => frame.SetAttribute("", 1)).toThrow(/invalid/);
+		expect(() => frame.SetAttribute("a".repeat(101), 1)).toThrow(/invalid/);
+		expect(() => frame.SetAttribute("RBXInternal", 1)).toThrow(/reserved/);
+	});
+
+	it("is per instance", () => {
+		const a = createInstance("Frame");
+		const b = createInstance("Frame");
+		a.SetAttribute("Theme", "dark");
+		expect(b.GetAttribute("Theme")).toBeUndefined();
+	});
+
+	it("does not mark the instance dirty", () => {
+		// Attributes paint nothing, so a write should not schedule a flush.
+		const frame = createInstance("Frame");
+		frame.Parent = createInstance("Frame");
+		const before = getDirtyCount();
+		frame.SetAttribute("Theme", "dark");
+		expect(getDirtyCount()).toBe(before);
+	});
+});
