@@ -42,6 +42,24 @@ describe("Players", () => {
 		)(10, 10);
 		expect(atPosition).toEqual([]);
 	});
+
+	it("answers the attribute API on LocalPlayer", () => {
+		// The real consumer: an app-owned player attribute is how a game carries
+		// a setting that is readable from anywhere and survives a rejoin, and
+		// Vela's runtime resolves `dark:` off exactly this one.
+		const localPlayer = game.GetService("Players").LocalPlayer as LoomInstance;
+		const seen: string[] = [];
+		localPlayer
+			.GetAttributeChangedSignal("VelaColorScheme")
+			.Connect(() => seen.push(String(localPlayer.GetAttribute("VelaColorScheme"))));
+
+		expect(localPlayer.GetAttribute("VelaColorScheme")).toBeUndefined();
+		localPlayer.SetAttribute("VelaColorScheme", "dark");
+		expect(localPlayer.GetAttribute("VelaColorScheme")).toBe("dark");
+		expect(seen).toEqual(["dark"]);
+
+		localPlayer.SetAttribute("VelaColorScheme", undefined);
+	});
 });
 
 describe("GuiService", () => {
